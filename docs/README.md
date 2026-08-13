@@ -1,6 +1,13 @@
 # Documentation Index
 
-This directory is the source of truth for ClipMine until production code and generated API documentation exist.
+This directory is the source of truth for ClipMine product intent, the working private MVP and its production path. Documents distinguish **implemented now** from **target architecture**.
+
+## Start here
+
+- [MVP handoff and acceptance test](operations/mvp-handoff.md)
+- [Database connection checklist](operations/database-connection.md)
+- [Local development](operations/local-development.md)
+- [Current project context](../PROJECT_CONTEXT.md)
 
 ## Product
 
@@ -27,10 +34,11 @@ This directory is the source of truth for ClipMine until production code and gen
 
 - [Privacy, security and content rights](security/privacy-security-rights.md)
 - [Testing strategy](quality/testing-strategy.md)
+- [Security policy](../SECURITY.md)
 
-## Delivery
+## Delivery and operations
 
-- [Deployment and operations](operations/deployment-and-observability.md)
+- [Deployment and observability](operations/deployment-and-observability.md)
 - [Sprint plan](project/sprint-plan.md)
 - [Definition of done](project/definition-of-done.md)
 
@@ -48,4 +56,4 @@ When documents conflict, use this order:
 4. Supporting guides
 5. Old issues, prompts or chat summaries
 
-Update `PROJECT_CONTEXT.md` whenever a decision materially changes the current state.
+`PROJECT_CONTEXT.md` is the concise record of what is actually implemented. Update it whenever a decision or implementation materially changes.

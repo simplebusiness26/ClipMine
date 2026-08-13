@@ -1,159 +1,110 @@
 # Testing Strategy
 
-## Objective
+## Current automated baseline
 
-Prove that ClipMine protects private media, survives unreliable processing and produces clips humans consider useful. A green unit-test suite alone is insufficient.
+GitHub Actions runs two independent jobs on pull requests and `main`.
 
-## Test layers
+### Web and documentation
 
-### Static checks
+- Markdownlint across repository Markdown
+- Relative Markdown link validator
+- TypeScript no-emit type-check
+- Vitest unit tests for time/size formatting helpers
+- Vite production build
 
-- Formatting and linting
-- Type checks
-- OpenAPI/schema compatibility
-- Migration lint/verification
-- Secret, dependency and container scanning
+### API and media
 
-### Unit tests
+- Ruff linting for API and tests
+- Pydantic/candidate scoring tests
+- JSON-store round trip and deletion
+- Persistence-adapter selection from `DATABASE_URL`
+- Synthetic FFmpeg end-to-end API test
 
-- State transitions and retry classification
-- Candidate boundary and diversity logic
-- Caption grouping and safe-area calculations
-- Usage reservation and idempotency
-- Permission predicates
-- Platform capability validation
+The end-to-end test generates a 12-second test-pattern video and tone, then verifies:
 
-### Integration tests
+1. Health reports JSON and FFmpeg.
+2. Missing rights confirmation is rejected.
+3. Valid upload returns HTTP 202.
+4. FFprobe and timeline fallback reach ready state.
+5. Source preview is available.
+6. Candidate title/range/caption edits persist.
+7. Render reaches ready state.
+8. Download returns a non-empty MP4.
+9. Deletion removes project access.
 
-- PostgreSQL constraints and migrations
-- Object-storage multipart lifecycle
-- Queue lease, retry, cancellation and dead-letter behaviour
-- Provider adapters through recorded/synthetic contract fixtures
-- Signed URL purpose and expiry
-- Deletion across related records/assets
+No real or customer footage is stored in the repository.
 
-### Media golden tests
+## Local commands
 
-Use small permissioned fixture videos with known characteristics:
+```bash
+npm run lint:docs
+npm run check:links
+npm run lint:web
+npm run test:web
+npm run build:web
+.venv/bin/ruff check services/api/clipmine_api services/api/tests
+cd services/api && ../../.venv/bin/pytest -q
+```
 
-- Landscape single speaker
-- Two-person conversation
-- Portrait source
-- Screen share plus speaker
-- Rotation metadata
-- Variable frame rate
-- Noisy/quiet audio
-- No speech
-- Unsupported/corrupt file
+## Manual private-MVP acceptance
 
-Assert duration tolerance, A/V sync, aspect ratio, codec/profile, caption timing, crop stability and deterministic render instructions. Store compact fixtures or generate synthetic fixtures; never commit customer footage.
+Run the [handoff acceptance test](../operations/mvp-handoff.md) with short authorised footage on phone and desktop widths. Confirm playback, captions, downloaded orientation, persistence across refresh/restart and deletion.
 
-### API/security tests
+## Missing tests before public beta
 
-- Unauthenticated and expired token access
-- Cross-workspace read/write attempts for every resource
-- Guessed asset IDs and object keys
-- Upload content/type mismatch
-- Oversized/resource-exhaustion media
-- Idempotency replay
-- CSRF/CORS/rate limiting
-- OAuth token redaction and revocation
+### Authentication and isolation
 
-### Browser end-to-end tests
+- Unauthenticated/expired access
+- Cross-workspace reads, edits, media and deletes
+- Guessed project/asset IDs
+- Administrator access auditing
 
-Critical path:
+### Database and durability
 
-1. Sign in
-2. Create project
-3. Upload fixture with progress/recovery
-4. Observe persisted job progress
-5. Review candidate
-6. Edit caption/trim/crop
-7. Render
-8. Download and verify output
-9. Delete project
+- Real PostgreSQL schema/bootstrap in CI
+- Concurrent updates and worker retries
+- JSON-to-PostgreSQL migration utility if required
+- Backup/restore with media reconciliation
+- Schema migration forward compatibility
 
-Run core flows at desktop and phone widths, including software-keyboard behaviour.
+### Upload and media safety
+
+- Content/type mismatch and malformed containers
+- Oversized/very long resource exhaustion
+- Rotation, variable frame rate and uncommon audio layouts
+- Portrait, landscape, screen-share and multiple speakers
+- No audio, quiet/noisy speech and no-speech source
+- FFmpeg timeout/cancellation and disk-full behaviour
+
+### Browser/accessibility
+
+- Upload/progress/recovery browser flow
+- 360 px, common phone, tablet and laptop widths
+- Software keyboard while editing captions
+- Keyboard navigation, focus and accessible labels
+- Reduced motion and offline/interrupted states
+
+### Operations/security
+
+- Dependency, secret and container scanning
+- Rate limits and cost quotas
+- Structured-log redaction
+- Queue worker death/lease recovery
+- Complete deletion from database, storage, cache, providers and backups
 
 ## AI quality evaluation
 
-### Dataset
+Use a permissioned dataset separated by creator/video across calibration and held-out test sets. Human reviewers score opening clarity, standalone context, payoff, boundary quality, caption accuracy, framing, editing effort and usable/not usable.
 
-Use permissioned source videos separated by creator/video across calibration and test sets. Label genre, language, speaker count, audio quality and visual format.
-
-### Human rubric
-
-Reviewers independently score:
-
-- Opening clarity
-- Standalone context
-- Complete payoff
-- Boundary quality
-- Caption accuracy
-- Visual framing
-- Amount of editing required
-- Overall usable/not usable
-
-Resolve rubric disagreement before tuning models. Keep the untouched test set hidden from prompt/weight iteration.
-
-### Baselines
-
-Compare against:
-
-- Random valid-length ranges
-- Pause/sentence-boundary heuristic
-- Transcript-only semantic ranking
-- Current production pipeline
-
-The full pipeline should beat simple baselines on top-k usable precision and edit burden, not only an internal model score.
-
-### Regression gates
-
-- No statistically meaningful drop on overall top-k utility
-- No critical regression for a major source format/language in scope
-- Boundary and caption metrics remain within tolerance
-- Cost/latency change is documented
-- Pipeline/config version is recorded and rollback available
-
-## Reliability tests
-
-- Worker dies mid-stage and lease is recovered
-- Provider returns rate limit, timeout, malformed output and partial success
-- Browser disconnects during multipart upload
-- Duplicate completion/render requests
-- Object exists but database callback fails, and vice versa
-- Cancellation races with stage completion
-- Database/object-store temporary outage
-- Deletion while job is queued/running
-
-## Performance and cost tests
-
-Benchmark by source minute, resolution and concurrency:
-
-- Upload finalisation
-- Proxy/audio creation
-- Transcription
-- Candidate analysis
-- Preview/final render
-- Storage and egress
-
-Record CPU/GPU time, memory peak, output bytes, provider usage and wall-clock time. Production limits must follow measured data.
-
-## Test environments
-
-- Local: deterministic emulators/containers and tiny fixtures
-- CI: unit, integration, security and selected golden media tests
-- Staging: production-shaped services with non-sensitive test media and sandbox OAuth
-- Production: synthetic canary project plus privacy-safe health telemetry
+Compare random ranges, timeline fallback, current transcript heuristic and any proposed semantic/visual model. Adopt changes only when top-k utility improves without unacceptable latency, cost or subgroup regressions.
 
 ## Release evidence
 
-Every release records:
+Every release/handoff records:
 
 - Commit/deployment ID
-- Schema migration result
-- Automated gate results
-- Media pipeline version
+- Exact automated command results
+- Database/schema action
+- Manual media smoke result
 - Known limitations
 - Rollback plan
-

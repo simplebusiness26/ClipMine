@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+**/__pycache__
+**/.pytest_cache
+**/node_modules
+apps/web/dist
+data
+.env
+*.mp4
+*.mov
+*.webm
+

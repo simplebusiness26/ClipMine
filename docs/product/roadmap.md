@@ -2,6 +2,8 @@
 
 Dates are deliberately not fixed until team capacity and processing costs are known. The sequence is ordered by risk.
 
+**Current position:** the local/private upload-to-export proof in Phase 0 is implemented. Discovery interviews, permissioned quality evaluation, cost benchmarking and public-ready controls remain open; Phase 1 is not complete.
+
 ## Phase 0 — Validation and proof
 
 Outcome: prove that ClipMine can find and render useful moments.
@@ -74,4 +76,3 @@ Outcome: ClipMine becomes a content workflow, not only a cutter.
 - Unattended mass posting
 - Arbitrary public-video downloading
 - Claims or scores presented as guaranteed virality
-

@@ -6,6 +6,12 @@ Status: product and engineering baseline; not a substitute for jurisdiction-spec
 
 Users may upload unpublished footage, client work and identifiable people. ClipMine must treat every source, transcript and generated clip as private workspace data unless the user explicitly publishes or shares it.
 
+### Current implementation boundary
+
+The private MVP has no identity or workspace system. It is safe only for one trusted operator on a private machine/network. Current media is stored on a private local/Docker volume, project deletion removes the project directory, PostgreSQL uses a private server-only schema, and uploads require a rights checkbox. Encryption-at-rest policy, object-store signed URLs, asynchronous retention, provider register, audited administration and tenant isolation are targets below—not claims about the current build.
+
+Local Faster Whisper keeps transcription on the application host, apart from downloading the model itself. No customer media is intentionally sent to an external AI API in the current implementation.
+
 ## 2. Rights model
 
 ### Allowed input
@@ -173,4 +179,3 @@ Before launch, identify the controller/processor roles, lawful basis, user age p
 - Incident contacts and severity process active
 - Rights complaint route active
 - Privacy notice and terms match actual data flow
-

@@ -1,0 +1,31 @@
+# Environment and secrets
+.env
+.env.local
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Node
+node_modules/
+apps/web/dist/
+apps/web/coverage/
+
+# Local ClipMine media and state
+data/
+*.mp4
+*.mov
+*.webm
+*.wav
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+

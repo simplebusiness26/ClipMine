@@ -2,147 +2,119 @@
 
 ## Objective
 
-Find a small, diverse set of clips that make sense without the full video and require little editing. The pipeline optimises for editorial usefulness, not guaranteed engagement.
+Find a small, diverse set of understandable clip drafts with grounded reasons and low editing effort. ClipMine optimises for editorial usefulness, not guaranteed engagement.
 
-## Pipeline stages
+## Implemented private-MVP stages
 
-### 1. Media preparation
+### 1. Media inspection
 
-- Probe duration, streams, rotation, frame rate and timestamp integrity.
-- Create a stable analysis proxy and mono speech audio.
-- Detect unusable or nearly silent input early.
+FFprobe reads streams, duration, dimensions, codec and audio presence. The pipeline rejects files with no video, invalid duration, unreadable metadata or a duration beyond the configured limit.
 
 ### 2. Speech transcription
 
-- Produce word-level timestamps where supported.
-- Identify language and confidence.
-- Add speaker labels when diarisation quality is sufficient.
-- Preserve provider/model/version and raw confidence separately from user corrections.
+The default provider is local Faster Whisper:
 
-### 3. Structural segmentation
+- Model defaults to `tiny` for practical CPU setup.
+- Language may be automatic or supplied by the user.
+- Voice activity detection is enabled.
+- Output is converted to timestamped transcript segments.
+- The model runs in an isolated child process so a native-library/CPU failure cannot terminate the API.
 
-Generate semantic blocks from:
+The source transcript is treated as untrusted data. It is never executed as an instruction.
 
-- Speaker turns and pauses
-- Sentence/topic boundaries
-- Scene cuts
-- Audio emphasis changes
-- Question/answer structure
-- Discourse markers and payoff phrases
+If the package/model is unavailable, times out, exits unexpectedly or transcription fails, the project continues in `timeline-fallback` mode rather than failing the whole workflow. The isolation trades some model startup time for a safer private-MVP failure boundary.
 
-Do not ask the language model to reason over an entire multi-hour transcript in one prompt. Use hierarchical summaries and overlapping windows while retaining source timestamps.
+### 3. Transcript candidate proposal
 
-### 4. Candidate proposal
+For every transcript segment start, the algorithm grows forward until it reaches the requested minimum length, stopping at the maximum. That creates candidate windows aligned to recognised segment boundaries.
 
-Create candidate ranges around potentially useful blocks. Expand boundaries to include necessary setup and complete the thought. Snap boundaries to silence/word edges and enforce configured length bands.
+### 4. Observable scoring
 
-Candidate types can include:
+The deterministic scorer starts from a neutral baseline and adjusts for:
 
-- Clear insight or explanation
-- Strong opinion with reasoning
-- Question and answer
-- Story beat with payoff
-- Demonstration or actionable steps
-- Humorous or surprising exchange
+- Question or recognised hook near the opening
+- Complete spoken start
+- Sentence-complete ending
+- Recognised takeaway/payoff language
+- Useful speaking density
+- Lexical concentration
+- Filler-word ratio
+- A practical short-form duration band
 
-### 5. Candidate scoring
+Reasons shown in the interface are selected from those observable signals. The score is clamped to zero–100 and mapped to high, medium or experimental confidence. It is not a viral prediction.
 
-Recommended editorial score components:
+### 5. Diversity selection
 
-| Component | Weight | Meaning |
-|---|---:|---|
-| Opening clarity/hook | 20 | The first seconds create interest without deception |
-| Standalone context | 20 | Viewer can understand people/topic without the source |
-| Payoff/completeness | 20 | The clip resolves rather than stopping mid-thought |
-| Information density | 15 | High useful content relative to duration |
-| Novelty/emotion | 10 | A distinctive idea, reaction or story beat |
-| Audio clarity | 10 | Speech is intelligible and stable |
-| Visual viability | 5 | Subject can be framed vertically without severe loss |
+Proposals sort by score. A new candidate is rejected if it overlaps more than 58% of the shorter range with an already selected candidate. Selected candidates are returned in source-time order.
 
-Weights are hypotheses. Calibrate against human labels by genre. Apply penalties for clipped boundaries, long dead air, repeated setup, unsupported claims, missing referents and near-duplicate content.
+### 6. Timeline fallback
 
-### 6. Diversity selection
+If no transcript candidate exists, ClipMine divides the source into evenly spread ranges using the configured duration band. These candidates:
 
-After scoring, select a set rather than the top independent rows:
+- Receive an experimental confidence label
+- Use a neutral score
+- Explain that they came from a continuous source section
+- Ask the user to add/correct captions
 
-- Suppress overlapping/near-duplicate ranges.
-- Vary topic and candidate type.
-- Respect user-selected length/count.
-- Include an experimental candidate only when clearly labelled.
+This makes transcription degradation visible and editable.
 
-### 7. Visual reframing
+### 7. User edit
 
-- Detect face/person/object focus using time-based tracks.
-- Select active speaker using diarisation plus mouth/audio correlation only when reliable.
-- Smooth camera movement; do not jump every frame.
-- Support single-speaker crop, split-screen/two-person layout and manual focus override.
-- Fall back to centre/letterbox/layout when detection confidence is low.
+The user can change title, start, end and caption text. ClipMine validates source bounds and maximum length before saving. An edit invalidates any prior render.
 
-### 8. Captions
+### 8. Vertical render
 
-- Group words into short readable cues by timing and semantics.
-- Keep important words together and avoid orphan lines.
-- Apply punctuation cautiously.
-- Mark low-confidence words for review.
-- Preserve user corrections across style and render changes.
+FFmpeg seeks to the saved source range, builds a 9:16 frame with a blurred fill and centred source, maps optional audio, burns grouped captions and writes an H.264/AAC MP4.
 
-### 9. Explanation
+Captions are split into roughly seven-word cues spread across the clip duration. This is a readable MVP approximation, not word-level karaoke timing.
 
-Every candidate stores concise grounded reasons, for example:
+## Failure behaviour
 
-- “Opens with a direct question.”
-- “Explains one complete method and ends with a result.”
-- “Audio and face framing are stable.”
+| Failure | Behaviour |
+|---|---|
+| Missing/corrupt video | Project fails with a safe media error |
+| Source too long | Project fails with configured limit message |
+| Transcription unavailable | Timeline candidates continue |
+| No transcript candidates | Timeline candidates continue |
+| Invalid user range | API rejects edit without changing project |
+| Render failure | Candidate keeps edits and reports failure |
+| Process restart | Pending analysis resumes; interrupted render resets to idle |
 
-Do not expose hidden chain-of-thought. Explanations are structured product evidence derived from observable signals.
+## Current quality limitations
 
-## Versioning
+- Transcript segments are not word-level cues in the UI.
+- Scoring is English-pattern-heavy even though transcription can recognise other languages.
+- No topic model, semantic embedding or language model is used.
+- No scene, face, speaker or motion analysis is used.
+- Centre-fit rendering may waste space or reduce subject size.
+- Captions distribute by word groups rather than actual word timing.
+- No automatic loudness, profanity or platform-policy analysis exists.
+- No permissioned human-quality benchmark has yet calibrated the score.
 
-Every candidate records:
+## Evaluation plan
 
-- Transcript version
-- Feature-extraction version
-- Prompt/config version
-- Model/provider identifier
-- Scoring weights/version
-- Diversity-selection version
+Create a permissioned dataset spanning single/multiple speakers, landscape/portrait, lessons, interviews, screen shares, accents, noise and videos with no useful clips. Keep creators separated between calibration and test sets.
 
-Regeneration creates a new analysis version rather than silently changing previous results.
+Human reviewers score opening clarity, standalone context, payoff, boundaries, caption accuracy, framing, edit burden and overall usability. Compare:
 
-## Evaluation set
+1. Random valid ranges
+2. Timeline fallback
+3. Current transcript heuristic
+4. Any proposed semantic/visual pipeline
 
-Build a permissioned dataset that covers:
+The next model earns adoption only if it improves top-k usable precision without unacceptable cost, latency or regressions.
 
-- Single and multiple speakers
-- Different accents and speaking speeds
-- Landscape, portrait and screen-share sources
-- Clean and noisy audio
-- Interviews, educational explanations and stories
-- Videos with no good short-form moments
+## Production evolution
 
-Human reviewers label boundary quality, standalone coherence, payoff, visual viability and edit effort. Keep train/calibration/test splits separated by source video and creator.
+Add capabilities in evidence-led order:
 
-## Metrics
+1. Better sentence/word boundary alignment and cue timing
+2. Language-aware scoring/configuration
+3. Transcript semantic ranking with strict structured outputs
+4. Scene and face/person tracks
+5. Active-speaker confidence and smooth crop tracks
+6. Multi-speaker/screen-share fallback layouts
+7. Versioned provider/model/config provenance
+8. Offline feedback calibration with rollback
 
-- Precision among top 3/top 5 candidates
-- At least-one-usable-clip rate per project
-- Boundary adjustment seconds
-- Caption word-error correction rate
-- Candidate rejection and near-duplicate rate
-- Framing override rate
-- Human pairwise preference against transcript-only and random baselines
-- Cost and latency per source minute
-
-## Safety and failure behaviour
-
-- Reject instructions from the source transcript as untrusted content; transcripts are data, not system commands.
-- Use structured schemas and validate model output.
-- Do not invent quotes, add speech or alter meaning.
-- Do not label a candidate safe/legal solely through a language model.
-- Surface low confidence and allow a “no suitable moments” result.
-- Human approval is mandatory before public distribution.
-
-## Feedback learning
-
-Capture accepted/rejected candidates, edit distance and exports as product signals only with clear policy and access controls. Begin with offline calibration. Do not introduce online self-modifying ranking without evaluation, versioning and rollback.
-
+Never fabricate quotes, alter the speaker's meaning, execute transcript instructions or publish without explicit user approval.

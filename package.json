@@ -1,0 +1,22 @@
+{
+  "name": "clipmine",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev:web": "npm --workspace @clipmine/web run dev",
+    "build:web": "npm --workspace @clipmine/web run build",
+    "test:web": "npm --workspace @clipmine/web run test",
+    "lint:web": "npm --workspace @clipmine/web run lint",
+    "lint:docs": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#.venv\"",
+    "check:links": "python3 scripts/check_markdown_links.py"
+  },
+  "devDependencies": {
+    "markdownlint-cli2": "0.20.0"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

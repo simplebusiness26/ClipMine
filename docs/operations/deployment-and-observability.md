@@ -1,138 +1,114 @@
 # Deployment and Observability
 
-## Environments
+## Current supported deployment
 
-Use separate development, staging and production resources for:
+ClipMine `0.1.0` supports a private single-instance Docker deployment for one trusted operator. It is not approved for an open public URL.
 
-- Database
-- Object storage
-- Queue/cache
-- Authentication/OAuth applications
-- AI provider credentials
-- Social platform applications
-- Logging and alerting
+```bash
+cp .env.example .env
+docker compose up --build --detach
+docker compose ps
+curl --fail http://localhost:8000/api/health
+```
 
-Never process real customer media in development.
+The multi-stage image:
 
-## Deployment units
+1. Builds the React/Vite client with Node 24.
+2. Installs Python 3.12 dependencies, Faster Whisper and FFmpeg.
+3. Copies built web assets beside FastAPI.
+4. Runs the service as a non-root `clipmine` user.
+5. Exposes port 8000 and uses the persistent `/app/data` volume.
 
-1. Web application
-2. Control API
-3. Media/AI worker image
-4. Scheduled maintenance/reconciliation tasks
-5. Database migrations
+## Configuration
 
-Workers and API may deploy independently but must honour versioned contracts and compatible schema transitions.
+Start from `.env.example`. Required production-like choices for the private MVP:
 
-## CI/CD baseline
+- `DATABASE_URL`: optional PostgreSQL metadata; leave blank for JSON.
+- `CLIPMINE_MAX_UPLOAD_MB`: match disk and operator needs.
+- `CLIPMINE_MAX_SOURCE_MINUTES`: cap processing work.
+- `CLIPMINE_WORKER_CONCURRENCY`: keep at one until memory/CPU benchmarks justify more.
+- Whisper model/device/compute type: fit the host.
+- CORS origins: keep limited to actual private origins.
 
-Pull request:
+Do not commit `.env` or print the database URL.
 
-- Format/lint/type checks
-- Unit and integration tests
-- Migration validation
-- Selected media golden tests
-- Dependency/secret scanning
-- Build deployable images/artifacts
+## Persistence and backup
 
-Merge/default branch:
+### Without PostgreSQL
 
-- Build immutable versioned images
-- Deploy to staging
-- Run smoke and migration tests
-- Require explicit production promotion initially
-- Deploy database expansion before dependent code
-- Run production smoke checks and watch error/job metrics
+Back up the named `clipmine-data` Docker volume. It contains JSON metadata, source files and exports.
 
-## Infrastructure principles
+### With PostgreSQL
 
-- Infrastructure as code before public beta
-- Private networking where practical
-- Least-privilege service identities
-- Object-store public access blocked centrally
-- Encryption in transit and at rest
-- Autoscaling based on safe queue/concurrency signals
-- Hard resource limits for media containers
+Back up both:
 
-## Observability model
+1. PostgreSQL `clipmine.projects`
+2. The `clipmine-data` media volume
 
-Every request/job carries a correlation/trace ID. Logs are structured and contain IDs, states, durations, versions and safe error codes—but not transcript text, credentials or signed URLs.
+They form one logical project state. A database-only restore leaves media references missing; a volume-only restore lacks PostgreSQL project metadata.
 
-### Metrics
+The private MVP has no automated backup or point-in-time restore workflow. Configure and test those before relying on important media.
 
-Product/system:
+## Health and logs
 
-- Projects created, uploaded, ready, exported and deleted
-- Job count by stage/state/error
-- Queue age and depth
-- Worker lease expiry and retry rate
-- Processing latency per source minute
-- Candidate count and no-candidate rate
-- Render success and duration
-- Object storage bytes and egress
-- Provider usage/cost by stage
-- API latency/error rate
-- Authorisation denials and rate-limit events
+Health endpoint:
 
-### Alerts
+```text
+GET /api/health
+```
 
-- Oldest queued job exceeds threshold
-- Stage failure/retry rate spikes
-- Worker heartbeats absent
-- API elevated errors or latency
-- Upload completion failures spike
-- Provider cost or usage anomaly
+It reports selected persistence, FFmpeg availability and transcription provider. Docker Compose checks it every 30 seconds after startup grace.
+
+Runtime configuration endpoint:
+
+```text
+GET /api/config
+```
+
+It exposes only non-secret limits/status for the UI.
+
+Logs:
+
+```bash
+docker compose logs --follow --tail 200 clipmine
+```
+
+Current logs include startup persistence, transcription fallback codes and safe stack traces for unexpected errors. They should not contain transcript text or credentials. Before public beta, replace basic logging with structured correlation IDs, stage duration, queue age, failure category and redaction tests.
+
+## Deploy and rollback
+
+Private deploy:
+
+```bash
+git pull --ff-only
+docker compose build
+docker compose up --detach
+curl --fail http://localhost:8000/api/health
+```
+
+Before updating, record the Git commit and back up state/media. To roll back, deploy the previous known-good commit/image without deleting the data volume. Do not reverse database/schema changes destructively; the current schema creation is additive and idempotent.
+
+## Capacity notes
+
+- Upload bytes pass through the API to local disk.
+- Transcription and rendering are CPU/memory intensive.
+- A single semaphore bounds both processing and render work.
+- Multiple API replicas would have separate task registries and shared-volume assumptions; they are unsupported.
+- The Docker volume must have space for sources, exports and temporary media work.
+
+## Public-beta deployment target
+
+Use separate resources for web/API, durable workers/queue, PostgreSQL, object storage, identity, secrets and monitoring. Required operational signals include:
+
+- Projects and jobs by state/failure
+- Queue depth and oldest age
+- Processing/render latency per source minute
+- Worker lease/retry/heartbeat
+- API error rate and latency
+- Storage/egress and provider cost
+- Authorisation denials and rate limits
 - Deletion reconciliation backlog
-- Authentication/OAuth failure spike
-- Storage nearing limit or lifecycle failure
 
-Thresholds begin conservative and are calibrated from staging/alpha data.
+Required alerts/runbooks cover stuck jobs, provider outage, render regressions, database/storage degradation, media exposure, credential compromise, deletion failure and cost spikes.
 
-## Runbooks
-
-Create executable runbooks before beta for:
-
-- Stuck queue/job
-- Provider outage or rate limit
-- Broken render deployment
-- Database/storage degradation
-- Suspected cross-tenant or media exposure
-- Credential compromise
-- Failed deletion/reconciliation
-- Social publishing duplication/uncertain status
-- Cost spike
-
-Each runbook includes detection, containment, user impact, recovery, verification and follow-up owner.
-
-## Backups and recovery
-
-- Automated PostgreSQL backups with restore tests
-- Point-in-time recovery where supported
-- Object versioning/retention balanced against verified user deletion obligations
-- Infrastructure/configuration reproducible from code
-- Recovery objectives set after business impact assessment
-
-Derived assets can usually be regenerated; source media, user edits and project history need the strongest recovery protection while retained.
-
-## Media lifecycle maintenance
-
-Scheduled tasks reconcile:
-
-- Expired multipart uploads
-- Orphaned objects/records
-- Stale job leases
-- Expired signed/export access
-- Retention-expired proxies/exports
-- Pending deletion requests
-- Provider-side temporary files
-
-Maintenance is idempotent and reports discrepancies before destructive cleanup where practical.
-
-## Release and rollback
-
-- Use immutable artifacts and recorded configuration version.
-- Roll back application code without reversing completed destructive migrations.
-- Feature-flag expensive/new provider paths.
-- Retain the previous media worker image and pipeline config for rapid rollback.
-- Stop enqueueing a bad stage before draining/retrying affected jobs.
-
+Public launch also requires automated backups with restore drills, object lifecycle controls, immutable build artifacts, staging smoke tests, security scanning, an incident process and explicit production promotion.

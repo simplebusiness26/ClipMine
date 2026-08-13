@@ -1,220 +1,199 @@
 # Technical Specification
 
-Status: recommended implementation baseline  
+Status: implemented private-MVP baseline plus documented production path
+
 Date: 2026-08-13
 
-## 1. System shape
+## 1. Scope
 
-ClipMine is an asynchronous media-processing system with a responsive web client. Interactive requests must remain fast; uploads, transcription, analysis and rendering run as resumable background jobs.
+This specification separates two system shapes:
 
-Recommended initial stack:
+- **Private MVP now:** one trusted operator, one FastAPI process, local persistent media, JSON or PostgreSQL metadata.
+- **Public beta target:** authenticated tenants, object storage, durable workers/queue, production controls.
 
-| Layer | Baseline |
+The current code is intentionally small but keeps a persistence interface and background-pipeline boundary so later services can replace those implementations.
+
+## 2. Implemented stack
+
+| Layer | Current implementation |
 |---|---|
-| Web | Next.js, React, TypeScript |
-| API | Python FastAPI with generated OpenAPI contract |
-| Media/AI workers | Python workers with FFmpeg |
-| Database | PostgreSQL |
-| Queue/cache | Redis-compatible queue with delayed retries |
-| Media storage | Private S3-compatible object storage |
-| Authentication | Managed OIDC/auth provider; verified server-side JWTs |
-| Observability | Structured logs, traces, metrics and error reporting |
-| Local environment | Docker Compose plus fixture media |
+| Web | React 19, TypeScript 7, Vite 8 |
+| API | Python 3.12, FastAPI, Pydantic |
+| Media | FFmpeg and FFprobe subprocesses |
+| Transcription | Faster Whisper local CPU option in an isolated subprocess |
+| Candidate analysis | Deterministic transcript heuristics with timeline fallback |
+| Metadata | Atomic JSON file or Asyncpg/PostgreSQL adapter |
+| Media storage | Private application filesystem/Docker volume |
+| Background work | Bounded in-process asynchronous tasks |
+| Packaging | Multi-stage Docker image and Docker Compose |
+| Quality | Vitest, TypeScript, Ruff, Pytest, synthetic media integration test, GitHub Actions |
 
-Provider selection remains reversible through adapters. The stack may be simplified during the technical proof, but boundaries and persisted job state must remain.
-
-## 2. Repository layout
-
-Proposed monorepo:
+## 3. Repository layout
 
 ```text
-apps/
-  web/                 # Next.js client and server-rendered UI
-services/
-  api/                 # FastAPI control plane
-workers/
-  media/               # transcription, analysis, preview and render tasks
-packages/
-  contracts/           # generated clients/schemas and shared event definitions
-  ui/                  # reusable web components
-infra/
-  docker/              # local services and images
-  migrations/          # database migration source
-tests/
-  fixtures/            # small, permissioned media fixtures
-docs/
+apps/web/                  React application
+services/api/clipmine_api/ FastAPI and media pipeline
+services/api/tests/        Unit and end-to-end tests
+db/schema.sql              PostgreSQL schema reference
+scripts/                   Repository validation helpers
+docs/                      Product and engineering source of truth
+.github/workflows/ci.yml   CI pipeline
+Dockerfile                 Production-style single-container image
+docker-compose.yml         Local/private deployment
 ```
 
-## 3. Processing boundary
+## 4. Current processing flow
 
-The API owns identities, projects, permissions, metadata and job creation. Workers receive opaque IDs, fetch only authorised job assets with short-lived credentials, write derived assets, and report stage results. Workers must not expose public endpoints.
+1. Browser uploads a supported original file through multipart form data.
+2. API streams it to a per-project source directory with a byte limit.
+3. API persists the project and starts a bounded background task.
+4. FFprobe validates duration and video metadata.
+5. An isolated Faster Whisper process attempts timestamped transcription unless disabled.
+6. Candidate scoring selects diverse transcript windows; a timeline fallback runs if no transcript candidates exist.
+7. Browser polls the project and exposes candidate editing.
+8. A render command starts FFmpeg in the background.
+9. FFmpeg produces a vertical H.264/AAC MP4 with optional burned captions.
+10. The user downloads the file or deletes the project.
 
-Stages:
+No long operation blocks the upload response after the source bytes have arrived. Processing progress is persisted and recoverable across page refreshes.
 
-1. Upload finalisation and media probe
-2. Proxy/audio preparation
-3. Transcription and diarisation
-4. Scene/visual analysis
-5. Candidate generation and scoring
-6. Candidate preview creation
-7. User editing
-8. Final render
-9. Export or later publishing
+## 5. Persistence
 
-Each stage persists input version, provider/model version, attempt count, output references, cost/usage and terminal error category.
+`ProjectStore` defines initialise, close, list, get, save and delete operations.
 
-## 4. Upload specification
+### JSON mode
 
-- Browser requests an upload session from the API.
-- API validates allowance and creates a project plus private object key.
-- Browser uploads parts directly to object storage through short-lived signed URLs.
-- API never proxies the entire source through an interactive application server.
-- Completion requires server-side object confirmation, checksum where supported and `ffprobe` validation.
-- Reject disguised extensions, malformed containers and unsupported codecs safely.
-- Clean abandoned multipart uploads automatically.
+- Selected when `DATABASE_URL` is empty.
+- Uses `data/state/projects.json`.
+- Serialises the complete Pydantic project document.
+- Uses an asynchronous lock plus write-to-temporary-and-replace for atomic updates.
 
-Initial accepted containers/codecs should be based on tested fixtures rather than broad claims. MP4/H.264/AAC is the required happy path; MOV and WebM can be enabled after validation.
+### PostgreSQL mode
 
-## 5. Job model
+- Selected when `DATABASE_URL` is non-empty.
+- Opens an Asyncpg pool with one to five connections.
+- Disables the statement cache for connection-pooler compatibility.
+- Creates a private `clipmine` schema and `projects` JSONB table.
+- Upserts one document per project and indexes `updated_at`.
 
-Job states:
+The private schema is server-only and intentionally not granted to Supabase browser roles. See [database connection](../operations/database-connection.md).
 
-`queued -> running -> succeeded`
+### Media mode
 
-Alternate transitions:
+Source and export bytes remain under `CLIPMINE_DATA_DIR`. PostgreSQL stores paths/references, not video blobs. One persistent volume is therefore required even after connecting the database.
 
-- `queued|running -> cancelling -> cancelled`
-- `running -> retry_wait -> queued`
-- `running -> failed`
+## 6. Upload contract
 
-Requirements:
+- Containers accepted by extension: MP4, MOV, M4V and WebM.
+- Default maximum: 1,024 MB, configurable.
+- Default source duration maximum: 180 minutes, configurable.
+- User must affirm authorisation to process and republish.
+- Original filenames are reduced to a safe project title; stored filenames are generated.
+- FFprobe must find a playable video stream and positive duration.
+- Failed or oversized uploads are removed.
 
-- Idempotency key per stage and input version
-- Heartbeat/lease to recover abandoned workers
-- Bounded exponential retry for transient failures
-- No retry for validation, rights or unsupported-media failures
-- Dead-letter review after retry exhaustion
-- Cancellation checked between safe processing boundaries
+The private MVP proxies upload bytes through FastAPI. Resumable direct-to-object-storage uploads remain a public-beta requirement.
 
-## 6. Media profiles
+## 7. Background task behaviour
 
-### Analysis proxy
+- One `PipelineManager` owns processing and render tasks.
+- A semaphore limits concurrent media work.
+- Duplicate task keys do not start duplicate active work.
+- Uploaded or processing projects are re-enqueued at startup.
+- Interrupted queued/rendering candidates return to idle at startup.
+- Deletion cancels matching tasks, deletes state and removes the project directory.
 
-Low-resolution, streamable proxy that preserves timestamps and aspect ratio. It is used for previews and visual analysis, not final output.
+This is restart-tolerant for a single process, not a distributed durable queue. A crash can repeat a processing stage; stages are designed to overwrite their own project results safely.
 
-### Default final output
+## 8. Candidate model
 
-- Container: MP4
-- Video: H.264, broadly compatible pixel format
-- Audio: AAC
-- Aspect ratio: 9:16
-- Resolution target: 1080 × 1920 when source quality permits
-- Frame rate: preserve sensible source rate or normalise through tested policy
-- Captions: burned in; optional SRT/VTT sidecar
+Candidate inputs are timestamped transcript segments. The algorithm proposes the first valid-length window from each segment start, scores observable features, sorts, suppresses heavy overlap and returns the requested count in source order.
 
-Exact encoder profile, loudness and bitrate settings must be benchmarked across fixture videos and documented in code.
+Signals include question/hook language, complete ending, payoff language, speaking density, lexical concentration, filler penalty and preferred duration. The displayed score is an editorial heuristic, never a prediction of platform performance.
 
-## 7. Authentication and authorisation
+When transcription is disabled, unavailable, fails or yields no valid candidates, the system spreads experimental fixed-length ranges across the source.
 
-- API validates issuer, audience, expiry and signature for every access token.
-- Application membership is mapped to a workspace ID.
-- Every query is scoped by workspace; asset access is never authorised by object key alone.
-- Signed media URLs are short-lived and purpose-specific.
-- Administrator support access requires a reason, elevated role and audit record.
-- Social OAuth refresh tokens are encrypted separately and never returned to the browser.
+## 9. Render profile
 
-## 8. Provider adapters
+Default private-MVP output:
 
-Define interfaces for:
+- MP4 container
+- H.264 video, YUV 4:2:0
+- AAC audio when source audio exists
+- 720 × 1280 (9:16)
+- CRF 22, `veryfast` preset
+- Fast-start metadata
+- Source centred and scaled over a blurred full-frame background
+- Captions grouped into approximately seven-word SRT cues and burned with FFmpeg subtitles
 
-- `TranscriptionProvider`
-- `LanguageModelProvider`
-- `EmbeddingProvider` if used
-- `ObjectStore`
-- `Publisher` per social platform
-- `NotificationProvider`
+The render uses a safe centre-fit fallback. It does not yet perform face detection, active-speaker tracking, crop animation or audio loudness normalisation.
 
-Store provider name and version with every derived result. Business logic must not depend on a vendor-specific response shape outside its adapter.
+## 10. Configuration
 
-## 9. Platform publishing
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | empty | Enable PostgreSQL metadata |
+| `CLIPMINE_DATA_DIR` | `data` | State and media root |
+| `CLIPMINE_STATIC_DIR` | `static` | Built web assets served by FastAPI |
+| `CLIPMINE_CORS_ORIGINS` | local ports | Allowed development origins |
+| `CLIPMINE_MAX_UPLOAD_MB` | `1024` | Upload byte limit |
+| `CLIPMINE_MAX_SOURCE_MINUTES` | `180` | Duration limit |
+| `CLIPMINE_WORKER_CONCURRENCY` | `1` | Concurrent media tasks |
+| `CLIPMINE_TRANSCRIPTION_PROVIDER` | `faster-whisper` | `faster-whisper` or `off` |
+| `CLIPMINE_WHISPER_MODEL` | `tiny` | Local model name |
+| `CLIPMINE_WHISPER_DEVICE` | `cpu` | Inference device |
+| `CLIPMINE_WHISPER_COMPUTE_TYPE` | `int8` | Inference quantisation |
+| `CLIPMINE_RENDER_WIDTH` | `720` | Output width |
+| `CLIPMINE_RENDER_HEIGHT` | `1280` | Output height |
 
-MVP exports files only. Later integrations must use official APIs and user OAuth:
+The complete safe template is `.env.example`. Real values never belong in Git.
 
-- YouTube supports authorised video upload through the YouTube Data API.
-- TikTok exposes draft upload and direct-post capabilities subject to its scopes, UX rules and app approval.
-- Instagram content publishing supports Reels for eligible account/integration configurations.
-- Facebook's Video API supports Page video/Reels publishing flows.
+## 11. Failure taxonomy
 
-Platform constraints belong in a versioned capability registry and are revalidated before submission. Publishing is idempotent and requires a recorded user confirmation.
+Implemented media errors include:
 
-Official references:
+- `MEDIA_TOOL_MISSING`
+- `MEDIA_TIMEOUT`
+- `MEDIA_PROCESSING_FAILED`
+- `MEDIA_CORRUPT`
+- `MEDIA_UNSUPPORTED`
+- `MEDIA_TOO_LONG`
+- `TRANSCRIPTION_UNAVAILABLE`
+- `TRANSCRIPTION_PROVIDER_UNKNOWN`
+- `TRANSCRIPTION_FAILED`
+- `RENDER_RANGE_INVALID`
+- `INTERNAL_ERROR`
+
+Transcription errors degrade to timeline suggestions. Inspection and unexpected pipeline errors mark the project failed with a safe message. Render errors remain on the candidate without deleting its edits.
+
+## 12. Current security boundary
+
+The application does not implement accounts or tenant isolation. It must remain on a trusted machine/private network. The server validates project/candidate existence and safe file locations, and Git excludes local media and secrets, but those controls do not replace authentication.
+
+Do not expose this build publicly until the controls in [security and rights](../security/privacy-security-rights.md) are complete.
+
+## 13. Public-beta target
+
+The next architecture replaces, rather than stretches, private-MVP components:
+
+| Current | Public-beta replacement |
+|---|---|
+| In-process tasks | Durable queue and separately scaled workers |
+| Local volume | Private object storage with short-lived signed access |
+| Single operator | Managed authentication and workspace authorisation |
+| Whole-project JSONB | Normalised tenant-scoped relational model |
+| Direct API upload | Resumable multipart object upload |
+| Local CPU transcription | Benchmarked provider adapters/local workers |
+| Basic logs | Structured traces, metrics, alerts and runbooks |
+| Manual limits | Per-user quotas, rate limits and cost reservations |
+
+Public production also requires backups, retention/deletion reconciliation, security tests, dependency/secret scanning and a permissioned real-media quality evaluation set.
+
+## 14. Social publishing path
+
+The MVP downloads files only. Later integrations use official APIs, OAuth, explicit user confirmation, platform-specific validation and idempotent publication records:
 
 - [YouTube upload guide](https://developers.google.com/youtube/v3/guides/uploading_a_video)
 - [TikTok Content Posting API](https://developers.tiktok.com/products/content-posting-api/)
 - [Instagram Content Publishing](https://developers.facebook.com/documentation/instagram-platform/content-publishing)
 - [Facebook video publishing](https://developers.facebook.com/documentation/video-api/guides/publishing)
-
-## 10. Configuration and secrets
-
-- Environment variables contain references to secrets, not committed values.
-- Validate required configuration at startup.
-- Separate development, staging and production accounts/buckets/databases.
-- Rotate provider and signing credentials.
-- Feature flags control expensive or platform-reviewed capabilities.
-
-## 11. Cost controls
-
-- Estimate source minutes before full processing.
-- Reserve usage allowance atomically before enqueueing.
-- Record transcription, model, compute, storage and egress usage by project/stage.
-- Cap concurrency by plan and system health.
-- Stop runaway jobs by wall time, output size and attempt count.
-- Use analysis proxies and avoid repeated transcription for edit-only changes.
-
-## 12. Failure taxonomy
-
-- `UPLOAD_INTERRUPTED`
-- `MEDIA_UNSUPPORTED`
-- `MEDIA_CORRUPT`
-- `AUDIO_INSUFFICIENT`
-- `PROVIDER_RATE_LIMIT`
-- `PROVIDER_UNAVAILABLE`
-- `ANALYSIS_NO_CANDIDATES`
-- `RENDER_FAILED`
-- `ALLOWANCE_EXCEEDED`
-- `PUBLISH_AUTH_EXPIRED`
-- `PUBLISH_VALIDATION_FAILED`
-- `INTERNAL_ERROR`
-
-User messages remain plain and actionable; logs carry correlation and technical detail without private transcript content.
-
-## 13. Engineering quality gates
-
-- Formatting, linting and type checks
-- Unit and contract tests
-- Database migration verification
-- API authorisation integration tests
-- Media golden-fixture tests
-- Browser smoke tests for the core flow
-- Dependency and secret scanning
-- Container/image vulnerability checks before production
-
-## 14. Performance and service objectives
-
-Initial objectives, to be calibrated:
-
-- Interactive API p95 under 500 ms excluding upload transfer and background work
-- Upload sessions recover from ordinary network interruption
-- No unreported stalled job beyond the worker lease/recovery window
-- Processing progress survives client refresh/logout
-- Export download begins promptly from object storage through a signed URL
-
-Do not set a universal “minutes to process” promise until real source-duration and hardware benchmarks exist.
-
-## 15. Migration strategy
-
-- Schema changes use forward migrations checked into source control.
-- Destructive changes use expand/migrate/contract phases.
-- Worker and API versions tolerate one deployment window of mixed schema where practical.
-- Derived media can be regenerated; source and user edits require stricter backup and migration protection.
-

@@ -4,70 +4,103 @@ Last updated: 2026-08-13
 
 ## Current state
 
-- Repository created.
-- Product and engineering documentation baseline created.
-- No application scaffold, infrastructure or production account setup exists yet.
-- No technology vendor has been irreversibly selected.
+ClipMine has a tested private MVP in this repository. It is no longer documentation-only.
+
+Implemented:
+
+- React 19, TypeScript and Vite mobile-first interface
+- FastAPI API with generated OpenAPI documentation
+- Original-file upload with size, extension and rights checks
+- FFprobe inspection and background progress states
+- Optional local Faster Whisper transcription
+- Explainable transcript heuristics plus timeline fallback candidates
+- Candidate title, trim and caption editing
+- FFmpeg vertical centre-fit/blurred-background render with burned captions
+- MP4 source preview and export download
+- Retry and full project/file deletion
+- JSON state persistence with atomic writes
+- PostgreSQL adapter selected automatically by `DATABASE_URL`
+- Docker image, Compose stack, environment template and health check
+- Frontend, API, media end-to-end, lint, build, Markdown and link checks in CI
+
+## Verified baseline
+
+At handoff, the repository passes:
+
+- TypeScript type-check and production Vite build
+- Vitest unit suite
+- Ruff linting
+- Pytest unit/integration suite
+- Synthetic media path: upload → analyse → edit → render → download → delete
+- Markdown linting and relative-link validation
+
+Exact live results belong in the final implementation handoff and CI run rather than being hard-coded forever in this file.
+
+## Persistence boundary
+
+With no database URL, the API uses `data/state/projects.json`. With `DATABASE_URL`, it uses PostgreSQL and creates `clipmine.projects` in a private schema. Media bytes remain in `data/projects/` in both modes.
+
+This separation means the database can be connected without changing application code. It does not yet migrate existing JSON projects into PostgreSQL automatically.
 
 ## Confirmed product direction
 
-ClipMine is a mobile-first service for turning long-form, creator-owned video into multiple short-form video drafts. The system analyses speech and visuals, proposes the strongest self-contained moments, renders vertical captioned clips, and gives the creator final editorial control.
+ClipMine is a mobile-first service for turning long-form, creator-owned video into multiple short-form video drafts. The creator retains editorial control. Original upload and MP4 export remain the first supported boundaries; arbitrary public-video downloading and unattended publishing remain excluded.
 
-## Confirmed MVP boundary
+## Private MVP boundary
 
-Included:
+Included now:
 
-- Account and private workspace
-- Resumable original-file upload
-- Transcript and processing progress
-- AI-generated clip candidates
-- Vertical auto-reframing
-- Editable captions and basic trim/crop controls
-- Rendered MP4 downloads
-- Job recovery, deletion and basic usage limits
+- Single trusted operator
+- Original video upload
+- Processing progress and recoverable error state
+- Transcription when the local model is available
+- Multiple candidate ranges with confidence and reasons
+- Lightweight trim/title/caption editor
+- Vertical captioned render and download
+- Project deletion
+- Optional PostgreSQL state persistence
 
-Excluded from initial MVP:
+Not included now:
 
-- Downloading arbitrary YouTube URLs
-- Fully automatic public posting
-- Native iOS/Android applications
-- Full timeline editor
-- Generative avatars, voice cloning or synthetic presenters
-- Team approvals, agencies and advanced analytics
+- Authentication, workspaces or cross-user isolation
+- Resumable multipart/object-storage upload
+- Separate durable job queue and worker service
+- Face/active-speaker tracking or manual crop controls
+- Brand kits, billing or usage metering
+- Social OAuth or direct publishing
+- Public-production monitoring, backups and retention automation
 
-## Product decisions
+## Decisions in force
 
-1. Build a responsive web application/PWA first.
-2. Accept original media uploads first for reliability and rights compliance.
-3. Require human approval before publishing.
-4. Keep speech-to-text, language-model and social-platform integrations behind adapters.
-5. Export first; add approved platform publishing incrementally.
-6. Never promise virality. Optimise for usefulness, completeness and editability.
+1. Responsive web/PWA direction before native applications.
+2. Original media uploads only; no arbitrary YouTube downloader.
+3. Human review before export or later publishing.
+4. Export-first MVP.
+5. Provider and persistence boundaries remain replaceable.
+6. Private single-user proof before multi-tenant public beta.
+7. PostgreSQL state is optional locally and activated only by configuration.
 
-## Open decisions
+## Tomorrow's handoff action
 
-- Final brand and trademark clearance
-- Exact infrastructure vendors and launch budget
-- Free allowance and paid-plan limits
-- Maximum upload duration and file size after cost testing
-- Initial transcription and language-model providers
-- Whether first beta targets podcasters, educators, business creators or a narrower group
+Follow [database connection checklist](docs/operations/database-connection.md): put one PostgreSQL URL in `.env`, restart the stack, and verify the health endpoint reports `postgres`. The schema is created automatically.
 
-## Immediate next milestone
+After that, run the [MVP acceptance test](docs/operations/mvp-handoff.md). No AI vendor key or social-platform account is required.
 
-Build a thin technical proof:
+## Next engineering milestone
 
-`upload -> transcript -> candidate timestamps -> one rendered 9:16 clip`
+Before anyone exposes ClipMine publicly:
 
-The proof is successful when a real user can upload a permitted video, receive at least three sensible candidate moments, render one playable clip and delete the project.
+1. Add authentication and workspace-scoped authorisation.
+2. Move media to private object storage with signed access.
+3. Separate durable processing workers and job recovery from the API process.
+4. Add upload rate/size abuse controls and retention jobs.
+5. Test with a permissioned, labelled real-video evaluation set.
 
 ## Instructions for future agents
 
-Before changing scope or code:
-
-1. Read this file, the PRD and relevant architecture decision records.
-2. Inspect the actual repository and report the current branch and working tree.
-3. Treat unconfirmed choices as assumptions, not requirements.
-4. Keep the first vertical slice small and test it with real footage.
-5. Update this file when the confirmed state changes.
-
+1. Read this file, the PRD and relevant ADRs before changing scope.
+2. Inspect the actual branch and working tree before editing.
+3. Treat the current implementation and target architecture as distinct.
+4. Never claim a deferred public-production control is already present.
+5. Keep private media, credentials and real customer footage out of Git.
+6. Update this file after a material implementation or scope change.

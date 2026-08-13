@@ -1,102 +1,110 @@
 # Data Model
 
-This is the logical model. Physical columns, types and indexes will be finalised through migrations and measured query patterns.
+## Implemented private-MVP model
 
-## Main entities
+The API uses one Pydantic `Project` document as its persistence boundary. JSON and PostgreSQL store the same shape, which lets tomorrow's database connection happen without a code migration.
 
-| Entity | Purpose | Important fields |
-|---|---|---|
-| `users` | Application identity profile | `id`, auth subject, locale, status, timestamps |
-| `workspaces` | Tenant and ownership boundary | `id`, name, plan, status |
-| `workspace_members` | User-to-workspace roles | workspace, user, role |
-| `projects` | One source-video workflow | workspace, title, status, language, settings, source duration |
-| `assets` | Private source/derived media metadata | workspace, project, kind, object key, bytes, checksum, media metadata, retention state |
-| `upload_sessions` | Multipart upload recovery | project, provider upload ID, expected bytes, expiry, status |
-| `jobs` | Background processing stage | project, type, state, input version, attempts, lease, error code, usage |
-| `transcripts` | Transcript-level provenance | project, language, provider, model, version, confidence |
-| `transcript_segments` | Timestamped words/speaker turns | transcript, start/end, text, speaker, confidence |
-| `analysis_features` | Versioned scene/audio/visual signals | project, feature type, time range, payload/version |
-| `clip_candidates` | Proposed time ranges and ranking | project, start/end, score band, reason payload, pipeline version, status |
-| `clips` | Creator-selected logical clip | project, source candidate, title, state |
-| `clip_versions` | Immutable edit/render instructions | clip, version, boundaries, crop, captions, style, render status |
-| `caption_cues` | User-editable caption groups | clip version, start/end, text, styling overrides |
-| `brand_kits` | Workspace styling defaults | fonts, colours, logo asset, caption theme |
-| `social_accounts` | Later encrypted OAuth connection metadata | workspace, platform, external account, token reference, scopes, status |
-| `publications` | Later user-approved publishing attempt | clip version, destination, metadata, status, external ID, idempotency key |
-| `usage_events` | Metering and cost provenance | workspace, project/job, unit, quantity, provider cost reference |
-| `audit_events` | Security/administrative history | actor, workspace, action, target, reason, timestamp |
-| `deletion_requests` | End-to-end deletion tracking | scope, requested by, state, completed timestamp |
+### Project
 
-## Ownership relationships
+| Group | Fields |
+|---|---|
+| Identity | `id`, `title`, `created_at`, `updated_at` |
+| Source | `source_filename`, `source_url`, `duration_seconds`, `width`, `height` |
+| Requested settings | `desired_clips`, `min_clip_seconds`, `max_clip_seconds`, `language` |
+| Rights | `rights_confirmed` |
+| Progress | `status`, `stage`, `progress`, `analysis_mode` |
+| Results | `transcript_segments`, `candidates` |
+| Failure | `error_code`, `error_message` |
 
-```mermaid
-erDiagram
-    WORKSPACE ||--o{ WORKSPACE_MEMBER : has
-    USER ||--o{ WORKSPACE_MEMBER : joins
-    WORKSPACE ||--o{ PROJECT : owns
-    PROJECT ||--o{ ASSET : contains
-    PROJECT ||--o{ JOB : processes
-    PROJECT ||--o| TRANSCRIPT : has
-    TRANSCRIPT ||--o{ TRANSCRIPT_SEGMENT : contains
-    PROJECT ||--o{ CLIP_CANDIDATE : proposes
-    PROJECT ||--o{ CLIP : creates
-    CLIP ||--o{ CLIP_VERSION : versions
-    CLIP_VERSION ||--o{ CAPTION_CUE : contains
+### Transcript segment
+
+| Field | Constraint |
+|---|---|
+| `start_seconds` | At least zero |
+| `end_seconds` | Greater than start |
+| `text` | Recognised text |
+| `confidence` | Optional zero-to-one value |
+
+### Clip candidate
+
+| Field | Meaning |
+|---|---|
+| `id` | UUID string |
+| `start_seconds`, `end_seconds` | Source-time range |
+| `title` | Suggested or user-edited title |
+| `score` | Zero-to-100 editorial heuristic |
+| `confidence` | High, medium or experimental |
+| `reasons` | Grounded selection reasons |
+| `caption_text` | Editable burn-in text |
+| `render_status` | Idle, queued, rendering, ready or failed |
+| `export_url` | Project-bound download route when ready |
+| `render_error` | Safe user-facing failure |
+
+## PostgreSQL physical model
+
+```sql
+create schema if not exists clipmine;
+revoke all on schema clipmine from public;
+
+create table if not exists clipmine.projects (
+  id uuid primary key,
+  payload jsonb not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists projects_updated_at_idx
+  on clipmine.projects (updated_at desc);
 ```
 
-## Project states
+The table is private to the backend connection. It is not designed for Supabase Data API/client access, so no `anon` or `authenticated` grants are added. The FastAPI server owns validation and access for this single-operator build.
 
-- `draft`
-- `uploading`
-- `uploaded`
-- `processing`
-- `ready`
-- `partially_failed`
-- `failed`
-- `deleting`
-- `deleted`
+The index matches the implemented newest-first project list. Project payloads are upserted by ID.
 
-Project state is derived from authoritative upload/job state where possible. Avoid multiple independent flags that can contradict each other.
+## Filesystem model
 
-## Candidate states
+```text
+data/
+  state/
+    projects.json
+  projects/
+    <project-id>/
+      source/
+        source.<safe-extension>
+      exports/
+        <candidate-id>.mp4
+```
 
-- `suggested`
-- `accepted`
-- `rejected`
-- `converted_to_clip`
+Only `projects.json` is used in JSON mode. Project source/export directories are used in both persistence modes.
 
-Keep rejected candidates for short feedback/calibration retention only if the privacy policy permits it; otherwise aggregate or delete them with the project.
+## Integrity rules
 
-## Asset kinds
+- Project and candidate IDs are generated server-side.
+- Candidate time ranges must be positive and remain inside the source duration.
+- Requested maximum clip length must exceed minimum length.
+- The rights flag must be true before any source is persisted as a project.
+- Render paths derive from server-owned IDs, not user filenames.
+- Deleting a project removes both the persisted document and project directory.
+- Updating candidate edit instructions invalidates its previous render state/reference.
 
-- `source`
-- `analysis_proxy`
-- `audio_extract`
-- `candidate_preview`
-- `final_export`
-- `caption_sidecar`
-- `brand_asset`
+## State transitions
 
-## Data integrity rules
+Project happy path:
 
-- Every tenant-owned row carries `workspace_id` directly or through a protected parent.
-- One active source asset per project input version.
-- Clip version numbers unique per clip.
-- Job idempotency key unique per stage/input/pipeline version.
-- Asset object keys unique and never accepted directly from clients.
-- Publication idempotency unique per user-confirmed destination attempt.
-- Deletion states prevent new job creation.
+`uploading → uploaded → processing → ready`
 
-## Index baseline
+Failure/retry:
 
-- Project list: `(workspace_id, created_at desc)` and status
-- Job pickup/recovery: `(state, available_at, priority)` and lease expiry
-- Candidate ranking: `(project_id, rank)`
-- Clip/version lookup: project/clip foreign keys
-- Usage reporting: `(workspace_id, occurred_at)`
-- Audit lookup: target and occurred time
+`uploaded|processing → failed → uploaded`
 
-## Retention
+Candidate render path:
 
-Retention periods are configuration and policy, not buried database defaults. Deleting a project must cover assets, transcript text, derived features, provider files where applicable and caches. Minimal audit/billing records must not retain the media or transcript itself.
+`idle → queued → rendering → ready`
 
+Render failure returns to `failed`; editing returns it to `idle`.
+
+## Public-beta normalisation path
+
+One JSONB document keeps the private proof simple; it is not the final tenant model. Before concurrent multi-user operation, migrate to separate tenant-scoped tables for users/workspaces, projects, assets, jobs, transcripts/segments, candidates, clip versions, caption cues, usage, audit and deletion requests.
+
+The migration must preserve source-time ranges and user edits, add workspace keys/indexes, and use expand/migrate/contract steps. Existing JSONB payloads are suitable migration input but should not remain the only query boundary once list/filter/concurrent-worker access grows.

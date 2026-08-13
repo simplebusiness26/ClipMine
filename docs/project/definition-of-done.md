@@ -2,6 +2,8 @@
 
 A task is done only when the behaviour is implemented, tested, documented and safely operable.
 
+For the private proof, controls explicitly labelled as public-beta requirements may remain deferred only when `PROJECT_CONTEXT.md`, the handoff and security policy say so clearly. A database connection or passing demo does not waive public-launch gates.
+
 ## Every change
 
 - Acceptance criteria are met.
@@ -52,4 +54,3 @@ A task is done only when the behaviour is implemented, tested, documented and sa
 - Monitoring shows healthy API, queue and worker state.
 - Known issues and support impact documented.
 - Production smoke verifies create/upload/process/render/download/delete as applicable.
-

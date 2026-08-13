@@ -7,6 +7,12 @@ Date: 2026-08-13
 
 ClipMine is a mobile-first web application that converts a creator-owned long-form video into several editable vertical video drafts. It uses transcription, semantic analysis and visual signals to find strong self-contained moments, then renders clips with active-speaker framing and captions. The creator reviews every result before download or later platform publishing.
 
+### Implementation snapshot
+
+The repository currently implements the single-trusted-operator vertical slice: original upload, local transcription or timeline fallback, transcript-heuristic candidates, title/trim/caption editing, centre-fit vertical rendering, MP4 download, deletion and optional PostgreSQL metadata. It does not yet implement accounts, resumable object uploads, active-speaker framing, brand controls, durable distributed jobs or social publishing.
+
+Sections below remain the full MVP/public-beta requirements. The implemented subset is tracked in `PROJECT_CONTEXT.md` and the [MVP handoff](../operations/mvp-handoff.md).
+
 ## 2. Goals
 
 - Reduce the time required to find usable moments in long video.
@@ -189,4 +195,3 @@ Targets beyond the prototype are hypotheses and should be set after real baselin
 - Maximum source length and size
 - Supported launch languages
 - Whether collaboration enters before or after direct social publishing
-

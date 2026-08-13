@@ -1,111 +1,117 @@
 # System Architecture
 
-## Context
-
-ClipMine separates the control plane from expensive media work. The browser handles direct media transfer; the API manages permissions and state; workers perform analysis and rendering; private object storage holds source and derived assets.
+## Implemented private MVP
 
 ```mermaid
 flowchart TD
-    U[Creator browser] -->|HTTPS and OAuth| W[Web application]
-    W -->|JSON API| A[Control API]
-    W -->|Signed multipart upload| S[(Private object storage)]
-    A --> D[(PostgreSQL)]
-    A --> Q[(Job queue)]
-    Q --> M[Media and AI workers]
-    M --> S
-    M --> D
-    M --> P[AI provider adapters]
+    B["React browser"] -->|"multipart and JSON"| A["FastAPI application"]
+    A --> P["Pipeline manager"]
+    A --> S["ProjectStore adapter"]
+    P --> M["FFmpeg and isolated Whisper"]
+    S --> D["JSON or PostgreSQL"]
+    P --> V["Private media volume"]
 ```
 
-## Trust boundaries
+The Docker image packages the built browser client and FastAPI into one service. FastAPI serves both the API and production web assets. Vite is a separate development server only.
 
-1. **Public client boundary:** browser data is untrusted; validate again on the server.
-2. **Tenant boundary:** workspace identity scopes all projects, records and assets.
-3. **Worker boundary:** workers receive least-privilege, time-limited access.
-4. **Provider boundary:** only required media/text is shared under configured provider terms.
-5. **Publishing boundary:** social credentials and submission state are isolated from editing.
+## Component responsibilities
 
-## Core components
+### React client
 
-### Web application
+- Upload form and transfer progress
+- Project list and polling
+- Processing/failed/ready states
+- Source-video preview
+- Candidate explanation and confidence display
+- Title, range and caption editor
+- Render and download controls
+- Explicit delete confirmation
 
-- Authentication UX
-- Project/upload management
-- Candidate review and editor
-- Status updates via polling first; server events/websocket only when justified
-- Direct signed upload/download
+### FastAPI
 
-### Control API
+- Request validation and safe response models
+- Multipart stream-to-disk upload
+- Project/candidate commands
+- OpenAPI contract
+- Static web serving in production image
+- Persistence and pipeline composition
 
-- Authorisation and workspace scoping
-- Upload-session orchestration
-- Project and clip commands
-- Job state and idempotency
-- Usage reservations
-- Signed URL issuance
-- Later OAuth and publishing commands
+### Pipeline manager
 
-### PostgreSQL
+- Task deduplication and bounded concurrency
+- Startup recovery
+- Inspection, transcription, candidate generation and render stages
+- Safe failure states
+- Project-directory cleanup
 
-System of record for user-visible state. Large binary media never lives in the database.
+### Media functions
 
-### Queue
+- FFprobe metadata validation
+- Faster Whisper local transcription
+- Transcript/timeline candidate generation
+- SRT cue generation
+- Vertical FFmpeg render
 
-Carries stage IDs rather than raw media. Supports visibility/lease, delayed retry, priority and dead-letter handling.
+### ProjectStore
 
-### Media workers
+- Atomic JSON adapter for database-free use
+- Asyncpg/PostgreSQL adapter when `DATABASE_URL` is present
+- Identical Pydantic project document at the API boundary
 
-- Probe and normalise media
-- Build analysis proxies
-- Extract audio
-- Call transcription/analysis adapters
-- Detect scenes/faces/speakers as configured
-- Render previews and final outputs
+## Data locations
 
-### Object storage
+| Data | JSON mode | PostgreSQL mode |
+|---|---|---|
+| Project state | `data/state/projects.json` | `clipmine.projects.payload` |
+| Source video | Private data volume | Private data volume |
+| Rendered clips | Private data volume | Private data volume |
+| Whisper model cache | Runtime user cache | Runtime user cache |
 
-Separate prefixes/buckets for source, proxy, preview and export. All private. Lifecycle policies enforce retention and abandoned-upload cleanup.
+Connecting PostgreSQL does not move media into the database.
 
-## Project processing sequence
+## Current trust boundary
+
+The whole application is one private trust zone. There is no user identity boundary yet. A random person who can reach the HTTP service can access its projects, media and delete commands. Network access must therefore be restricted to the trusted operator.
+
+Within that boundary:
+
+- Client filenames never determine server directories.
+- IDs are generated server-side.
+- Source extensions and FFprobe content are validated.
+- Candidate IDs must belong to the requested project.
+- Project deletion removes its generated directory.
+- Real `.env`, media, state and outputs are Git-ignored.
+- PostgreSQL objects live in a private schema used only by FastAPI.
+
+## Public-beta target architecture
 
 ```mermaid
-sequenceDiagram
-    participant C as Creator
-    participant A as API
-    participant S as Storage
-    participant Q as Queue
-    participant W as Worker
-
-    C->>A: Create project and upload session
-    A-->>C: Signed multipart instructions
-    C->>S: Upload source parts
-    C->>A: Complete upload
-    A->>Q: Enqueue validation stage
-    Q->>W: Lease stage
-    W->>S: Read source and write proxy/results
-    W->>A: Persist stage result
-    A-->>C: Project ready for candidate review
+flowchart TD
+    C["Authenticated client"] --> W["Web and API"]
+    W --> DB["Tenant-scoped PostgreSQL"]
+    W --> OS["Private object storage"]
+    W --> Q["Durable job queue"]
+    Q --> MW["Media workers"]
+    MW --> OS
+    MW --> DB
 ```
 
-## Availability strategy
+The target retains the current logical commands but changes infrastructure boundaries:
 
-- API replicas are stateless.
-- Jobs are restartable and inputs immutable/versioned.
-- Upload parts and job outputs are reconciled by scheduled maintenance tasks.
-- Provider outages enter retry/backoff without blocking the application.
-- The UI reads persisted state rather than relying on an open connection.
+- Browser uploads directly to private object storage through short-lived instructions.
+- API owns identity, workspace permissions, commands and state.
+- Queue carries opaque stage/project IDs, never raw media or credentials.
+- Workers receive least-privilege asset access and persist idempotent stage results.
+- PostgreSQL queries are workspace-scoped.
+- Media downloads use authenticated, short-lived URLs.
 
-## Scaling path
+## Migration order
 
-Prototype: one API, one worker and managed Postgres/storage.  
-MVP: separate CPU worker pool, concurrency limits and autoscaling from queue depth.  
-Later: GPU or specialised analysis pool only if benchmarks justify it; region-aware media processing and storage policies.
+1. Add authentication and workspace ownership to the API/data model.
+2. Add object-store adapter and copy/delete reconciliation.
+3. Persist explicit job/stage records.
+4. Move the pipeline executor into a worker without changing stage functions.
+5. Add rate limits, usage reservations and retention jobs.
+6. Introduce provider adapters only after quality/cost benchmarks.
 
-## Architecture invariants
-
-- No public source-media URLs.
-- No long media operation inside an interactive request.
-- No unscoped project or asset query.
-- No publisher call without explicit user confirmation.
-- No job result without provider/pipeline version provenance.
-
+The current single-service build remains the reproducible behaviour reference during that migration.

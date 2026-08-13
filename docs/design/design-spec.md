@@ -2,6 +2,12 @@
 
 Status: interaction baseline, not final visual brand
 
+## Implementation snapshot
+
+The current mobile-first React UI implements a branded dark/gold project home, upload form, upload progress, recent projects, processing state, failure/retry state, candidate list, source preview, title/range/caption editor, render/download state and delete confirmation. It uses sticky mobile actions, labelled controls, responsive grids and reduced-motion handling.
+
+Not yet implemented: sign-in, separate navigation sections, transcript search, crop/focus controls, caption themes, undo/redo, export library, offline upload recovery and full WCAG/browser automation. The detailed specification below remains the target for those additions.
+
 ## 1. Experience goal
 
 ClipMine should feel like a calm assistant doing heavy work in the background. The interface must make three things obvious at all times:
@@ -161,4 +167,3 @@ Test at minimum:
 - Empty/loading/error state inventory
 - Usability test results from the chosen beta segment
 - Accessibility review
-

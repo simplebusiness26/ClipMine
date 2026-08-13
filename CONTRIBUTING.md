@@ -1,37 +1,62 @@
 # Contributing
 
-ClipMine is currently documentation-first and pre-MVP.
+ClipMine contains a working private MVP and a documented public-beta path.
+
+## Set up
+
+Follow [local development](docs/operations/local-development.md). Never use customer footage in development or commit real media. The API tests generate synthetic footage.
 
 ## Change workflow
 
-1. Create a focused branch from the current default branch.
-2. Link the work to a requirement, issue or documented decision.
-3. Make the smallest coherent change.
-4. Add tests and update affected documentation.
-5. Run the relevant quality gates.
-6. Open a pull request using the repository template.
+1. Read `PROJECT_CONTEXT.md`, the PRD, technical specification and relevant ADRs.
+2. Create a focused branch from the current default branch.
+3. Inspect current implementation and tests before changing behaviour.
+4. Make the smallest coherent change.
+5. Add/update tests and affected documentation.
+6. Run the relevant quality gates.
+7. Open a pull request using the repository template.
+
+## Quality gates
+
+```bash
+npm run lint:docs
+npm run check:links
+npm run lint:web
+npm run test:web
+npm run build:web
+.venv/bin/ruff check services/api/clipmine_api services/api/tests
+cd services/api && ../../.venv/bin/pytest -q
+```
+
+Media-processing changes need a reproducible synthetic or permissioned fixture and should verify output format, duration, dimensions and edit preservation.
 
 ## Commit guidance
 
-Use short, intention-revealing commit messages, for example:
+Use short, intention-revealing messages, for example:
 
-- `add resumable upload contract`
-- `implement transcript job state machine`
-- `document clip scoring calibration`
+- `add postgres project store`
+- `improve candidate overlap scoring`
+- `verify vertical render dimensions`
 
-## Pull-request expectations
+## Documentation ownership
 
-A pull request must describe its scope, reason, user impact, tests and remaining risks. Media-processing changes should include a small reproducible fixture or a documented test asset that the project has permission to use.
+- Product behaviour: `docs/product/`
+- UI/interaction rules: `docs/design/`
+- Architecture/contracts: `docs/technical/`
+- Local/deployment handoff: `docs/operations/`
+- Privacy/security/rights: `docs/security/`
+- Durable decisions: `docs/decisions/`
 
-## Documentation changes
+Update `PROJECT_CONTEXT.md` when current implementation, scope, database handoff or public-readiness status changes.
 
-- Product behaviour belongs in `docs/product/`.
-- UI rules belong in `docs/design/`.
-- Architecture and contracts belong in `docs/technical/`.
-- Privacy, security and rights rules belong in `docs/security/`.
-- Durable decisions belong in `docs/decisions/`.
+## Security and scope
+
+- Do not introduce arbitrary YouTube downloading or scraping.
+- Do not add unattended social publishing.
+- Do not weaken rights confirmation or private-media handling.
+- Do not claim the current app is multi-user/public-ready.
+- Keep providers behind explicit boundaries and pin dependencies/lockfiles.
 
 ## Licence
 
-No open-source licence has been selected. A public repository without a licence does not automatically grant reuse rights. Resolve licensing before accepting external code contributions.
-
+No open-source licence has been selected. Public repository visibility does not automatically grant reuse rights. Resolve licensing before accepting external code contributions.

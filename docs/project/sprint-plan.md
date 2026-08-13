@@ -1,136 +1,122 @@
-# Sprint Plan
+# Delivery Plan
 
-This is a dependency-ordered build plan. Time estimates should be added only after the team, weekly capacity and provider budget are confirmed.
+This plan starts from the implemented private MVP. Dates depend on team capacity, real-media evaluation and infrastructure budget.
 
-## Milestone 0 — Discovery and evaluation foundation
+## Delivered — private vertical slice
 
-Deliverables:
+- Monorepo with React web and FastAPI API
+- Docker/Compose private runtime
+- Original upload, FFprobe validation and progress UI
+- Local Faster Whisper integration and graceful timeline fallback
+- Candidate heuristics, confidence and selection reasons
+- Lightweight title/trim/caption editing
+- Vertical captioned render, download, retry and deletion
+- JSON/PostgreSQL persistence adapter
+- CI and synthetic end-to-end media test
+- Product, design, technical, security and operations documentation
 
-- Choose one initial creator segment
-- Complete at least 10 discovery interviews or equivalent observed workflows
-- Collect permissioned evaluation videos and labels
-- Establish transcript-only and heuristic candidate baselines
-- Benchmark transcription/render cost on representative files
+Acceptance evidence: automated upload-to-delete media test and repository quality gates pass.
 
-Acceptance:
-
-- Clear beta persona and top workflow documented
-- Evaluation rubric produces reasonable reviewer agreement
-- Initial upload duration/size limits based on measured costs
-
-## Milestone 1 — Repository and local platform
-
-Deliverables:
-
-- Monorepo scaffold
-- Web/API/worker services
-- Docker local environment
-- PostgreSQL migrations
-- Authentication and personal workspace
-- CI quality gates and tiny media fixtures
-
-Acceptance:
-
-- New developer can start the stack from documented commands
-- Authenticated user can create/list a tenant-scoped project
-- Cross-user project tests fail closed
-
-## Milestone 2 — Resumable upload and job skeleton
+## Immediate handoff — database and real-footage smoke
 
 Deliverables:
 
-- Private object storage
-- Multipart upload session API/UI
-- Media validation/probe
-- Queue, worker lease, retry and cancellation model
-- Project progress UI
+- Add a PostgreSQL/Supabase URL in local secret configuration
+- Verify the private schema and health response
+- Complete the manual MVP acceptance test
+- Record CPU time, memory, disk growth and first-model download behaviour
+- Test at least three short, authorised real videos
 
 Acceptance:
 
-- Upload resumes after an interrupted connection
-- Unsupported/corrupt media fails clearly
-- Worker death is recovered without duplicate project state
+- Project metadata survives refresh and container restart in PostgreSQL mode
+- Rendered outputs play correctly on a phone
+- Deleting a project removes its local source and exports
+- Known quality failures are recorded, not hidden by score changes
 
-## Milestone 3 — Transcript and candidate proof
+## Milestone 1 — identity and tenant boundary
 
 Deliverables:
 
-- Proxy/audio stage
-- Transcription adapter with word timing
-- Transcript storage/view
-- Candidate generation, scoring reasons and diversity selection
-- Evaluation harness/version provenance
+- Managed authentication
+- Personal workspace ownership on every resource
+- Server-side authorisation and cross-tenant tests
+- Session/logout/account deletion baseline
+- Production CORS, CSRF/security headers and rate limits
 
 Acceptance:
 
-- One real project yields ranked timestamped candidates
-- Top candidates beat defined baselines on the held-out set
-- “No suitable clips” works without fabricated candidates
+- Unauthenticated and cross-workspace media/state access fail closed
+- Public ingress cannot reach private projects without a valid session
+- Security policy and actual implementation match
 
-## Milestone 4 — Vertical preview and final render
+## Milestone 2 — durable media and jobs
 
 Deliverables:
 
-- Visual focus/face tracks with fallback
-- 9:16 reframing
-- Caption cue generation and theme
-- Candidate preview and final MP4 render
-- Render retry, signed download and golden tests
+- Private object-store adapter
+- Resumable direct multipart upload
+- Explicit assets and jobs schema
+- Durable queue, worker leases, idempotency, retry and cancellation
+- Retention/deletion reconciliation
 
 Acceptance:
 
-- Output passes codec/dimension/A/V-sync checks
-- Multi-speaker fallback is usable
-- Failed render does not lose candidate/edit state
+- Interrupted upload resumes
+- Worker death recovers without duplicate logical output
+- API replicas do not own irreplaceable in-memory job state
+- Project deletion covers database, objects and queued work
 
-## Milestone 5 — Review and lightweight editor
+## Milestone 3 — quality and editor
 
 Deliverables:
 
-- Candidate review/accept/reject
-- Transcript-synchronised trim
-- Caption correction/grouping
-- Crop focus override
-- Mobile-safe editor and version history
+- Permissioned labelled evaluation set
+- Word/sentence boundary and caption timing improvements
+- Language-aware semantic candidate ranking
+- Scene/face/person tracks and safe layout fallbacks
+- Crop focus override and caption themes
+- Browser/accessibility suite
 
 Acceptance:
 
-- User completes upload-to-download on phone and desktop
-- Keyboard does not cover active caption controls
-- Saved edits reproduce the same versioned render
+- Top candidates beat timeline/random baselines on held-out review
+- Outputs pass dimension, codec, duration and A/V-sync golden checks
+- Phone editor remains usable with software keyboard open
+- Low-confidence/no-suitable-content behaviour is honest
 
-## Milestone 6 — Trust, operations and private alpha
+## Milestone 4 — private alpha operations
 
 Deliverables:
 
 - Usage reservation and cost caps
-- Full deletion workflow and reconciliation
-- Admin health/support tooling with audited access
-- Monitoring, alerts, backups and runbooks
-- Rights/takedown and privacy materials
-- Accessibility and security testing
+- Structured logging, metrics, alerts and runbooks
+- Backups and restore drills
+- Rights complaint, takedown, privacy and incident processes
+- Dependency, secret and container scanning
+- Support tooling with audited exceptional access
 
 Acceptance:
 
-- All launch gates in the PRD pass
-- Invited users process projects without developer database intervention
-- Incidents, deletion and provider outage drills complete
+- Invited creators complete projects without developer intervention
+- Cost and processing latency are measurable by source minute
+- Incident, deletion and provider-outage drills succeed
+- All PRD launch gates pass
 
-## Milestone 7 — Beta improvements
+## Milestone 5 — beta and distribution
 
-- Brand kits and templates
-- Quality calibration from consented feedback
-- Better onboarding/recovery
-- Plan/allowance experience
-- Broader source formats/languages based on evidence
+- Brand kits and reusable templates
+- Billing/allowance experience if appropriate
+- Onboarding and lifecycle recovery
+- Official YouTube, TikTok, Instagram and Facebook OAuth/API integrations
+- Explicit publishing confirmation, destination validation and reconciliation
 
-## Milestone 8 — Platform publishing
+Publishing work must not block the export-based product.
 
-- Official OAuth connections
-- Capability registry
-- YouTube upload
-- TikTok/Meta integrations subject to review and account eligibility
-- Publication reconciliation, status and idempotency
+## Explicitly deferred
 
-Publishing work must not block the export-based MVP.
-
+- Arbitrary public-video downloading
+- Unattended mass posting
+- Voice cloning or synthetic presenters
+- Full multitrack editor
+- Claims of guaranteed virality
