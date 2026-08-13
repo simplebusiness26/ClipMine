@@ -14,7 +14,7 @@
     "check:links": "python3 scripts/check_markdown_links.py"
   },
   "devDependencies": {
-    "markdownlint-cli2": "0.20.0"
+    "markdownlint-cli2": "0.23.2"
   },
   "engines": {
     "node": ">=24"
