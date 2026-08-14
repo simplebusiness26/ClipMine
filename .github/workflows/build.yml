@@ -56,11 +56,20 @@ jobs:
 
       # Gradle resolves ':capacitor-android' relative to the process working
       # directory, so it has to run from inside the Android project.
+      # Retried because Maven Central still answers CI runners with HTTP 429
+      # often enough to fail an otherwise healthy build.
       - name: Build debug APK
         working-directory: apps/web/android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          for attempt in 1 2 3; do
+            if ./gradlew assembleDebug --no-daemon; then
+              exit 0
+            fi
+            echo "::warning::Gradle attempt $attempt failed; retrying"
+            sleep $((attempt * 30))
+          done
+          exit 1
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
