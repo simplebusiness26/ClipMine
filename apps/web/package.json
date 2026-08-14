@@ -7,13 +7,17 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
     "lint": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "sync:android": "npm run build && cap sync android"
   },
   "dependencies": {
+    "@capacitor/core": "7.6.8",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@capacitor/android": "7.6.8",
+    "@capacitor/cli": "7.6.8",
     "@types/node": "26.2.0",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
