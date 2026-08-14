@@ -67,6 +67,7 @@ The monorepo contains:
 
 ```text
 apps/web/                 React, TypeScript and Vite client
+apps/web/android/         Capacitor Android shell around the built client
 services/api/             FastAPI API and background pipeline
 db/schema.sql             Inspectable PostgreSQL MVP schema
 docs/                     Product, design, engineering and operations docs
@@ -90,6 +91,25 @@ cd services/api && ../../.venv/bin/pytest -q
 ```
 
 The backend test suite generates synthetic footage during the test, then exercises upload, analysis, edit, render, download and deletion. No customer or copyrighted fixture is committed.
+
+## Build the Android APK
+
+`apps/web/android` is a Capacitor shell that loads the built React client in a native WebView. It is a packaging layer only; every upload, transcript and render still runs on the FastAPI service.
+
+An installable debug APK comes from the **Build Android APK** workflow. Run it from the Actions tab, then download the `clipmine-debug-apk` artifact from the finished run.
+
+The packaged app has no same-origin backend, so the API origin is compiled in. Set a `VITE_API_URL` repository secret to a reachable ClipMine origin under **Settings → Secrets and variables → Actions**, and add that origin to `CLIPMINE_CORS_ORIGINS` on the server. Without the secret the workflow still produces an APK, but it cannot reach any API.
+
+To build locally you need the Android SDK and a JDK 21:
+
+```bash
+npm ci
+VITE_API_URL=https://api.example.com npm run build:web
+npm --workspace @clipmine/web exec cap sync android
+cd apps/web/android && ./gradlew assembleDebug
+```
+
+The APK is written to `apps/web/android/app/build/outputs/apk/debug/app-debug.apk`. It is debug-signed, so it is for sideloading onto your own device, not for store distribution.
 
 ## Current architecture
 
