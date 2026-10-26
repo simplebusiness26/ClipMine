@@ -1,16 +1,10 @@
+import {validateBrowserTarget} from "./target-policy.mjs";
 import { chromium } from "playwright";
 import { mkdir } from "node:fs/promises";
 const base = process.env.NICHES_URL;
 if (!base) throw new Error("NICHES_URL is required; never default to AISO.");
-const target = new URL(base);
-if (/agentcart|ai-seo|ai-so/.test(target.hostname))
-  throw new Error("AISO targets are forbidden.");
-const local = ["localhost", "127.0.0.1"].includes(target.hostname);
 const write = process.env.NICHES_TEST_WRITE === "1";
-if (write && !local)
-  throw new Error(
-    "This disposable journey can only write to localhost. Production smoke is read-only except login.",
-  );
+validateBrowserTarget(base, write);
 const browser = await chromium.launch({ headless: true });
 const findings = [];
 await mkdir("test-results", { recursive: true });
