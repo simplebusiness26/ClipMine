@@ -6,7 +6,7 @@ COPY apps/web/package.json apps/web/package.json
 RUN npm ci
 
 COPY apps/web apps/web
-RUN npm run build:web
+RUN VITE_APP_MODE=clipmine npm run build:web
 
 FROM python:3.12-slim AS runtime
 

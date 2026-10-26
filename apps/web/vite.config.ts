@@ -6,7 +6,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": "http://localhost:8000",
+      "/api": process.env.VITE_APP_MODE === "clipmine" ? "http://localhost:8000" : "http://localhost:8787",
     },
   },
   test: {

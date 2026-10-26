@@ -72,3 +72,43 @@ jobs:
       - name: Test API and media pipeline
         working-directory: services/api
         run: pytest -q
+
+  niches:
+    name: Niches tenant isolation and mobile journey
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install --yes ffmpeg
+      - run: python -m pip install -r services/api/requirements-dev.txt
+      - run: node ops/niches-bridge/clipmine-journey.mjs
+      - run: npm run check:niches
+      - run: npm run test:edge && node --test ops/niches-bridge/config.test.mjs
+      - run: npm run build:web
+      - run: npx playwright install --with-deps chromium
+      - name: Start disposable local application
+        run: |
+          node ops/niches-bridge/local-test-server.mjs > /tmp/niches-local.log 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8787/api/health; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/niches-local.log
+          exit 1
+      - run: npm run test:browser
+        env:
+          NICHES_URL: http://127.0.0.1:8787
+          NICHES_TEST_WRITE: '1'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: niches-browser-evidence
+          path: test-results/

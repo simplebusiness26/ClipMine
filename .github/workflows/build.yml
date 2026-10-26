@@ -40,7 +40,7 @@ jobs:
       - name: Build web bundle
         env:
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
-        run: npm run build:web
+        run: VITE_APP_MODE=clipmine npm run build:web
 
       - name: Sync web bundle into the Android project
         working-directory: apps/web

@@ -1,0 +1,33 @@
+# Niches ONLY. No AISO bindings or routes belong in this file.
+name = "niches"
+main = "services/edge/worker.mjs"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[assets]
+directory = "apps/web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+[vars]
+APP_NAME = "Niches"
+BUILD_SHA = "development"
+# Free-tier bounded uploads; no paid product is automatically provisioned.
+MAX_UPLOAD_MB = "25"
+# Set the following only after confirming the AISO account identity:
+# APP_URL = "https://niches.<confirmed-account-subdomain>.workers.dev"
+# CLIPMINE_ORIGIN = "https://your-private-render-service.example"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "niches"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "niches-media"
+
+[triggers]
+crons = ["*/15 * * * *"]

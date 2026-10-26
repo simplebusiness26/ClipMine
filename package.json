@@ -1,5 +1,5 @@
 {
-  "name": "clipmine",
+  "name": "niches",
   "private": true,
   "version": "0.1.0",
   "workspaces": [
@@ -11,10 +11,17 @@
     "test:web": "npm --workspace @clipmine/web run test",
     "lint:web": "npm --workspace @clipmine/web run lint",
     "lint:docs": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#.venv\"",
-    "check:links": "python3 scripts/check_markdown_links.py"
+    "check:links": "python3 scripts/check_markdown_links.py",
+    "dev:edge": "wrangler dev --port 8787",
+    "test:edge": "node --test services/edge/*.test.mjs",
+    "check:niches": "node ops/niches-bridge/check-config.mjs",
+    "test:browser": "node ops/niches-bridge/browser-smoke.mjs"
   },
   "devDependencies": {
-    "markdownlint-cli2": "0.23.2"
+    "markdownlint-cli2": "0.23.2",
+    "miniflare": "5.20260903.0-alpha",
+    "playwright": "1.55.0",
+    "wrangler": "4.129.0"
   },
   "engines": {
     "node": ">=24"

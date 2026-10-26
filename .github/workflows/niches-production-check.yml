@@ -1,0 +1,46 @@
+name: Niches production bridge (read only)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: niches-production-audit
+  cancel-in-progress: true
+jobs:
+  production-audit:
+    if: vars.NICHES_DEPLOY_ENABLED == 'true'
+    environment: niches-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.NICHES_CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.NICHES_CLOUDFLARE_ACCOUNT_ID }}
+      NICHES_EXPECTED_ACCOUNT_ID: ${{ vars.NICHES_EXPECTED_ACCOUNT_ID }}
+      NICHES_D1_DATABASE_ID: ${{ vars.NICHES_D1_DATABASE_ID }}
+      NICHES_URL: ${{ vars.NICHES_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: bash ops/niches-bridge/production-audit.sh
+  browser-smoke:
+    if: vars.NICHES_DEPLOY_ENABLED == 'true'
+    environment: niches-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NICHES_URL: ${{ vars.NICHES_URL }}
+      NICHES_TEST_EMAIL: ${{ secrets.NICHES_TEST_EMAIL }}
+      NICHES_TEST_PASSWORD: ${{ secrets.NICHES_TEST_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser

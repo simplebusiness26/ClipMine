@@ -1,4 +1,6 @@
 import {
+  createContext,
+  useContext,
   type ChangeEvent,
   type DragEvent,
   type FormEvent,
@@ -8,7 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { api, mediaUrl, uploadProject } from "./api";
+import { api, mediaUrl, uploadProject, setStudioNiche } from "./api";
 import { formatDate, formatDuration, statusLabel } from "./format";
 import type {
   CandidateUpdate,
@@ -17,6 +19,10 @@ import type {
   PublicConfig,
   UploadOptions,
 } from "./types";
+
+const StudioContext = createContext<{ nicheId?: string; onSent?: () => void }>(
+  {},
+);
 
 function Icon({ children, size = 20 }: { children: ReactNode; size?: number }) {
   return (
@@ -54,10 +60,18 @@ function Brand() {
 }
 
 function StatusDot({ status }: { status: Project["status"] }) {
-  return <span aria-hidden="true" className={`status-dot status-dot--${status}`} />;
+  return (
+    <span aria-hidden="true" className={`status-dot status-dot--${status}`} />
+  );
 }
 
-function AppHeader({ onHome, project }: { onHome: () => void; project?: Project }) {
+function AppHeader({
+  onHome,
+  project,
+}: {
+  onHome: () => void;
+  project?: Project;
+}) {
   return (
     <header className="app-header">
       <button className="brand-button" onClick={onHome} type="button">
@@ -89,9 +103,9 @@ function UploadPanel({
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [desiredClips, setDesiredClips] = useState(5);
-  const [lengthPreset, setLengthPreset] = useState<"quick" | "standard" | "deep">(
-    "standard",
-  );
+  const [lengthPreset, setLengthPreset] = useState<
+    "quick" | "standard" | "deep"
+  >("standard");
   const [rightsConfirmed, setRightsConfirmed] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -122,7 +136,9 @@ function UploadPanel({
       return;
     }
     if (!rightsConfirmed) {
-      setError("Confirm that you are authorised to process and republish this video.");
+      setError(
+        "Confirm that you are authorised to process and republish this video.",
+      );
       return;
     }
     const ranges = {
@@ -158,7 +174,10 @@ function UploadPanel({
       <div className="upload-card__intro">
         <span className="eyebrow">New project</span>
         <h2 id="new-project-title">Drop in the long video.</h2>
-        <p>ClipMine will transcribe it, find complete moments and prepare vertical drafts.</p>
+        <p>
+          ClipMine will transcribe it, find complete moments and prepare
+          vertical drafts.
+        </p>
       </div>
       <form onSubmit={submit}>
         <div
@@ -182,19 +201,34 @@ function UploadPanel({
           >
             <span className="drop-zone__icon">
               <Icon size={24}>
-                <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-                <path d="M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+                <path
+                  d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="1.8"
+                />
+                <path
+                  d="M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeWidth="1.8"
+                />
               </Icon>
             </span>
             {file ? (
               <span className="drop-zone__copy">
                 <strong>{file.name}</strong>
-                <small>{(file.size / 1024 / 1024).toFixed(1)} MB · Tap to replace</small>
+                <small>
+                  {(file.size / 1024 / 1024).toFixed(1)} MB · Tap to replace
+                </small>
               </span>
             ) : (
               <span className="drop-zone__copy">
                 <strong>Choose a video</strong>
-                <small>MP4, MOV or WebM · up to {config?.max_upload_mb ?? 1024} MB</small>
+                <small>
+                  MP4, MOV or WebM · up to {config?.max_upload_mb ?? 1024} MB
+                </small>
               </span>
             )}
           </button>
@@ -235,7 +269,11 @@ function UploadPanel({
                   onClick={() => setLengthPreset(preset)}
                   type="button"
                 >
-                  {preset === "quick" ? "15–35s" : preset === "standard" ? "25–60s" : "45–90s"}
+                  {preset === "quick"
+                    ? "15–35s"
+                    : preset === "standard"
+                      ? "25–60s"
+                      : "45–90s"}
                 </button>
               ))}
             </div>
@@ -250,11 +288,17 @@ function UploadPanel({
           />
           <span>
             I own this video or have permission to edit and republish it.
-            <small>ClipMine does not download arbitrary public video links.</small>
+            <small>
+              ClipMine does not download arbitrary public video links.
+            </small>
           </span>
         </label>
 
-        {error && <div className="form-error" role="alert">{error}</div>}
+        {error && (
+          <div className="form-error" role="alert">
+            {error}
+          </div>
+        )}
 
         {uploading && (
           <div className="upload-progress" aria-live="polite">
@@ -263,23 +307,40 @@ function UploadPanel({
           </div>
         )}
 
-        <button className="primary-button primary-button--wide" disabled={uploading} type="submit">
+        <button
+          className="primary-button primary-button--wide"
+          disabled={uploading}
+          type="submit"
+        >
           {uploading ? "Uploading…" : "Mine this video"}
           {!uploading && (
             <Icon size={18}>
-              <path d="M5 12h14m-5-5 5 5-5 5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+              <path
+                d="M5 12h14m-5-5 5 5-5 5"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.8"
+              />
             </Icon>
           )}
         </button>
         <p className="first-run-note">
-          The first local analysis may take longer while the speech model prepares itself.
+          The first local analysis may take longer while the speech model
+          prepares itself.
         </p>
       </form>
     </section>
   );
 }
 
-function ProjectCard({ project, onOpen }: { project: Project; onOpen: () => void }) {
+function ProjectCard({
+  project,
+  onOpen,
+}: {
+  project: Project;
+  onOpen: () => void;
+}) {
   return (
     <button className="project-card" onClick={onOpen} type="button">
       <div className="project-card__thumb">
@@ -299,11 +360,19 @@ function ProjectCard({ project, onOpen }: { project: Project; onOpen: () => void
               ? project.error_message
               : `${project.progress}% complete`}
         </p>
-        <span className="project-card__date">{formatDate(project.created_at)}</span>
+        <span className="project-card__date">
+          {formatDate(project.created_at)}
+        </span>
       </div>
       <span className="project-card__arrow">
         <Icon>
-          <path d="m9 18 6-6-6-6" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+          <path
+            d="m9 18 6-6-6-6"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.8"
+          />
         </Icon>
       </span>
     </button>
@@ -325,16 +394,28 @@ function Dashboard({
     <main>
       <section className="hero">
         <div className="hero__copy">
-          <span className="eyebrow"><span /> AI first-pass editor</span>
-          <h1>Find the gold<br />in every video.</h1>
+          <span className="eyebrow">
+            <span /> AI first-pass editor
+          </span>
+          <h1>
+            Find the gold
+            <br />
+            in every video.
+          </h1>
           <p>
-            Turn one long recording into multiple short-form drafts—complete ideas, clean captions,
-            ready for your final touch.
+            Turn one long recording into multiple short-form drafts—complete
+            ideas, clean captions, ready for your final touch.
           </p>
           <div className="hero__proof">
-            <span><strong>01</strong> Upload once</span>
-            <span><strong>02</strong> Review the moments</span>
-            <span><strong>03</strong> Export vertically</span>
+            <span>
+              <strong>01</strong> Upload once
+            </span>
+            <span>
+              <strong>02</strong> Review the moments
+            </span>
+            <span>
+              <strong>03</strong> Export vertically
+            </span>
           </div>
         </div>
         <UploadPanel config={config} onUploaded={onUploaded} />
@@ -346,15 +427,23 @@ function Dashboard({
             <span className="eyebrow">Your workspace</span>
             <h2>Recent projects</h2>
           </div>
-          <div className={`database-state ${config?.database_connected ? "is-connected" : ""}`}>
+          <div
+            className={`database-state ${config?.database_connected ? "is-connected" : ""}`}
+          >
             <span />
-            {config?.database_connected ? "PostgreSQL connected" : "Local storage · database ready"}
+            {config?.database_connected
+              ? "PostgreSQL connected"
+              : "Local storage · database ready"}
           </div>
         </div>
         {projects.length ? (
           <div className="project-grid">
             {projects.map((project) => (
-              <ProjectCard key={project.id} onOpen={() => onOpen(project.id)} project={project} />
+              <ProjectCard
+                key={project.id}
+                onOpen={() => onOpen(project.id)}
+                project={project}
+              />
             ))}
           </div>
         ) : (
@@ -369,15 +458,25 @@ function Dashboard({
   );
 }
 
-function ProcessingView({ project, onRetry }: { project: Project; onRetry: () => void }) {
+function ProcessingView({
+  project,
+  onRetry,
+}: {
+  project: Project;
+  onRetry: () => void;
+}) {
   if (project.status === "failed") {
     return (
       <div className="processing-state processing-state--error">
         <span className="processing-state__icon">!</span>
         <span className="eyebrow">Analysis stopped</span>
         <h1>This video needs attention.</h1>
-        <p>{project.error_message || "ClipMine could not process this video."}</p>
-        <button className="primary-button" onClick={onRetry} type="button">Try analysis again</button>
+        <p>
+          {project.error_message || "ClipMine could not process this video."}
+        </p>
+        <button className="primary-button" onClick={onRetry} type="button">
+          Try analysis again
+        </button>
       </div>
     );
   }
@@ -389,7 +488,10 @@ function ProcessingView({ project, onRetry }: { project: Project; onRetry: () =>
       </div>
       <span className="eyebrow">ClipMine is working</span>
       <h1>{project.stage}</h1>
-      <p>You can close this page. The project state is saved and will be here when you return.</p>
+      <p>
+        You can close this page. The project state is saved and will be here
+        when you return.
+      </p>
       <div
         aria-label="Video processing progress"
         aria-valuemax={100}
@@ -405,10 +507,42 @@ function ProcessingView({ project, onRetry }: { project: Project; onRetry: () =>
         <span>{project.source_filename}</span>
       </div>
       <ol className="stage-list">
-        <li className={project.progress >= 10 ? "is-done" : "is-active"}>Inspect video</li>
-        <li className={project.progress >= 35 ? "is-done" : project.progress >= 10 ? "is-active" : ""}>Transcribe speech</li>
-        <li className={project.progress >= 72 ? "is-done" : project.progress >= 35 ? "is-active" : ""}>Find complete moments</li>
-        <li className={project.progress >= 100 ? "is-done" : project.progress >= 72 ? "is-active" : ""}>Prepare drafts</li>
+        <li className={project.progress >= 10 ? "is-done" : "is-active"}>
+          Inspect video
+        </li>
+        <li
+          className={
+            project.progress >= 35
+              ? "is-done"
+              : project.progress >= 10
+                ? "is-active"
+                : ""
+          }
+        >
+          Transcribe speech
+        </li>
+        <li
+          className={
+            project.progress >= 72
+              ? "is-done"
+              : project.progress >= 35
+                ? "is-active"
+                : ""
+          }
+        >
+          Find complete moments
+        </li>
+        <li
+          className={
+            project.progress >= 100
+              ? "is-done"
+              : project.progress >= 72
+                ? "is-active"
+                : ""
+          }
+        >
+          Prepare drafts
+        </li>
       </ol>
     </div>
   );
@@ -437,14 +571,21 @@ function CandidateList({
             onClick={() => onSelect(candidate.id)}
             type="button"
           >
-            <span className="candidate-item__number">{String(index + 1).padStart(2, "0")}</span>
+            <span className="candidate-item__number">
+              {String(index + 1).padStart(2, "0")}
+            </span>
             <span className="candidate-item__copy">
               <strong>{candidate.title}</strong>
               <small>
-                {formatDuration(candidate.end_seconds - candidate.start_seconds)} · {statusLabel(candidate.confidence)}
+                {formatDuration(
+                  candidate.end_seconds - candidate.start_seconds,
+                )}{" "}
+                · {statusLabel(candidate.confidence)}
               </small>
             </span>
-            {candidate.render_status === "ready" && <span className="candidate-item__ready">✓</span>}
+            {candidate.render_status === "ready" && (
+              <span className="candidate-item__ready">✓</span>
+            )}
           </button>
         ))}
       </div>
@@ -464,6 +605,9 @@ function ClipEditor({
   onRender: (candidateId: string, update: CandidateUpdate) => Promise<void>;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const studio = useContext(StudioContext);
+  const [sent, setSent] = useState(false);
+  const [sending, setSending] = useState(false);
   const [title, setTitle] = useState(candidate.title);
   const [start, setStart] = useState(candidate.start_seconds);
   const [end, setEnd] = useState(candidate.end_seconds);
@@ -477,7 +621,8 @@ function ClipEditor({
     setEnd(candidate.end_seconds);
     setCaption(candidate.caption_text);
     setError(null);
-    if (videoRef.current) videoRef.current.currentTime = candidate.start_seconds;
+    if (videoRef.current)
+      videoRef.current.currentTime = candidate.start_seconds;
   }, [candidate.id]);
 
   const update: CandidateUpdate = {
@@ -495,7 +640,9 @@ function ClipEditor({
       video.currentTime = start;
       await video.play();
     } catch {
-      setError("The source preview could not start. Try reloading this project.");
+      setError(
+        "The source preview could not start. Try reloading this project.",
+      );
     }
   };
 
@@ -510,7 +657,9 @@ function ClipEditor({
       setError(null);
       await onSave(candidate.id, update);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not save this draft.");
+      setError(
+        caught instanceof Error ? caught.message : "Could not save this draft.",
+      );
     } finally {
       setSaving(false);
     }
@@ -522,20 +671,27 @@ function ClipEditor({
       setError(null);
       await onRender(candidate.id, update);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not start the render.");
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Could not start the render.",
+      );
     } finally {
       setSaving(false);
     }
   };
 
-  const rendering = candidate.render_status === "queued" || candidate.render_status === "rendering";
+  const rendering =
+    candidate.render_status === "queued" ||
+    candidate.render_status === "rendering";
   const dirty =
     title.trim() !== candidate.title ||
     Number(start) !== candidate.start_seconds ||
     Number(end) !== candidate.end_seconds ||
     caption !== candidate.caption_text;
   const captionPreview =
-    caption.trim().split(/\s+/).slice(0, 7).join(" ") || "Your captions will appear here";
+    caption.trim().split(/\s+/).slice(0, 7).join(" ") ||
+    "Your captions will appear here";
 
   return (
     <section className="editor-shell">
@@ -550,9 +706,19 @@ function ClipEditor({
             src={mediaUrl(project.source_url)}
           />
           <div className="caption-preview">{captionPreview}</div>
-          <button aria-label="Play selected clip" className="preview-play" onClick={playClip} type="button">
+          <button
+            aria-label="Play selected clip"
+            className="preview-play"
+            onClick={playClip}
+            type="button"
+          >
             <Icon size={24}>
-              <path d="m9 7 8 5-8 5V7Z" fill="currentColor" stroke="currentColor" strokeLinejoin="round" />
+              <path
+                d="m9 7 8 5-8 5V7Z"
+                fill="currentColor"
+                stroke="currentColor"
+                strokeLinejoin="round"
+              />
             </Icon>
           </button>
           <div className="safe-area" aria-hidden="true" />
@@ -566,15 +732,23 @@ function ClipEditor({
       <div className="editor-panel">
         <div className="editor-panel__top">
           <div>
-            <span className={`confidence confidence--${candidate.confidence}`}>{candidate.confidence}</span>
+            <span className={`confidence confidence--${candidate.confidence}`}>
+              {candidate.confidence}
+            </span>
             <span className="muted-label">AI selection</span>
           </div>
-          <button className="text-button" onClick={playClip} type="button">Preview range</button>
+          <button className="text-button" onClick={playClip} type="button">
+            Preview range
+          </button>
         </div>
 
         <label className="field">
           <span>Clip title</span>
-          <input maxLength={100} onChange={(event) => setTitle(event.target.value)} value={title} />
+          <input
+            maxLength={100}
+            onChange={(event) => setTitle(event.target.value)}
+            value={title}
+          />
         </label>
 
         <div className="time-fields">
@@ -610,37 +784,114 @@ function ClipEditor({
             rows={7}
             value={caption}
           />
-          <small>{caption.split(/\s+/).filter(Boolean).length} words · split automatically for export</small>
+          <small>
+            {caption.split(/\s+/).filter(Boolean).length} words · split
+            automatically for export
+          </small>
         </label>
 
         <div className="selection-reasons">
           <span>Why ClipMine chose this</span>
           <ul>
-            {candidate.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+            {candidate.reasons.map((reason) => (
+              <li key={reason}>{reason}</li>
+            ))}
           </ul>
         </div>
 
         {(error || candidate.render_error) && (
-          <div className="form-error" role="alert">{error || candidate.render_error}</div>
+          <div className="form-error" role="alert">
+            {error || candidate.render_error}
+          </div>
         )}
 
+        {studio.nicheId && candidate.render_status === "ready" && !dirty && (
+          <button
+            className="primary-button"
+            disabled={sending || sent}
+            type="button"
+            onClick={async () => {
+              setSending(true);
+              setError(null);
+              try {
+                const response = await fetch(
+                  `/api/niches/${studio.nicheId}/clips/import`,
+                  {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      project_id: project.id,
+                      candidate_id: candidate.id,
+                      title: candidate.title,
+                    }),
+                  },
+                );
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail);
+                setSent(true);
+                studio.onSent?.();
+              } catch (error) {
+                setError((error as Error).message);
+              } finally {
+                setSending(false);
+              }
+            }}
+          >
+            {sent
+              ? "Sent to your niche ✓"
+              : sending
+                ? "Sending…"
+                : "Send to Niches ↗"}
+          </button>
+        )}
         <div className="editor-actions">
-          <button className="secondary-button" disabled={saving} onClick={save} type="button">
+          <button
+            className="secondary-button"
+            disabled={saving}
+            onClick={save}
+            type="button"
+          >
             {saving ? "Saving…" : "Save draft"}
           </button>
-          {candidate.render_status === "ready" && candidate.export_url && !dirty ? (
-            <a className="primary-button" download href={mediaUrl(candidate.export_url)}>
+          {candidate.render_status === "ready" &&
+          candidate.export_url &&
+          !dirty ? (
+            <a
+              className="primary-button"
+              download
+              href={mediaUrl(candidate.export_url)}
+            >
               Download MP4
               <Icon size={18}>
-                <path d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+                <path
+                  d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="1.8"
+                />
               </Icon>
             </a>
           ) : (
-            <button className="primary-button" disabled={saving || rendering} onClick={render} type="button">
-              {rendering ? "Rendering…" : dirty && candidate.render_status === "ready" ? "Render updated clip" : "Render vertical clip"}
+            <button
+              className="primary-button"
+              disabled={saving || rendering}
+              onClick={render}
+              type="button"
+            >
+              {rendering
+                ? "Rendering…"
+                : dirty && candidate.render_status === "ready"
+                  ? "Render updated clip"
+                  : "Render vertical clip"}
               {!rendering && (
                 <Icon size={18}>
-                  <path d="m9 7 8 5-8 5V7Z" fill="currentColor" stroke="currentColor" strokeLinejoin="round" />
+                  <path
+                    d="m9 7 8 5-8 5V7Z"
+                    fill="currentColor"
+                    stroke="currentColor"
+                    strokeLinejoin="round"
+                  />
                 </Icon>
               )}
             </button>
@@ -703,14 +954,22 @@ function ProjectWorkspace({
           <div>
             <button className="back-button" onClick={onHome} type="button">
               <Icon size={18}>
-                <path d="m15 18-6-6 6-6" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+                <path
+                  d="m15 18-6-6 6-6"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="1.8"
+                />
               </Icon>
               All projects
             </button>
             <span className="eyebrow">Ready to shape</span>
             <h1>{project.title}</h1>
             <p>
-              {formatDuration(project.duration_seconds)} source · {project.candidates.length} distinct moments · {statusLabel(project.analysis_mode || "analysis")}
+              {formatDuration(project.duration_seconds)} source ·{" "}
+              {project.candidates.length} distinct moments ·{" "}
+              {statusLabel(project.analysis_mode || "analysis")}
             </p>
           </div>
           <button
@@ -720,7 +979,13 @@ function ProjectWorkspace({
             type="button"
           >
             <Icon size={18}>
-              <path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" />
+              <path
+                d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.7"
+              />
             </Icon>
             Delete project
           </button>
@@ -729,13 +994,18 @@ function ProjectWorkspace({
         {project.analysis_mode === "timeline-fallback" && (
           <div className="fallback-banner">
             <strong>Timeline suggestions are active.</strong>
-            Local transcription was unavailable, so review the ranges and add captions before export.
+            Local transcription was unavailable, so review the ranges and add
+            captions before export.
           </div>
         )}
 
         {candidate ? (
           <div className="workspace-grid">
-            <CandidateList onSelect={setSelectedId} project={project} selectedId={selectedId} />
+            <CandidateList
+              onSelect={setSelectedId}
+              project={project}
+              selectedId={selectedId}
+            />
             <ClipEditor
               candidate={candidate}
               key={candidate.id}
@@ -745,14 +1015,20 @@ function ProjectWorkspace({
             />
           </div>
         ) : (
-          <div className="empty-projects"><h3>No suitable moments were found.</h3></div>
+          <div className="empty-projects">
+            <h3>No suitable moments were found.</h3>
+          </div>
         )}
       </main>
     </>
   );
 }
 
-function App() {
+function App({
+  nicheId,
+  onSent,
+}: { nicheId?: string; onSent?: () => void } = {}) {
+  setStudioNiche(nicheId);
   const initialId = window.location.hash.startsWith("#project/")
     ? window.location.hash.slice("#project/".length)
     : null;
@@ -778,7 +1054,9 @@ function App() {
       setProjects(next);
     } catch (caught) {
       if (!quiet) {
-        setGlobalError(caught instanceof Error ? caught.message : "ClipMine is unavailable.");
+        setGlobalError(
+          caught instanceof Error ? caught.message : "ClipMine is unavailable.",
+        );
       }
     } finally {
       if (!quiet) setLoading(false);
@@ -788,7 +1066,10 @@ function App() {
   useEffect(() => {
     void Promise.all([
       refresh(),
-      api.config().then(setConfig).catch(() => setConfig(null)),
+      api
+        .config()
+        .then(setConfig)
+        .catch(() => setConfig(null)),
     ]);
     const interval = window.setInterval(() => void refresh(true), 2500);
     return () => window.clearInterval(interval);
@@ -828,19 +1109,30 @@ function App() {
     try {
       updateProject(await api.retry(selected.id));
     } catch (caught) {
-      setGlobalError(caught instanceof Error ? caught.message : "Could not retry project.");
+      setGlobalError(
+        caught instanceof Error ? caught.message : "Could not retry project.",
+      );
     }
   };
 
   const remove = async () => {
     if (!selected) return;
-    if (!window.confirm("Delete this project, its source video and all rendered clips?")) return;
+    if (
+      !window.confirm(
+        "Delete this project, its source video and all rendered clips?",
+      )
+    )
+      return;
     try {
       await api.deleteProject(selected.id);
-      setProjects((current) => current.filter((item) => item.id !== selected.id));
+      setProjects((current) =>
+        current.filter((item) => item.id !== selected.id),
+      );
       goHome();
     } catch (caught) {
-      setGlobalError(caught instanceof Error ? caught.message : "Could not delete project.");
+      setGlobalError(
+        caught instanceof Error ? caught.message : "Could not delete project.",
+      );
     }
   };
 
@@ -854,41 +1146,47 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
-      {globalError && (
-        <div className="global-error" role="alert">
-          <span>{globalError}</span>
-          <button onClick={() => setGlobalError(null)} type="button">Dismiss</button>
-        </div>
-      )}
-      {selected ? (
-        <ProjectWorkspace
-          onDelete={remove}
-          onHome={goHome}
-          onRetry={retry}
-          onUpdate={updateProject}
-          project={selected}
-        />
-      ) : (
-        <>
-          <AppHeader onHome={goHome} />
-          <Dashboard
-            config={config}
-            onOpen={openProject}
-            onUploaded={(project) => {
-              updateProject(project);
-              openProject(project.id);
-            }}
-            projects={projects}
+    <StudioContext.Provider value={{ nicheId, onSent }}>
+      <div className="app-shell">
+        {globalError && (
+          <div className="global-error" role="alert">
+            <span>{globalError}</span>
+            <button onClick={() => setGlobalError(null)} type="button">
+              Dismiss
+            </button>
+          </div>
+        )}
+        {selected ? (
+          <ProjectWorkspace
+            onDelete={remove}
+            onHome={goHome}
+            onRetry={retry}
+            onUpdate={updateProject}
+            project={selected}
           />
-          <footer>
-            <Brand />
-            <p>Private-by-default video repurposing. Built for creator control.</p>
-            <span>MVP 0.1</span>
-          </footer>
-        </>
-      )}
-    </div>
+        ) : (
+          <>
+            <AppHeader onHome={goHome} />
+            <Dashboard
+              config={config}
+              onOpen={openProject}
+              onUploaded={(project) => {
+                updateProject(project);
+                openProject(project.id);
+              }}
+              projects={projects}
+            />
+            <footer>
+              <Brand />
+              <p>
+                Private-by-default video repurposing. Built for creator control.
+              </p>
+              <span>MVP 0.1</span>
+            </footer>
+          </>
+        )}
+      </div>
+    </StudioContext.Provider>
   );
 }
 

@@ -1,4 +1,18 @@
-# ClipMine Project Context
+# Niches Project Context
+
+Last updated: 2026-10-26
+
+## Current product and source of truth
+
+Niches is the new product inside this existing ClipMine repository. ClipMine remains the long-video studio. The owner explicitly authorised this expansion on 2026-10-26. The private-only scope below is historical, not the new target.
+
+Start with the [Niches roadmap](docs/product/niches-roadmap.md), [audit/rollout](docs/operations/niches-audit-and-rollout.md) and [architecture decision](docs/decisions/ADR-007-niches-cloudflare-boundary.md). Exact checks belong in CI/PR evidence.
+
+Implemented locally: authenticated niche portal, D1 ownership model, private R2 library, upload/search, drafts and platform metadata, export reminders/calendar, brand kits, ideas, manual revenue, notifications and guarded ClipMine gateway/import.
+
+Not production verified: Cloudflare account identity, resource provisioning, deployment, email delivery, remote render hosting, real device/backup recovery and all direct social integrations. Do not describe placeholders as integrations or reminders as published posts. The Cloudflare deployment guard must not be bypassed.
+
+## Historical ClipMine baseline
 
 Last updated: 2026-08-13
 
