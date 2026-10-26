@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/simplebusiness26/ClipMine/actions/workflows/ci.yml/badge.svg)](https://github.com/simplebusiness26/ClipMine/actions/workflows/ci.yml)
 
-Niches is being built in this repository as a portal for independent content brands. Its authenticated Cloudflare-compatible foundation is locally tested, but **it is not deployed and direct social publishing is not implemented yet**.
+Niches is being built in this repository as a portal for independent content brands. Its partial portal is live at **<https://niches.ai-seo.workers.dev>** with verified accounts, niche creation and text drafts. **Media uploads are disabled pending R2 access; direct social publishing and hosted ClipMine processing are not enabled.**
 
 Start with the [Niches roadmap](docs/product/niches-roadmap.md) and [Cloudflare audit and rollout](docs/operations/niches-audit-and-rollout.md). The dedicated Worker, database and bucket must be configured in the confirmed AISO account, without touching AISO resources.
 

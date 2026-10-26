@@ -10,7 +10,7 @@ Start with the [Niches roadmap](docs/product/niches-roadmap.md), [audit/rollout]
 
 Implemented locally: authenticated niche portal, D1 ownership model, private R2 library, upload/search, drafts and platform metadata, export reminders/calendar, brand kits, ideas, manual revenue, notifications and guarded ClipMine gateway/import.
 
-Not production verified: Cloudflare account identity, resource provisioning, deployment, email delivery, remote render hosting, real device/backup recovery and all direct social integrations. Do not describe placeholders as integrations or reminders as published posts. The Cloudflare deployment guard must not be bypassed.
+Production follow-up: the isolated Niches portal is deployed in AISO’s Cloudflare account and passed live registration/session/niche/text-draft checks and public mobile/authenticated dashboard smoke. R2 access returned 403, so uploads are explicitly disabled. Not production verified: media storage/transfer, email delivery, remote render hosting, real device/backup recovery and all direct social integrations. Do not describe placeholders as integrations or reminders as published posts. The Cloudflare deployment guard must not be bypassed.
 
 ## Historical ClipMine baseline
 
