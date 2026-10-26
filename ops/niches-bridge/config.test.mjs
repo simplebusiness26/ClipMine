@@ -45,3 +45,11 @@ test("deployment rejects additional bindings or an unpinned configured database"
     ),
   );
 });
+
+import {validateBrowserTarget} from './target-policy.mjs';
+test('browser policy allows Niches in the AISO namespace without allowing the AISO Worker',()=>{
+ validateBrowserTarget('https://niches.ai-seo.workers.dev');
+ validateBrowserTarget('http://127.0.0.1:8787',true);
+ for(const url of ['https://agentcart.ai-seo.workers.dev','https://agentcart.ai-so.workers.dev','https://niches.evil.example','http://niches.ai-seo.workers.dev']) assert.throws(()=>validateBrowserTarget(url));
+ assert.throws(()=>validateBrowserTarget('https://niches.ai-seo.workers.dev',true));
+});
