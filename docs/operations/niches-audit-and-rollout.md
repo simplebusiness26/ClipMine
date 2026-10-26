@@ -1,8 +1,26 @@
 # Niches audit and rollout
 
-Audit date: 2026-10-26. This is an implementation and access record, not a production completion claim.
+Audit date: 2026-10-26. The follow-up below supersedes the initial access/deployment blockers; the initial audit remains as historical evidence.
 
-## Evidence inspected
+## Live portal follow-up — 2026-10-26
+
+The portal is live at <https://niches.ai-seo.workers.dev>. It uses a distinct `niches` Worker and D1 database `4f2a701e-6960-48b3-82b5-096cabb3aeaf` in the account reached by AISO's existing deployment credentials. Credentials stayed inside AISO Actions; their values were not retrieved or copied into ClipMine.
+
+- Deployed source: `60065bab5bbbe8bf678d7fc9bc52e37750f55689`.
+- Worker version: `e3ef8e5e-8f88-459c-9ea6-dca44e11adb9`.
+- [Successful isolated deployment and live acceptance](https://github.com/simplebusiness26/agentCart/actions/runs/40263889919).
+- [Successful source CI](https://github.com/simplebusiness26/ClipMine/actions/runs/40263868870).
+- [Foundation PR](https://github.com/simplebusiness26/ClipMine/pull/2) and [browser policy correction](https://github.com/simplebusiness26/ClipMine/pull/3) are merged.
+- Actual live checks passed: anonymous protection, registration, session cookie, niche creation, text draft persistence, logout, login, public mobile layout and authenticated dashboard heading.
+- Source CI passed 12 edge tests, 3 configuration/target-policy tests, 9 Python tests and 3 frontend tests, plus the real local FFmpeg/R2 journey and 12-section/five-width browser matrix.
+
+R2 access returned HTTP 403. The reason (token scope versus service availability) is not yet established. Production deliberately omits the R2 binding, shows a storage-unavailable notice and disables uploads; media writes return an explicit 503. Library transfer and rendering remain verified locally only. No R2, Containers, queues or paid AI product was enabled. Hosted ClipMine, reset email, official social OAuth/publishing and provider analytics remain unfinished.
+
+Operational launcher: `.github/workflows/niches-portal-deploy.yml` on `ops/niches-cloudflare` in `simplebusiness26/agentCart`. Pushes changing that launcher trigger it with an immutable ClipMine revision. A separate read-only access check is in the same branch. These operations do not trigger AISO's main-branch application deploy workflow. Future source revisions require updating the launcher's pin; fully automatic cross-repository release triggering remains roadmap work. ClipMine's separate environment-based deploy workflow remains disabled until its project-specific credentials are configured.
+
+No legacy deployment or data was migrated or deleted, and AISO main/application resources were unchanged. A Niches D1 recovery bookmark was retained before the second migration pass. This is a partially operational portal, not completion of the full product.
+
+## Initial audit evidence
 
 | Source | Finding |
 | --- | --- |
@@ -86,7 +104,7 @@ Keep the former deployment and backups until all acceptance gates pass. No produ
 
 ## Costs and limits
 
-No paid products have been enabled and no deployment occurred. Incremental infrastructure spend from this work is zero.
+No paid products or plan upgrades have been enabled. The partial Workers/D1 portal is now deployed. Actual account billing/usage has not been independently inspected, so no guaranteed monthly bill is claimed.
 
 A small portal may fit Workers/D1 free allowances, but this is conditional on account usage, R2 eligibility and actual load. Workers Free has 10 ms CPU/request and 100,000 requests/day. Password hashing and authenticated workloads require a production benchmark; do not weaken password hashing to force a free-tier launch. Application uploads are capped at 25 MB each and nominally 250 MB/100 assets per user. Concurrent quota reservations, account creation abuse and resumable uploads remain launch work.
 
