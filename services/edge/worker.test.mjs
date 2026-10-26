@@ -385,3 +385,16 @@ test("password reset is one-time and revokes existing sessions", async () => {
     },
   });
 });
+
+test('storage-disabled deployment keeps drafts available and fails uploads clearly', async () => {
+  const { default: worker } = await import('./worker.mjs');
+  const login = await checked('/api/auth/login', {method:'POST',data:{email:'first@example.test',password:'A replacement long password'}});
+  const headers={origin:'http://localhost',cookie:login.cookie};
+  const config=await worker.fetch(new Request('http://localhost/api/config',{headers}),{DB:db});
+  assert.equal((await config.json()).storage_available,false);
+  const response=await worker.fetch(new Request(`http://localhost/api/niches/${niche}/media`,{method:'POST',headers,body:'file'}),{DB:db});
+  assert.equal(response.status,503);
+  assert.match((await response.json()).detail,/storage access/);
+  const drafts=await worker.fetch(new Request(`http://localhost/api/niches/${niche}/posts`,{headers}),{DB:db});
+  assert.equal(drafts.status,200);
+});

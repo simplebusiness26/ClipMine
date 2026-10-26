@@ -432,6 +432,7 @@ async function api(request, env) {
       render_size: [720, 1280],
       authentication: "niches",
       clipmine_available: !!(env.CLIPMINE_ORIGIN && env.CLIPMINE_GATEWAY_KEY),
+      storage_available: !!env.MEDIA,
     });
   if (
     path === "/api/projects" ||
@@ -619,6 +620,7 @@ async function api(request, env) {
       ),
     );
   if (sub === "media" && method === "POST") {
+    if (!env.MEDIA) fail(503, "Media uploads are temporarily unavailable while private storage access is configured.");
     const length = Number(request.headers.get("content-length")),
       max = Number(env.MAX_UPLOAD_MB || 25) * 1024 * 1024;
     if (!length || length > max)
@@ -667,6 +669,7 @@ async function api(request, env) {
       niche.id,
     );
     if (!media) fail(404, "Media not found");
+    if (!env.MEDIA) fail(503, "Private media storage is temporarily unavailable.");
     const partial = request.headers.has("range");
     const object = await env.MEDIA.get(
       media.object_key,
@@ -692,6 +695,7 @@ async function api(request, env) {
     });
   }
   if (sub === "clips/import" && method === "POST") {
+    if (!env.MEDIA) fail(503, "Private media storage must be connected before importing clips.");
     const data = await body(request),
       project = textValue(data.project_id, 80, true),
       candidate = textValue(data.candidate_id, 80, true);

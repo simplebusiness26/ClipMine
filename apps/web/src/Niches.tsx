@@ -609,6 +609,7 @@ function Workspace({
     [error, setError] = useState(""),
     [status, setStatus] = useState(""),
     [busy, setBusy] = useState(false),
+    [storageAvailable, setStorageAvailable] = useState(false),
     [draft, setDraft] = useState<Post | null>(null),
     [selectedMedia, setSelectedMedia] = useState(""),
     [destinations, setDestinations] = useState<string[]>([]),
@@ -617,7 +618,7 @@ function Workspace({
     });
   async function load() {
     try {
-      const [m, p, a, pr, ac, i, r, an] = await Promise.all([
+      const [m, p, a, pr, ac, i, r, an, capabilities] = await Promise.all([
         call<Media[]>(base + "/media"),
         call<Post[]>(base + "/posts"),
         call<SocialAccount[]>(base + "/accounts"),
@@ -626,7 +627,9 @@ function Workspace({
         call<Idea[]>(base + "/ideas"),
         call<Revenue[]>(base + "/revenue"),
         call<{ source: string }>(base + "/analytics"),
+        call<{storage_available:boolean}>("/api/config"),
       ]);
+      setStorageAvailable(capabilities.storage_available);
       setMedia(m);
       setPosts(p);
       setAccounts(a);
@@ -867,6 +870,7 @@ function Workspace({
       {(tab === "Content" || tab === "Create") && (
         <>
           <section className="n-upload">
+            {!storageAvailable && <div className="n-status-note" role="status">Media uploads are temporarily unavailable while private storage access is configured. You can still manage niches, ideas and text drafts.</div>}
             <span aria-hidden="true">↑</span>
             <h2>Drop your next great post here.</h2>
             <p>
@@ -879,7 +883,7 @@ function Workspace({
                 type="file"
                 multiple
                 accept="video/mp4,video/quicktime,video/webm,image/jpeg,image/png,image/webp"
-                disabled={busy}
+                disabled={busy || !storageAvailable}
                 onChange={(e) => void upload(e.target.files)}
               />
             </label>
