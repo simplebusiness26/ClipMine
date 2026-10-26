@@ -29,3 +29,10 @@ data/
 .idea/
 .vscode/
 
+
+# Niches local edge state and browser evidence
+.wrangler/
+.dev.vars
+test-results/
+playwright-report/
+wrangler.production.toml

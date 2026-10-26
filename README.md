@@ -1,6 +1,24 @@
-# ClipMine
+# Niches
 
 [![CI](https://github.com/simplebusiness26/ClipMine/actions/workflows/ci.yml/badge.svg)](https://github.com/simplebusiness26/ClipMine/actions/workflows/ci.yml)
+
+Niches is being built in this repository as a portal for independent content brands. Its authenticated Cloudflare-compatible foundation is locally tested, but **it is not deployed and direct social publishing is not implemented yet**.
+
+Start with the [Niches roadmap](docs/product/niches-roadmap.md) and [Cloudflare audit and rollout](docs/operations/niches-audit-and-rollout.md). The dedicated Worker, database and bucket must be configured in the confirmed AISO account, without touching AISO resources.
+
+## Run the Niches local acceptance app
+
+```bash
+npm ci
+npm run build:web
+node ops/niches-bridge/local-test-server.mjs
+```
+
+Open <http://localhost:8787>. This disposable test app uses local D1/R2 and loses its test state when stopped. For the complete isolated checks, run `npm run test:edge` and `node --test ops/niches-bridge/config.test.mjs`. The browser journey needs Playwright Chromium installed; see the CI workflow.
+
+The sections below document the preserved **private ClipMine studio**, including its original storage and processing boundaries. For local Vite studio development use `VITE_APP_MODE=clipmine npm run dev:web`. Docker and the legacy Android build keep that mode.
+
+## Preserved ClipMine studio
 
 ClipMine turns creator-owned long-form video into several editable vertical clips. It finds candidate moments, lets the creator trim and correct them, burns captions into a 9:16 MP4, and keeps a human in control of every export.
 

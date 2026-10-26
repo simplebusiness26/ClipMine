@@ -15,7 +15,7 @@ services:
       - clipmine-data:/app/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      test: ["CMD", "python", "-c", "import os, urllib.request; urllib.request.urlopen(urllib.request.Request('http://localhost:8000/api/health', headers={'X-Niches-Gateway-Key': os.getenv('NICHES_GATEWAY_KEY', '')}))"]
       interval: 30s
       timeout: 5s
       retries: 5

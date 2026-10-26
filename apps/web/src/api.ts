@@ -5,7 +5,14 @@ import type {
   UploadOptions,
 } from "./types";
 
-const API_ORIGIN = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "") ?? "";
+let studioNiche: string | undefined;
+export function setStudioNiche(niche?: string) {
+  studioNiche = niche;
+}
+
+const API_ORIGIN =
+  (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "") ??
+  "";
 
 async function parseError(response: Response): Promise<string> {
   try {
@@ -20,7 +27,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_ORIGIN}${path}`, {
     ...init,
     headers: {
-      ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+      ...(init?.body instanceof FormData
+        ? {}
+        : { "Content-Type": "application/json" }),
       ...init?.headers,
     },
   });
@@ -41,19 +50,31 @@ export function mediaUrl(path: string): string {
 
 export const api = {
   config: () => request<PublicConfig>("/api/config"),
-  projects: () => request<Project[]>("/api/projects"),
+  projects: () =>
+    request<Project[]>(
+      `/api/projects${studioNiche ? `?niche_id=${encodeURIComponent(studioNiche)}` : ""}`,
+    ),
   project: (id: string) => request<Project>(`/api/projects/${id}`),
-  retry: (id: string) => request<Project>(`/api/projects/${id}/retry`, { method: "POST" }),
-  updateCandidate: (projectId: string, candidateId: string, update: CandidateUpdate) =>
+  retry: (id: string) =>
+    request<Project>(`/api/projects/${id}/retry`, { method: "POST" }),
+  updateCandidate: (
+    projectId: string,
+    candidateId: string,
+    update: CandidateUpdate,
+  ) =>
     request<Project>(`/api/projects/${projectId}/candidates/${candidateId}`, {
       method: "PATCH",
       body: JSON.stringify(update),
     }),
   renderCandidate: (projectId: string, candidateId: string) =>
-    request<Project>(`/api/projects/${projectId}/candidates/${candidateId}/render`, {
-      method: "POST",
-    }),
-  deleteProject: (id: string) => request<void>(`/api/projects/${id}`, { method: "DELETE" }),
+    request<Project>(
+      `/api/projects/${projectId}/candidates/${candidateId}/render`,
+      {
+        method: "POST",
+      },
+    ),
+  deleteProject: (id: string) =>
+    request<void>(`/api/projects/${id}`, { method: "DELETE" }),
 };
 
 export function uploadProject(
@@ -71,14 +92,18 @@ export function uploadProject(
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_ORIGIN}/api/projects`);
+    xhr.open(
+      "POST",
+      `${API_ORIGIN}/api/projects${studioNiche ? `?niche_id=${encodeURIComponent(studioNiche)}` : ""}`,
+    );
     xhr.responseType = "json";
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) {
         onProgress(Math.round((event.loaded / event.total) * 100));
       }
     };
-    xhr.onerror = () => reject(new Error("Upload failed. Check your connection and try again."));
+    xhr.onerror = () =>
+      reject(new Error("Upload failed. Check your connection and try again."));
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve(xhr.response as Project);
@@ -90,4 +115,3 @@ export function uploadProject(
     xhr.send(body);
   });
 }
-

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import secrets
 import shutil
 import uuid
 from collections.abc import AsyncIterator
@@ -58,6 +60,19 @@ app = FastAPI(
     description="Database-optional MVP API for turning long video into short-form drafts.",
     lifespan=lifespan,
 )
+
+@app.middleware("http")
+async def require_gateway(request: Request, call_next):
+    # Legacy local usage remains possible. Public hosting MUST set this key and
+    # expose the renderer only behind the authenticated Niches edge gateway.
+    expected = os.getenv("NICHES_GATEWAY_KEY")
+    supplied = request.headers.get("x-niches-gateway-key", "")
+    if expected and not secrets.compare_digest(supplied, expected):
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse({"detail": "Rendering gateway authorisation required"}, status_code=401)
+    return await call_next(request)
+
 
 startup_settings = Settings.from_env()
 app.add_middleware(

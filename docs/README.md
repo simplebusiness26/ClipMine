@@ -57,3 +57,9 @@ When documents conflict, use this order:
 5. Old issues, prompts or chat summaries
 
 `PROJECT_CONTEXT.md` is the concise record of what is actually implemented. Update it whenever a decision or implementation materially changes.
+
+## Niches product transition
+
+- [Niches roadmap](product/niches-roadmap.md)
+- [Audit, deployment and rollback](operations/niches-audit-and-rollout.md)
+- [Cloudflare and renderer architecture](decisions/ADR-007-niches-cloudflare-boundary.md)

@@ -1,0 +1,53 @@
+name: Deploy Niches to confirmed AISO Cloudflare account
+on:
+  push:
+    branches: [main]
+    paths: ['services/edge/**', 'apps/web/**', 'migrations/**', 'ops/niches-bridge/**', 'wrangler.toml', 'package*.json', '.github/workflows/niches-deploy.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: niches-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    # Opt in only after account identity, free allowance and Niches resources are verified.
+    if: vars.NICHES_DEPLOY_ENABLED == 'true'
+    environment: niches-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.NICHES_CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.NICHES_CLOUDFLARE_ACCOUNT_ID }}
+      NICHES_EXPECTED_ACCOUNT_ID: ${{ vars.NICHES_EXPECTED_ACCOUNT_ID }}
+      NICHES_D1_DATABASE_ID: ${{ vars.NICHES_D1_DATABASE_ID }}
+      NICHES_URL: ${{ vars.NICHES_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: node ops/niches-bridge/check-config.mjs --production --materialize
+      - run: npm run test:edge && node --test ops/niches-bridge/config.test.mjs
+      - run: npm run build:web
+      - name: Record Niches recovery point (never exports private rows)
+        run: |
+          npx wrangler d1 time-travel info niches --config wrangler.production.toml --json > /tmp/niches-recovery.json
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const data=JSON.parse(fs.readFileSync('/tmp/niches-recovery.json','utf8'));
+          if(!JSON.stringify(data).includes('bookmark')) throw new Error('Recovery bookmark missing; stop before migration');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,'\nNiches recovery point before migration:\n```json\n'+JSON.stringify(data,null,2)+'\n```\n');
+          JS
+      - run: npx wrangler d1 migrations apply niches --remote --config wrangler.production.toml
+      - run: npx wrangler deploy --config wrangler.production.toml --var BUILD_SHA:${{ github.sha }} --var APP_URL:$NICHES_URL
+      - name: Verify exact deployed build
+        env:
+          NICHES_EXPECTED_BUILD: ${{ github.sha }}
+        run: bash ops/niches-bridge/production-audit.sh
+      - name: Public mobile production smoke
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:browser
