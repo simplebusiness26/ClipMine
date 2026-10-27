@@ -772,6 +772,29 @@ async function api(request, env, context) {
     return json({ id: media }, 201);
   }
   const mediaMatch = sub.match(/^media\/([a-zA-Z0-9-]+)$/);
+  if (mediaMatch && method === "DELETE") {
+    const media = await one(env, "SELECT * FROM media WHERE id=? AND niche_id=?", mediaMatch[1], niche.id);
+    if (!media) fail(404, "Media not found");
+    if (!env.MEDIA) fail(503, "Private storage is not connected.");
+    // An approved export, active schedule or attempted provider publication may
+    // still need its source. Explicitly cancel/unwind the post first.
+    const protectedPost = await one(
+      env,
+      "SELECT id FROM posts WHERE media_id=? AND (status IN ('scheduled','export_ready') OR EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)) LIMIT 1",
+      media.id,
+    );
+    if (protectedPost)
+      fail(409, "This file is used by an approved or published post. Review and cancel that post before deleting its media.");
+    // Delete private bytes before dropping the database index. If a subsequent
+    // D1 transaction fails, retrying deletion can complete the cleanup safely.
+    await env.MEDIA.delete(media.object_key);
+    await env.DB.batch([
+      env.DB.prepare("UPDATE posts SET media_id=NULL WHERE media_id=?").bind(media.id),
+      env.DB.prepare("DELETE FROM media WHERE id=? AND niche_id=?").bind(media.id, niche.id),
+    ]);
+    await audit(env, user.id, niche.id, "media.deleted", media.id);
+    return json({ ok: true });
+  }
   if (mediaMatch && method === "GET") {
     const media = await one(
       env,
