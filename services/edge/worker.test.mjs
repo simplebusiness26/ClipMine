@@ -429,6 +429,15 @@ test("storage-disabled deployment keeps drafts available and fails uploads clear
 
 
 test("media deletion enforces ownership and unlinks harmless drafts while removing private bytes", async () => {
+  // Earlier reset tests intentionally revoked the original sessions.
+  await db.prepare("DELETE FROM rate_limits").run();
+  const ownerCookie = (await checked("/api/auth/login", {
+    method:"POST", data:{ email:"first@example.test", password:"A replacement long password" },
+  })).cookie;
+
+  const otherCookie = (await checked("/api/auth/login", {
+    method:"POST", data:{ email:"second@example.test", password:"second long password" },
+  })).cookie;
   const png = new Uint8Array([137,80,78,71,13,10,26,10,0,0]);
   const uploaded = (await checked(
     `/api/niches/${niche}/media`,
@@ -439,35 +448,41 @@ test("media deletion enforces ownership and unlinks harmless drafts while removi
   const draft = (await checked(`/api/niches/${niche}/posts`, {
     method: "POST", cookie: first, data: { title: "Draft to unlink", media_id: uploaded },
   }, 201)).data;
-  await checked(`/api/niches/${niche}/media/${uploaded}`, {method:"DELETE",cookie:second},404);
-  await checked(`/api/niches/${niche}/media/${uploaded}`, {method:"DELETE",cookie:first});
-  const posts = (await checked(`/api/niches/${niche}/posts`,{cookie:first})).data;
+  await checked(`/api/niches/${niche}/media/${uploaded}`, {method:"DELETE",cookie:otherCookie},404);
+  await checked(`/api/niches/${niche}/media/${uploaded}`, {method:"DELETE",cookie:ownerCookie});
+  const posts = (await checked(`/api/niches/${niche}/posts`,{cookie:ownerCookie})).data;
   assert.equal(posts.find(p=>p.id===draft.id).media_id,null);
-  await checked(`/api/niches/${niche}/media/${uploaded}`,{cookie:first},404);
-  const mediaList = (await checked(`/api/niches/${niche}/media`,{cookie:first})).data;
+  await checked(`/api/niches/${niche}/media/${uploaded}`,{cookie:ownerCookie},404);
+  const mediaList = (await checked(`/api/niches/${niche}/media`,{cookie:ownerCookie})).data;
   assert.ok(!mediaList.some(x=>x.id===uploaded));
 });
 
 
 test("approved exports protect media until explicit cancellation", async () => {
+  // Earlier reset tests intentionally revoked the original sessions.
+  await db.prepare("DELETE FROM rate_limits").run();
+  const ownerCookie = (await checked("/api/auth/login", {
+    method:"POST", data:{ email:"first@example.test", password:"A replacement long password" },
+  })).cookie;
+
   const png = new Uint8Array([137,80,78,71,13,10,26,10,0,0]);
   const uploaded = (await checked(`/api/niches/${niche}/media`,{
-    method:"POST", cookie:first, raw:png,
+    method:"POST", cookie:ownerCookie, raw:png,
     headers:{"Content-Type":"image/png","Content-Length":String(png.length),"X-Filename":"protected.png"},
   },201)).data.id;
   const post = (await checked(`/api/niches/${niche}/posts`,{
-    method:"POST",cookie:first,data:{title:"Approved media",media_id:uploaded},
+    method:"POST",cookie:ownerCookie,data:{title:"Approved media",media_id:uploaded},
   },201)).data;
   await checked(`/api/niches/${niche}/posts/${post.id}/approve`,{
-    method:"POST",cookie:first,data:{confirmed:true},
+    method:"POST",cookie:ownerCookie,data:{confirmed:true},
   });
   await checked(`/api/niches/${niche}/media/${uploaded}`,{
-    method:"DELETE",cookie:first,
+    method:"DELETE",cookie:ownerCookie,
   },409);
   await checked(`/api/niches/${niche}/posts/${post.id}/cancel`,{
-    method:"POST",cookie:first,data:{},
+    method:"POST",cookie:ownerCookie,data:{},
   });
   await checked(`/api/niches/${niche}/media/${uploaded}`,{
-    method:"DELETE",cookie:first,
+    method:"DELETE",cookie:ownerCookie,
   });
 });
