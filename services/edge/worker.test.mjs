@@ -441,12 +441,12 @@ test("media deletion enforces ownership and unlinks harmless drafts while removi
   const png = new Uint8Array([137,80,78,71,13,10,26,10,0,0]);
   const uploaded = (await checked(
     `/api/niches/${niche}/media`,
-    { method: "POST", cookie: first, raw: png, headers: {
+    { method: "POST", cookie: ownerCookie, raw: png, headers: {
       "Content-Type": "image/png", "Content-Length": String(png.length), "X-Filename": "delete-me.png",
     } }, 201,
   )).data.id;
   const draft = (await checked(`/api/niches/${niche}/posts`, {
-    method: "POST", cookie: first, data: { title: "Draft to unlink", media_id: uploaded },
+    method: "POST", cookie: ownerCookie, data: { title: "Draft to unlink", media_id: uploaded },
   }, 201)).data;
   await checked(`/api/niches/${niche}/media/${uploaded}`, {method:"DELETE",cookie:otherCookie},404);
   await checked(`/api/niches/${niche}/media/${uploaded}`, {method:"DELETE",cookie:ownerCookie});
