@@ -1,0 +1,35 @@
+name: Niches fast regression gates
+
+on:
+  pull_request:
+    paths:
+      - "services/edge/**"
+      - "apps/web/**"
+      - "migrations/**"
+      - ".github/workflows/niches-fast-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/edge/**"
+      - "apps/web/**"
+      - "migrations/**"
+      - ".github/workflows/niches-fast-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-edge:
+    name: Niches tenant and media API
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run test:edge
+      - run: node --test ops/niches-bridge/config.test.mjs
+      - run: npm run lint:web && npm run test:web && npm run build:web
