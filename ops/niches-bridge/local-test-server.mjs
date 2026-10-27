@@ -17,6 +17,7 @@ const mf = new Miniflare(
     modules: [
       "worker",
         "kv-media",
+        "reset-email",
       "security",
       "db",
       "token-vault",
