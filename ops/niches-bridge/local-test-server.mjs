@@ -1,6 +1,6 @@
 // Disposable LOCAL test infrastructure. Never accepts Cloudflare credentials.
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { createServer } from "node:http";
 import { resolve, extname, sep } from "node:path";
 const root = resolve("apps/web/dist");
@@ -15,12 +15,19 @@ const mf = new Miniflare(
   convertV4MiniflareOptions({
     host: "127.0.0.1",
     modules: [
-      { type: "ESModule", path: "services/edge/worker.mjs" },
-      { type: "ESModule", path: "services/edge/security.mjs" },
-    ],
+      "worker",
+      "security",
+      "db",
+      "token-vault",
+      "social-oauth",
+      "publishers",
+      "outbox",
+    ].map((name) => ({ type: "ESModule", path: `services/edge/${name}.mjs` })),
     compatibilityDate: "2026-09-01",
     d1Databases: ["DB"],
-    r2Buckets: ["MEDIA"],
+    ...(process.env.NICHES_LOCAL_NO_STORAGE === "1"
+      ? {}
+      : { r2Buckets: ["MEDIA"] }),
     bindings: {
       MAX_UPLOAD_MB: "25",
       ...(process.env.NICHES_LOCAL_RENDERER
@@ -54,7 +61,15 @@ const mf = new Miniflare(
   }),
 );
 const db = await mf.getD1Database("DB");
-for (const sql of (await readFile("migrations/0001_niches.sql", "utf8"))
+for (const sql of (
+  await Promise.all(
+    (await readdir("migrations"))
+      .filter((n) => n.endsWith(".sql"))
+      .sort()
+      .map((n) => readFile("migrations/" + n, "utf8")),
+  )
+)
+  .join("\n")
   .split(";")
   .map((x) => x.trim())
   .filter(Boolean))

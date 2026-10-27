@@ -1,3 +1,6 @@
+import PostHistory from "./PostHistory";
+import SocialAccounts from "./SocialAccounts";
+import PublishingReview from "./PublishingReview";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import ClipMine from "./App";
 import {
@@ -213,6 +216,16 @@ export default function Niches() {
     try {
       setUser(await call("/api/auth/me"));
       await refresh();
+      const params = new URLSearchParams(location.search),
+        nicheId = params.get("niche");
+      if (nicheId) {
+        const list = await call<Niche[]>("/api/niches");
+        const found = list.find((n) => n.id === nicheId);
+        if (found) {
+          setActive(found);
+          if (params.get("section") === "Accounts") setTab("Accounts");
+        }
+      }
     } catch {
       setUser(null);
     } finally {
@@ -322,14 +335,15 @@ export default function Niches() {
               <small>{user.email}</small>
             </div>
             <button
-              aria-label="Log out"
+              aria-label="Log out of Niches"
+              title="Log out of Niches"
               onClick={async () => {
                 await call("/api/auth/logout", "POST", {});
                 setUser(null);
                 setActive(null);
               }}
             >
-              ↪
+              Log out
             </button>
           </div>
         </div>
@@ -419,7 +433,7 @@ export default function Niches() {
                     (v, n) => v + (n.scheduled_count || 0),
                     0,
                   )}
-                  detail="Reminders, until APIs connect"
+                  detail="Scheduled content"
                 />
               </div>
               <div className="n-section-head">
@@ -447,12 +461,29 @@ export default function Niches() {
                           {n.description || "Your next great idea lives here."}
                         </p>
                         <div className="n-platforms">
-                          {["f", "◎", "♪", "▶"].map((p, j) => (
-                            <span key={j} title="Not connected">
-                              {p}
-                            </span>
-                          ))}
-                          <small>{n.account_count || 0} connected</small>
+                          {["facebook", "instagram", "tiktok", "youtube"].map(
+                            (platform, j) => {
+                              const list = JSON.parse(
+                                n.accounts_json || "[]",
+                              ) as { platform: string; status: string }[];
+                              const count = list.filter(
+                                (a) => a.platform === platform,
+                              ).length;
+                              return (
+                                <span
+                                  key={platform}
+                                  title={`${platform}: ${count} accounts`}
+                                >
+                                  {["f", "◎", "♪", "▶"][j]}
+                                  {count > 0 && <sup>{count}</sup>}
+                                </span>
+                              );
+                            },
+                          )}
+                          <small>
+                            {n.account_count || 0} accounts ·{" "}
+                            {n.connected_count || 0} connected
+                          </small>
                         </div>
                       </div>
                     </button>
@@ -510,7 +541,7 @@ export default function Niches() {
         </main>
         <footer className="n-footer">
           NICHES <span>Make something worth sharing.</span>
-          <span>Private beta · Direct publishing not connected</span>
+          <span>Private beta · Publishing requires authorised accounts</span>
         </footer>
       </div>
       {creating && (
@@ -598,6 +629,17 @@ function Workspace({
   refreshKey: number;
 }) {
   const base = `/api/niches/${niche.id}`;
+  const [recentUploaded, setRecentUploaded] = useState<string[]>([]),
+    [batchCaption, setBatchCaption] = useState("");
+  const [localFiles, setLocalFiles] = useState<{ file: File; url: string }[]>(
+    [],
+  );
+  useEffect(
+    () => () => {
+      localFiles.forEach((x) => URL.revokeObjectURL(x.url));
+    },
+    [localFiles],
+  );
   const [media, setMedia] = useState<Media[]>([]),
     [posts, setPosts] = useState<Post[]>([]),
     [accounts, setAccounts] = useState<SocialAccount[]>([]),
@@ -627,7 +669,7 @@ function Workspace({
         call<Idea[]>(base + "/ideas"),
         call<Revenue[]>(base + "/revenue"),
         call<{ source: string }>(base + "/analytics"),
-        call<{storage_available:boolean}>("/api/config"),
+        call<{ storage_available: boolean }>("/api/config"),
       ]);
       setStorageAvailable(capabilities.storage_available);
       setMedia(m);
@@ -640,7 +682,7 @@ function Workspace({
       setAnalytics(an);
       if (!draft)
         setDestinations(
-          a.filter((x) => x.status === "connected").map((x) => x.id),
+          a.filter((x) => x.status !== "archived").map((x) => x.id),
         );
     } catch (e) {
       setError((e as Error).message);
@@ -670,19 +712,47 @@ function Workspace({
   function edit(post: Post) {
     setDraft(post);
     setSelectedMedia(post.media_id || "");
-    setDestinations(post.destinations);
+    setDestinations(
+      post.destinations.filter((id) => accounts.some((a) => a.id === id)),
+    );
     setTab("Publish");
   }
   async function upload(files: FileList | null) {
     if (!files?.length) return;
+    if (!storageAvailable) {
+      setLocalFiles(
+        Array.from(files).map((file) => ({
+          file,
+          url: URL.createObjectURL(file),
+        })),
+      );
+      setStatus(
+        "Files selected on this device. Cloudflare storage must be enabled before they can be saved or published. Keep this page open.",
+      );
+      setTab("Content");
+      return;
+    }
     await run(async () => {
       let count = 0;
+      const errors: string[] = [];
+      const uploaded: string[] = [];
       for (const file of Array.from(files)) {
-        const result = await uploadMedia(niche.id, file);
-        setSelectedMedia(result.id);
-        count++;
-        setStatus(`Uploaded ${count} of ${files.length}.`);
+        try {
+          const result = await uploadMedia(niche.id, file, (percent) =>
+            setStatus(
+              `Uploading ${file.name}: ${percent}% (${count + 1}/${files.length})`,
+            ),
+          );
+          uploaded.push(result.id);
+          setSelectedMedia(result.id);
+          count++;
+        } catch (e) {
+          errors.push(`${file.name}: ${(e as Error).message}`);
+        }
       }
+      setRecentUploaded(uploaded);
+      setStatus(`Uploaded ${count} of ${files.length} files.`);
+      if (errors.length) setError(errors.join(" · "));
       setTab("Content");
     });
   }
@@ -695,6 +765,12 @@ function Workspace({
         overrides[p.id] = {
           caption: String(data[`${p.id}_caption`] || ""),
           title: String(data[`${p.id}_title`] || ""),
+        };
+      });
+      accounts.forEach((a) => {
+        overrides[a.id] = {
+          caption: String(data[`${a.id}_caption`] || ""),
+          title: String(data[`${a.id}_title`] || ""),
         };
       });
       const post = await call<Post>(
@@ -714,26 +790,15 @@ function Workspace({
       );
     });
   }
-  async function approve(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    if (!draft) return;
-    await run(async () => {
-      const response = await call<{ message: string }>(
-        `${base}/posts/${draft.id}/approve`,
-        "POST",
-        {
-          confirmed: data.get("confirmed") === "on",
-          scheduled_at: data.get("scheduled_at")
-            ? new Date(String(data.get("scheduled_at"))).toISOString()
-            : null,
-        },
-      );
-      setDraft(null);
-      setStatus(response.message);
-      setTab("Drafts");
-    });
-  }
+  useEffect(() => {
+    if (!["Drafts", "Calendar"].includes(tab)) return;
+    const interval = setInterval(() => {
+      void call<Post[]>(base + "/posts")
+        .then(setPosts)
+        .catch(() => {});
+    }, 8000);
+    return () => clearInterval(interval);
+  }, [tab, niche.id]);
   const visible = media.filter((m) =>
     m.filename.toLowerCase().includes(query.toLowerCase()),
   );
@@ -792,6 +857,14 @@ function Workspace({
           {status}
         </p>
       )}
+      <div className="n-actions" style={{ marginBottom: 20 }}>
+        <button type="button" onClick={() => setTab("Accounts")}>
+          + Add / manage social accounts ({accounts.length})
+        </button>
+        <button type="button" onClick={() => setTab("Create")}>
+          Upload content
+        </button>
+      </div>
       {tab === "Overview" && (
         <>
           <div className="n-stats">
@@ -808,7 +881,7 @@ function Workspace({
             <Stat
               label="Upcoming"
               value={posts.filter((p) => p.status === "scheduled").length}
-              detail="Export reminders"
+              detail="Scheduled posts & legacy reminders"
             />
             <Stat
               label="Connections"
@@ -870,7 +943,13 @@ function Workspace({
       {(tab === "Content" || tab === "Create") && (
         <>
           <section className="n-upload">
-            {!storageAvailable && <div className="n-status-note" role="status">Media uploads are temporarily unavailable while private storage access is configured. You can still manage niches, ideas and text drafts.</div>}
+            {!storageAvailable && (
+              <div className="n-status-note" role="status">
+                Cloud storage is not enabled yet. You can choose and preview
+                files here; they remain on this device until storage is enabled.
+                Account setup and text drafts still work.
+              </div>
+            )}
             <span aria-hidden="true">↑</span>
             <h2>Drop your next great post here.</h2>
             <p>
@@ -883,7 +962,7 @@ function Workspace({
                 type="file"
                 multiple
                 accept="video/mp4,video/quicktime,video/webm,image/jpeg,image/png,image/webp"
-                disabled={busy || !storageAvailable}
+                disabled={busy}
                 onChange={(e) => void upload(e.target.files)}
               />
             </label>
@@ -892,6 +971,80 @@ function Workspace({
               your account.
             </p>
           </section>
+          {recentUploaded.length > 0 && (
+            <section className="n-panel">
+              <h3>Create drafts for this batch ({recentUploaded.length})</h3>
+              <label>
+                Caption for this batch
+                <textarea
+                  value={batchCaption}
+                  onChange={(e) => setBatchCaption(e.target.value)}
+                  maxLength={10000}
+                  rows={3}
+                />
+              </label>
+              <p>
+                Every draft will propose this niche’s accounts. Review each
+                draft before scheduling or publishing.
+              </p>
+              <button
+                className="n-primary"
+                disabled={busy}
+                onClick={() =>
+                  void run(async () => {
+                    for (const mediaId of recentUploaded) {
+                      const item = media.find((m) => m.id === mediaId);
+                      await call(base + "/posts", "POST", {
+                        media_id: mediaId,
+                        title:
+                          item?.filename.replace(/\.[^.]+$/, "") || "New post",
+                        caption: batchCaption,
+                      });
+                    }
+                    setRecentUploaded([]);
+                    setTab("Drafts");
+                    setStatus(
+                      "Batch drafts created. Review each post before publishing.",
+                    );
+                  })
+                }
+              >
+                Create batch drafts
+              </button>
+            </section>
+          )}
+          {localFiles.length > 0 && (
+            <section className="n-panel">
+              <h2>Selected on this device ({localFiles.length})</h2>
+              <p className="n-status-note">
+                These files have not been uploaded. They are only available
+                while this page stays open.
+              </p>
+              <div className="n-media-grid">
+                {localFiles.map((x, i) => (
+                  <article className="n-media-card" key={i}>
+                    {x.file.type.startsWith("video/") ? (
+                      <video
+                        src={x.url}
+                        controls
+                        playsInline
+                        preload="metadata"
+                      />
+                    ) : (
+                      <img src={x.url} alt={x.file.name} />
+                    )}
+                    <div>
+                      <h3>{x.file.name}</h3>
+                      <small>
+                        Not uploaded · {(x.file.size / 1024 / 1024).toFixed(1)}{" "}
+                        MB
+                      </small>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
           {tab === "Create" && (
             <div className="n-banner">
               <div>
@@ -1009,7 +1162,7 @@ function Workspace({
                   <label className="n-checkbox" key={a.id}>
                     <input
                       type="checkbox"
-                      disabled={a.status !== "connected"}
+                      disabled={a.status === "archived"}
                       checked={destinations.includes(a.id)}
                       onChange={(e) =>
                         setDestinations((d) =>
@@ -1055,6 +1208,32 @@ function Workspace({
                   </p>
                 </details>
               ))}
+              {accounts
+                .filter((a) => destinations.includes(a.id))
+                .map((a) => (
+                  <details key={a.id}>
+                    <summary>
+                      {a.display_name} · {a.platform}
+                    </summary>
+                    <label>
+                      Account-specific title
+                      <input
+                        name={`${a.id}_title`}
+                        maxLength={100}
+                        defaultValue={draft?.overrides[a.id]?.title || ""}
+                      />
+                    </label>
+                    <label>
+                      Account-specific caption
+                      <textarea
+                        name={`${a.id}_caption`}
+                        rows={3}
+                        defaultValue={draft?.overrides[a.id]?.caption || ""}
+                        placeholder="Leave blank to use the platform or master caption"
+                      />
+                    </label>
+                  </details>
+                ))}
               <button className="n-primary" disabled={busy}>
                 Save draft ↗
               </button>
@@ -1063,41 +1242,24 @@ function Workspace({
           <section className="n-panel n-review">
             <span className="n-kicker">02 / REVIEW</span>
             <h2>Your final say.</h2>
-            <div className="n-status-note">
-              Direct publishing isn’t connected yet. Nothing will be sent to
-              social platforms. Prepare an export or schedule a reminder.
-            </div>
             {draft ? (
-              <form onSubmit={approve}>
-                <h3>{draft.title || "Untitled draft"}</h3>
-                <p className="n-caption-preview">
-                  {draft.caption || "No caption added."}
-                </p>
-                <small>
-                  {draft.destinations.length} authorised destinations selected
-                </small>
-                <label>
-                  Export reminder (optional)
-                  <input type="datetime-local" name="scheduled_at" />
-                </label>
-                <small>
-                  Times use your device’s timezone. Reminders run within 15
-                  minutes.
-                </small>
-                <label className="n-checkbox">
-                  <input name="confirmed" type="checkbox" required />I reviewed
-                  this saved draft and have permission to publish the media.
-                </label>
-                <button className="n-primary" disabled={busy}>
-                  Prepare export / reminder ↗
-                </button>
-                <a href={`${base}/posts/${draft.id}/export`} download>
-                  Download post metadata
-                </a>
-              </form>
+              <PublishingReview
+                nicheId={niche.id}
+                draft={draft}
+                accounts={accounts}
+                providers={providers}
+                onAccounts={() => setTab("Accounts")}
+                onResult={(message) => {
+                  setDraft(null);
+                  setStatus(message);
+                  setTab("Drafts");
+                  changed();
+                }}
+              />
             ) : (
-              <Empty title="A quick check before it goes.">
-                Save your draft, then review the saved version here.
+              <Empty title="Review your saved draft.">
+                Save your post, then check destinations and publish options
+                here.
               </Empty>
             )}
           </section>
@@ -1140,6 +1302,11 @@ function Workspace({
                   Export
                 </a>
               </div>
+              <PostHistory
+                nicheId={niche.id}
+                postId={p.id}
+                onChanged={changed}
+              />
             </div>
           ))}
         </section>
@@ -1148,7 +1315,7 @@ function Workspace({
         <section className="n-panel">
           <div className="n-section-head">
             <h2>Coming up next.</h2>
-            <span>Device timezone · Export reminders</span>
+            <span>Device timezone · Scheduled posts & legacy reminders</span>
           </div>
           {posts
             .filter((p) => p.scheduled_at && p.status === "scheduled")
@@ -1158,7 +1325,11 @@ function Workspace({
                 <div>
                   <span className="n-kicker">{date(p.scheduled_at!)}</span>
                   <h3>{p.title || "Untitled post"}</h3>
-                  <p>Export reminder · No automatic social posting</p>
+                  <p>
+                    {p.publish_mode === "direct"
+                      ? "Scheduled social publication"
+                      : "Legacy export reminder · No automatic social posting"}
+                  </p>
                 </div>
                 <button
                   disabled={busy}
@@ -1174,42 +1345,18 @@ function Workspace({
             ))}
           {!posts.some((p) => p.status === "scheduled") && (
             <Empty title="A little breathing room.">
-              Schedule a reminder after reviewing a saved draft.
+              Choose Schedule for later when reviewing your post.
             </Empty>
           )}
         </section>
       )}
       {tab === "Accounts" && (
-        <>
-          <div className="n-status-note">
-            Only official OAuth connections will appear as connected. Provider
-            setup and approvals are still required.
-          </div>
-          <div className="n-account-grid">
-            {providers.map((p) => (
-              <section className="n-panel" key={p.id}>
-                <span className="n-provider-icon">
-                  {p.id === "youtube"
-                    ? "▶"
-                    : p.id === "tiktok"
-                      ? "♪"
-                      : p.id === "facebook"
-                        ? "f"
-                        : "◎"}
-                </span>
-                <h2>{p.name}</h2>
-                <span className="n-badge">Not configured</span>
-                <p>{p.reason}</p>
-                <button
-                  disabled
-                  title="Official OAuth integration has not been configured"
-                >
-                  Connect account
-                </button>
-              </section>
-            ))}
-          </div>
-        </>
+        <SocialAccounts
+          nicheId={niche.id}
+          accounts={accounts}
+          providers={providers}
+          onChanged={changed}
+        />
       )}
       {tab === "Analytics" && (
         <>

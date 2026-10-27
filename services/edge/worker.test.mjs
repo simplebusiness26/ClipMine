@@ -1,6 +1,6 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { scheduled } from "./worker.mjs";
 let mf, db, first, second, niche, niche2, media, post;
@@ -30,17 +30,17 @@ before(async () => {
   mf = new Miniflare(
     convertV4MiniflareOptions({
       modules: [
-        {
-          type: "ESModule",
-          path: "services/edge/worker.mjs",
-          contents: await readFile("services/edge/worker.mjs", "utf8"),
-        },
-        {
-          type: "ESModule",
-          path: "services/edge/security.mjs",
-          contents: await readFile("services/edge/security.mjs", "utf8"),
-        },
-      ],
+        "worker",
+        "security",
+        "db",
+        "token-vault",
+        "social-oauth",
+        "publishers",
+        "outbox",
+      ].map((name) => ({
+        type: "ESModule",
+        path: `services/edge/${name}.mjs`,
+      })),
       compatibilityDate: "2026-09-01",
       d1Databases: ["DB"],
       r2Buckets: ["MEDIA"],
@@ -49,7 +49,14 @@ before(async () => {
     }),
   );
   db = await mf.getD1Database("DB");
-  const sql = await readFile("migrations/0001_niches.sql", "utf8");
+  const sql = (
+    await Promise.all(
+      (await readdir("migrations"))
+        .filter((n) => n.endsWith(".sql"))
+        .sort()
+        .map((n) => readFile("migrations/" + n, "utf8")),
+    )
+  ).join("\n");
   for (const statement of sql
     .split(";")
     .map((s) => s.trim())
@@ -330,13 +337,13 @@ test("ClipMine and social connections fail closed without configuration", async 
   await checked(`/api/projects?niche_id=${niche}`, { cookie: first }, 503);
   await checked("/api/projects/not-owned/source", { cookie: first }, 503);
   await checked(
-    `/api/niches/${niche}/accounts/youtube`,
+    `/api/niches/${niche}/accounts/youtube/connect`,
     { method: "POST", cookie: first, data: {} },
     503,
   );
   assert.ok(
     (await checked("/api/providers", { cookie: first })).data.every(
-      (p) => p.status === "not_configured",
+      (p) => p.status === "setup_required",
     ),
   );
 });
@@ -386,15 +393,34 @@ test("password reset is one-time and revokes existing sessions", async () => {
   });
 });
 
-test('storage-disabled deployment keeps drafts available and fails uploads clearly', async () => {
-  const { default: worker } = await import('./worker.mjs');
-  const login = await checked('/api/auth/login', {method:'POST',data:{email:'first@example.test',password:'A replacement long password'}});
-  const headers={origin:'http://localhost',cookie:login.cookie};
-  const config=await worker.fetch(new Request('http://localhost/api/config',{headers}),{DB:db});
-  assert.equal((await config.json()).storage_available,false);
-  const response=await worker.fetch(new Request(`http://localhost/api/niches/${niche}/media`,{method:'POST',headers,body:'file'}),{DB:db});
-  assert.equal(response.status,503);
-  assert.match((await response.json()).detail,/storage access/);
-  const drafts=await worker.fetch(new Request(`http://localhost/api/niches/${niche}/posts`,{headers}),{DB:db});
-  assert.equal(drafts.status,200);
+test("storage-disabled deployment keeps drafts available and fails uploads clearly", async () => {
+  const { default: worker } = await import("./worker.mjs");
+  const login = await checked("/api/auth/login", {
+    method: "POST",
+    data: {
+      email: "first@example.test",
+      password: "A replacement long password",
+    },
+  });
+  const headers = { origin: "http://localhost", cookie: login.cookie };
+  const config = await worker.fetch(
+    new Request("http://localhost/api/config", { headers }),
+    { DB: db },
+  );
+  assert.equal((await config.json()).storage_available, false);
+  const response = await worker.fetch(
+    new Request(`http://localhost/api/niches/${niche}/media`, {
+      method: "POST",
+      headers,
+      body: "file",
+    }),
+    { DB: db },
+  );
+  assert.equal(response.status, 503);
+  assert.match((await response.json()).detail, /storage access/);
+  const drafts = await worker.fetch(
+    new Request(`http://localhost/api/niches/${niche}/posts`, { headers }),
+    { DB: db },
+  );
+  assert.equal(drafts.status, 200);
 });

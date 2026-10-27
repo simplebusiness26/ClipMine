@@ -1,4 +1,4 @@
-import {validateBrowserTarget} from "./target-policy.mjs";
+import { validateBrowserTarget } from "./target-policy.mjs";
 import { chromium } from "playwright";
 import { mkdir } from "node:fs/promises";
 const base = process.env.NICHES_URL;
@@ -46,25 +46,72 @@ try {
       .click();
     await page.getByRole("heading", { name: "Your next chapter." }).waitFor();
     await page
+      .locator('nav[aria-label="Niche workspace"] button')
+      .filter({ has: page.locator("span", { hasText: /^Accounts$/ }) })
+      .click();
+    for (const account of [
+      { platform: "instagram", name: "Instagram Main", handle: "carsmain" },
+      { platform: "instagram", name: "Instagram Daily", handle: "carsdaily" },
+      {
+        platform: "instagram",
+        name: "Instagram Classics",
+        handle: "carsclassics",
+      },
+      { platform: "tiktok", name: "TikTok Main", handle: "carsmain" },
+      { platform: "tiktok", name: "TikTok Daily", handle: "carsdaily" },
+      {
+        platform: "youtube",
+        name: "YouTube Cars",
+        handle: "carschannelfixture",
+      },
+    ]) {
+      await page
+        .getByRole("button", { name: "+ Add an account", exact: true })
+        .click();
+      await page
+        .getByLabel("Platform", { exact: true })
+        .selectOption(account.platform);
+      await page.getByLabel("Account name", { exact: true }).fill(account.name);
+      await page
+        .getByLabel("Username, handle or channel identifier", { exact: true })
+        .fill(account.handle);
+      await page
+        .getByRole("button", { name: "Add to this niche", exact: true })
+        .click();
+      await page.getByText(account.name, { exact: true }).waitFor();
+    }
+    const storage = (
+      await (await page.request.get(base + "/api/health")).json()
+    ).storage;
+    await page
       .getByRole("button", { name: "+ Create content", exact: true })
       .click();
     const png = Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9S8AAAAASUVORK5CYII=",
       "base64",
     );
-    await page
-      .locator("input[type=file]")
-      .setInputFiles({
-        name: "original-test.png",
-        mimeType: "image/png",
-        buffer: png,
-      });
+    await page.locator("input[type=file]").setInputFiles({
+      name: "original-test.png",
+      mimeType: "image/png",
+      buffer: png,
+    });
     await page
       .getByRole("heading", { name: "A home for your content." })
       .waitFor();
-    await page
-      .getByRole("button", { name: "Prepare post ↗", exact: true })
-      .click();
+    if (storage)
+      await page
+        .getByRole("button", { name: "Prepare post ↗", exact: true })
+        .click();
+    else {
+      await page
+        .getByRole("heading", { name: "Selected on this device (1)" })
+        .waitFor();
+      await page
+        .locator('nav[aria-label="Niche workspace"] button')
+        .filter({ has: page.locator("span", { hasText: /^Publish$/ }) })
+        .click();
+    }
+    await page.getByLabel(/TikTok Daily/).uncheck();
     await page
       .getByLabel("Post title", { exact: true })
       .fill("My first original post");
@@ -75,12 +122,21 @@ try {
       .getByRole("button", { name: "Save draft ↗", exact: true })
       .click();
     await page.getByText("Draft saved. Review below").waitFor();
+    if (
+      !(await page
+        .getByRole("button", {
+          name: "Publish to selected accounts",
+          exact: true,
+        })
+        .isDisabled())
+    )
+      throw new Error(
+        "Unconnected accounts were incorrectly enabled for publishing",
+      );
+    await page.getByText("5 destination accounts", { exact: false }).waitFor();
     await page
-      .getByLabel("Export reminder (optional)")
-      .fill("2099-12-31T18:00");
-    await page.getByLabel("I reviewed this saved draft").check();
-    await page
-      .getByRole("button", { name: "Prepare export / reminder ↗", exact: true })
+      .locator('nav[aria-label="Niche workspace"] button')
+      .filter({ has: page.locator("span", { hasText: /^Drafts$/ }) })
       .click();
     await page
       .getByRole("heading", { name: "Pick up where you left off." })
@@ -136,7 +192,7 @@ try {
       }
     }
     console.log(
-      "PASS local browser: register → niche → upload → draft → export reminder; 12 tabs at 5 viewport widths",
+      "PASS local browser: register → niche → 3 Instagrams/2 TikToks/1 YouTube → select destinations → file upload/preview → draft; 12 tabs at 5 viewport widths",
     );
   } else {
     for (const width of [320, 375, 390, 430]) {

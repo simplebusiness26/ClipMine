@@ -2,6 +2,14 @@
 
 Audit date: 2026-10-26. The follow-up below supersedes the initial access/deployment blockers; the initial audit remains as historical evidence.
 
+## Publishing follow-up — 2026-10-27
+
+Deployed source `0b6e35f0537584a40e54b4efea4eb0db385ed104`, Worker version `bd8d22d0-1e00-49f0-98b5-7b10cd639b54`. [Isolated deployment and live checks passed](https://github.com/simplebusiness26/agentCart/actions/runs/40436097548). The additive publishing migration was applied after a recovery bookmark; the runner created a Niches-only encryption key without reading any existing secret values. Live checks verified registration/login, six planning accounts in one niche, a draft targeting five accounts and public mobile layout. Social application credentials were absent, so no real OAuth or direct publication is claimed.
+
+The next implementation adds multi-account niche management, working file selection with local-only previews when storage is unavailable, per-account composer settings, encrypted official OAuth adapters and an approval-bound publishing outbox. See [publishing configuration and remaining prerequisites](niches-publishing.md). Provider transport tests are simulated; no real social publishing is verified.
+
+Read-only preflight established R2 is disabled (Cloudflare error 10042), rather than an assumed token-scope problem. Production storage and external provider applications still require owner authorisation. Earlier capability descriptions below are historical and superseded by this follow-up.
+
 ## Live portal follow-up — 2026-10-26
 
 The portal is live at <https://niches.ai-seo.workers.dev>. It uses a distinct `niches` Worker and D1 database `4f2a701e-6960-48b3-82b5-096cabb3aeaf` in the account reached by AISO's existing deployment credentials. Credentials stayed inside AISO Actions; their values were not retrieved or copied into ClipMine.

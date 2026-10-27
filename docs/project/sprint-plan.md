@@ -120,3 +120,13 @@ Publishing work must not block the export-based product.
 - Voice cloning or synthetic presenters
 - Full multitrack editor
 - Claims of guaranteed virality
+
+## Niches implementation checkpoint — 2026-10-27
+
+- Locally verified: account isolation, multiple same-platform niche accounts, media selection/upload, per-account drafts, review-bound outbox, scheduling and duplicate protection.
+- Implemented with simulated transport tests: encrypted official OAuth and Facebook/Instagram/TikTok/YouTube publishing adapters. Real provider authorisation and publishing remain unverified.
+- Browser acceptance: three Instagram accounts, two TikToks and one YouTube; destination deselection; upload and storage-disabled local preview; saved draft; 12 sections at five viewport widths.
+- Regression evidence: 20 edge tests, 3 deployment policy tests, 3 web tests, 9 Python tests and a real local FFmpeg-to-private-R2 transfer journey pass. Type checking, build, documentation lint and links pass.
+- Next deployment gate: isolated D1 additive migration, stable Niches token key, immutable source pin and live authenticated/mobile smoke.
+- Owner-dependent gates: enable R2 after billing approval if required; register/authorise provider applications and complete required reviews. Do not label direct publishing operational until a real authorised test completes.
+- Remaining product work: hosted rendering, reset-email delivery, live platform analytics/revenue, custom thumbnails, large/resumable browser uploads and richer recycling/intelligence.

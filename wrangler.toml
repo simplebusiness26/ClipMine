@@ -30,4 +30,4 @@ binding = "MEDIA"
 bucket_name = "niches-media"
 
 [triggers]
-crons = ["*/15 * * * *"]
+crons = ["* * * * *"]
