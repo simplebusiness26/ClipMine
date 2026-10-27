@@ -9,6 +9,10 @@ Adapted from the inspected AISO operational approach. This directory is independ
 - `clipmine-journey.mjs`: generated footage through protected FastAPI, FFmpeg render and direct transfer to a niche. No real customer media or remote state.
 - `config.test.mjs`: prevents cross-project deployment targets.
 
-Launchers are `.github/workflows/niches-deploy.yml`, `.github/workflows/niches-production-check.yml` and the `niches` CI job. Deployment remains disabled until the account and distinct resources are confirmed. No AISO credentials are copied or retrieved.
+The live deployment route is in `simplebusiness26/agentCart`, branch `ops/niches-cloudflare`: `.github/workflows/niches-access-check.yml` runs read-only checks and `.github/workflows/niches-portal-deploy.yml` deploys an immutable ClipMine source revision to the separate Niches Worker/database using the authorised AISO account credentials inside Actions. No credential values are copied or retrieved. The original AISO bridge remains read-only and unchanged.
+
+Use this route by default. The owner has reported that Cloudflare browser login does not work; do not make it a prerequisite for routine deployment, inventory, secret-name checks or live testing. R2 entitlement and provider credentials must be checked through the existing runner. Account entitlement is separate from token authentication; no bridge can be assumed to bypass it or authorise new charges.
+
+The ClipMine-repository `.github/workflows/niches-deploy.yml` and `.github/workflows/niches-production-check.yml` remain a separate project-credential path; its deploy switch remains disabled. The `niches` CI job runs disposable local tests.
 
 For configuration, deployment, recovery and billing gates, see the [audit and rollout](../../docs/operations/niches-audit-and-rollout.md).
