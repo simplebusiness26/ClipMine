@@ -1,5 +1,12 @@
 # Niches publishing rollout
 
+## Verified storage beta and email adapter — 2026-10-27
+
+R2 is still blocked by the Cloudflare account entitlement (10042). The approved AISO operations launcher provisioned an isolated free Workers KV namespace (`niches-media-kv`) bound as `MEDIA_KV` without activating paid products. Runtime prefers R2 if a legitimate bucket is subsequently enabled. Live private upload, full download, video-style byte range, anonymous denial, registration, six planning accounts and a five-destination draft passed in [deployment run 40452645608](https://github.com/simplebusiness26/agentCart/actions/runs/40452645608). Beta limits: maximum 25 MiB/file, 250 MiB/user, 100 files/user and a conservative 500 MiB application total; KV is eventually consistent and the global aggregate quota is not atomic. Do not market this as scalable permanent video storage. Establish recoverable media backups before inviting public users.
+
+The Worker also supports an optional direct Brevo reset sender (300 free emails/day according to Brevo's published plan) in addition to the existing HTTPS adapter. It requires separate `NICHES_BREVO_API_KEY` in the AISO operations secret configuration and a verified `NICHES_BREVO_SENDER_EMAIL` repository variable for the Niches Worker only; no real delivery has been validated. Keep these out of source code and never reuse unrelated AISO application credentials.
+
+
 ## Implemented and tested locally
 
 Each niche supports multiple accounts per platform, including planning accounts that remain explicitly unconnected. The composer proposes the niche's accounts, allows deselection, and saves master, platform and individual-account captions. Uploaded media supports batch drafting and upload progress. File selection and temporary previews also work when cloud storage is unavailable; previews are not cloud uploads and disappear when the page closes.
