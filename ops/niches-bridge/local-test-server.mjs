@@ -16,6 +16,7 @@ const mf = new Miniflare(
     host: "127.0.0.1",
     modules: [
       "worker",
+        "kv-media",
       "security",
       "db",
       "token-vault",
