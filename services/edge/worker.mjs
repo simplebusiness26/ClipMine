@@ -1,4 +1,5 @@
 import { withMedia } from "./kv-media.mjs";
+import { resetEmailReady, sendResetEmail } from "./reset-email.mjs";
 import {
   providerInfo,
   beginOAuth,
@@ -331,7 +332,7 @@ async function api(request, env, context) {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
       fail(400, "Enter a valid email address.");
     if (action === "forgot") {
-      if (!env.RESET_EMAIL_ENDPOINT || !env.RESET_EMAIL_KEY || !env.APP_URL)
+      if (!resetEmailReady(env))
         fail(503, "Password reset email is not configured yet.");
       const user = await one(env, "SELECT id FROM users WHERE email=?", email);
       if (user) {
@@ -343,24 +344,11 @@ async function api(request, env, context) {
           user.id,
           new Date(Date.now() + 1800000).toISOString(),
         );
-        const endpoint = new URL(env.RESET_EMAIL_ENDPOINT);
-        if (endpoint.protocol !== "https:")
-          fail(503, "Email delivery requires HTTPS");
-        const sent = await fetch(endpoint, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${env.RESET_EMAIL_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            to: email,
-            template: "niches-password-reset",
-            reset_url: `${env.APP_URL}/?reset=${token}`,
-          }),
-          redirect: "manual",
-        });
-        if (!sent.ok)
+        try {
+          await sendResetEmail(env, email, token);
+        } catch {
           fail(503, "Reset email could not be delivered. Try later.");
+        }
       }
       return json({
         message: "If the account exists, a reset link has been sent.",
