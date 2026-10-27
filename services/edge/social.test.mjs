@@ -27,6 +27,7 @@ let mf, env, db, user, niche, cookie, otherCookie, otherUser;
 const modules = [
   "worker",
         "kv-media",
+        "reset-email",
   "security",
   "db",
   "token-vault",
