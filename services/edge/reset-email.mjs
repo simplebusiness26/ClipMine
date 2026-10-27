@@ -18,7 +18,7 @@ export async function sendResetEmail(env, to, token, fetcher = fetch) {
   link.searchParams.set("reset", token);
   let destination, headers, payload;
   if (env.BREVO_API_KEY && env.BREVO_SENDER_EMAIL) {
-    if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(env.BREVO_SENDER_EMAIL))
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(env.BREVO_SENDER_EMAIL))
       throw new Error("Invalid transactional email sender");
     destination = "https://api.brevo.com/v3/smtp/email";
     headers = { "api-key": env.BREVO_API_KEY, "Content-Type": "application/json" };
