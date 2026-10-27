@@ -50,8 +50,8 @@ test("KV-only Worker accepts private uploads and supports authenticated ranges",
     response = await call("/api/niches/" + niche + "/media", "POST", image, {
       "Content-Type": "image/png", "Content-Length": String(image.length), "X-Filename": "test.png"
     });
-    assert.equal(response.status, 201, await response.text());
-    const media = (await response.clone().json()).id;
+    assert.equal(response.status, 201);
+    const media = (await response.json()).id;
     response = await call("/api/niches/" + niche + "/media/" + media, "GET", undefined, { Range: "bytes=2-5" });
     assert.equal(response.status, 206);
     assert.equal(response.headers.get("content-range"), "bytes 2-5/10");
