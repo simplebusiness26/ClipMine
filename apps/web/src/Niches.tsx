@@ -1091,6 +1091,30 @@ function Workspace({
                         <a download href={mediaPath(niche.id, m.id, true)}>
                           Download
                         </a>
+                        <button
+                          disabled={busy}
+                          aria-label={`Delete ${m.filename} from your library`}
+                          onClick={async () => {
+                            if (!window.confirm(`Permanently delete ${m.filename} from this niche? Drafts using it will lose their attachment.`))
+                              return;
+                            setBusy(true);
+                            setError("");
+                            try {
+                              await call(base + "/media/" + m.id, "DELETE");
+                              if (selectedMedia === m.id) setSelectedMedia("");
+                              setRecentUploaded((items) => items.filter((id) => id !== m.id));
+                              await load();
+                              changed();
+                              setStatus("Media permanently removed from your private library.");
+                            } catch (error) {
+                              setError((error as Error).message);
+                            } finally {
+                              setBusy(false);
+                            }
+                          }}
+                        >
+                          Delete
+                        </button>
                       </div>
                     </div>
                   </article>
