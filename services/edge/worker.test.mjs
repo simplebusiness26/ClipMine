@@ -31,6 +31,7 @@ before(async () => {
     convertV4MiniflareOptions({
       modules: [
         "worker",
+        "kv-media",
         "security",
         "db",
         "token-vault",
