@@ -32,6 +32,7 @@ before(async () => {
       modules: [
         "worker",
         "kv-media",
+        "reset-email",
         "security",
         "db",
         "token-vault",
