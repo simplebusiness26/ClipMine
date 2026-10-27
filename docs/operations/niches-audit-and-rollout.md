@@ -2,6 +2,12 @@
 
 Audit date: 2026-10-26. The follow-up below supersedes the initial access/deployment blockers; the initial audit remains as historical evidence.
 
+## Publishing follow-up — 2026-10-27
+
+The next implementation adds multi-account niche management, working file selection with local-only previews when storage is unavailable, per-account composer settings, encrypted official OAuth adapters and an approval-bound publishing outbox. See [publishing configuration and remaining prerequisites](niches-publishing.md). Provider transport tests are simulated; no real social publishing is verified.
+
+Read-only preflight established R2 is disabled (Cloudflare error 10042), rather than an assumed token-scope problem. Production storage and external provider applications still require owner authorisation. Earlier capability descriptions below are historical and superseded by this follow-up.
+
 ## Live portal follow-up — 2026-10-26
 
 The portal is live at <https://niches.ai-seo.workers.dev>. It uses a distinct `niches` Worker and D1 database `4f2a701e-6960-48b3-82b5-096cabb3aeaf` in the account reached by AISO's existing deployment credentials. Credentials stayed inside AISO Actions; their values were not retrieved or copied into ClipMine.

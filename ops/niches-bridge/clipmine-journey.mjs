@@ -1,6 +1,6 @@
 // Real local media acceptance test: no production resources or customer media.
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -27,7 +27,7 @@ const python = spawn(
       CLIPMINE_TRANSCRIPTION_PROVIDER: "off",
       NICHES_GATEWAY_KEY: key,
     },
-    stdio: "ignore",
+    stdio: ["ignore", "ignore", "inherit"],
   },
 );
 let mf;
@@ -74,9 +74,17 @@ try {
     convertV4MiniflareOptions({
       host: "127.0.0.1",
       modules: [
-        { type: "ESModule", path: "services/edge/worker.mjs" },
-        { type: "ESModule", path: "services/edge/security.mjs" },
-      ],
+        "worker",
+        "security",
+        "db",
+        "token-vault",
+        "social-oauth",
+        "publishers",
+        "outbox",
+      ].map((name) => ({
+        type: "ESModule",
+        path: `services/edge/${name}.mjs`,
+      })),
       compatibilityDate: "2026-09-01",
       d1Databases: ["DB"],
       r2Buckets: ["MEDIA"],
@@ -88,7 +96,15 @@ try {
     }),
   );
   const db = await mf.getD1Database("DB");
-  for (const sql of (await readFile("migrations/0001_niches.sql", "utf8"))
+  for (const sql of (
+    await Promise.all(
+      (await readdir("migrations"))
+        .filter((n) => n.endsWith(".sql"))
+        .sort()
+        .map((n) => readFile("migrations/" + n, "utf8")),
+    )
+  )
+    .join("\n")
     .split(";")
     .map((s) => s.trim())
     .filter(Boolean))
@@ -218,7 +234,10 @@ try {
   );
 } finally {
   await mf?.dispose();
-  python.kill("SIGTERM");
-  await new Promise((resolve) => python.once("exit", resolve));
+  if (python.exitCode === null && python.signalCode === null) {
+    const stopped = new Promise((resolve) => python.once("exit", resolve));
+    python.kill("SIGTERM");
+    await stopped;
+  }
   await rm(dir, { recursive: true, force: true });
 }

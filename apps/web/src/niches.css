@@ -1439,3 +1439,5 @@ html {
     transition: none !important;
   }
 }
+
+.n-person button{font-size:11px!important;white-space:nowrap;padding:8px}.n-post-row{flex-wrap:wrap}.n-modal code{overflow-wrap:anywhere}.n-account-grid .n-primary{white-space:normal}

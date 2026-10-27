@@ -1,4 +1,17 @@
 import {
+  providerInfo,
+  beginOAuth,
+  finishOAuth,
+  selectConnections,
+} from "./social-oauth.mjs";
+import {
+  queuePost,
+  runOutbox,
+  providerMedia,
+  retryPublication,
+  creatorInfo,
+} from "./outbox.mjs";
+import {
   id,
   now,
   randomToken,
@@ -13,34 +26,6 @@ import {
   validateUpload,
 } from "./security.mjs";
 
-export const providers = [
-  {
-    id: "facebook",
-    name: "Facebook Pages & Reels",
-    status: "not_configured",
-    reason: "Meta app, Page permissions and app review required.",
-  },
-  {
-    id: "instagram",
-    name: "Instagram professional & Reels",
-    status: "not_configured",
-    reason:
-      "Eligible professional account, Meta OAuth and app review required.",
-  },
-  {
-    id: "tiktok",
-    name: "TikTok",
-    status: "not_configured",
-    reason: "Content Posting API app review and user authorisation required.",
-  },
-  {
-    id: "youtube",
-    name: "YouTube & Shorts",
-    status: "not_configured",
-    reason:
-      "Google OAuth, YouTube upload permission and production verification required.",
-  },
-];
 const execute = (env, sql, ...values) =>
   env.DB.prepare(sql)
     .bind(...values)
@@ -127,6 +112,7 @@ async function issueSession(env, user, secure) {
 function postRow(row) {
   return {
     ...row,
+    status: row.publish_mode === "direct" ? row.delivery_status : row.status,
     destinations: JSON.parse(row.destinations_json),
     overrides: JSON.parse(row.overrides_json),
   };
@@ -261,7 +247,7 @@ async function clipRequest(request, env, user, path) {
     },
   });
 }
-async function api(request, env) {
+async function api(request, env, context) {
   const url = new URL(request.url),
     path = url.pathname,
     method = request.method;
@@ -277,7 +263,9 @@ async function api(request, env) {
       database: !!env.DB,
       storage: !!env.MEDIA,
       clipmine: !!(env.CLIPMINE_ORIGIN && env.CLIPMINE_GATEWAY_KEY),
-      publishing: "not_configured",
+      publishing: providerInfo(env).some((p) => p.publishing_enabled)
+        ? "configured_unverified"
+        : "setup_required",
     });
   if (path.startsWith("/api/auth/")) {
     const action = path.slice(10);
@@ -399,10 +387,18 @@ async function api(request, env) {
       "Set-Cookie": await issueSession(env, user.id, secure),
     });
   }
+  const oauthCallback = path.match(
+    /^\/api\/oauth\/(facebook|instagram|tiktok|youtube)\/callback$/,
+  );
+  if (oauthCallback && method === "GET")
+    return finishOAuth(request, env, oauthCallback[1]);
+  const grant = path.match(/^\/api\/provider-media\/([a-f0-9]{64})$/);
+  if (grant) return providerMedia(request, env, grant[1]);
   const user = await userFor(request, env);
   if (!["GET", "HEAD"].includes(method))
     await rate(env, `write:${user.id}`, 60);
-  if (path === "/api/providers" && method === "GET") return json(providers);
+  if (path === "/api/providers" && method === "GET")
+    return json(providerInfo(env));
   if (path === "/api/notifications") {
     if (method === "GET")
       return json(
@@ -446,7 +442,7 @@ async function api(request, env) {
       return json(
         await all(
           env,
-          `SELECT n.*, (SELECT COUNT(*) FROM media WHERE niche_id=n.id) AS media_count,(SELECT COUNT(*) FROM posts WHERE niche_id=n.id AND status='draft') AS draft_count,(SELECT COUNT(*) FROM posts WHERE niche_id=n.id AND status='scheduled') AS scheduled_count,(SELECT COUNT(*) FROM accounts WHERE niche_id=n.id AND status='connected') AS account_count FROM niches n WHERE user_id=? ORDER BY created_at DESC`,
+          `SELECT n.*, (SELECT COUNT(*) FROM media WHERE niche_id=n.id) AS media_count,(SELECT COUNT(*) FROM posts WHERE niche_id=n.id AND (publish_mode='direct' AND delivery_status='draft' OR publish_mode='export' AND status='draft')) AS draft_count,(SELECT COUNT(*) FROM posts WHERE niche_id=n.id AND (publish_mode='direct' AND delivery_status='scheduled' OR publish_mode='export' AND status='scheduled')) AS scheduled_count,(SELECT COUNT(*) FROM accounts WHERE niche_id=n.id AND status!='archived') AS account_count,(SELECT COUNT(*) FROM accounts WHERE niche_id=n.id AND status='connected') AS connected_count,(SELECT json_group_array(json_object('platform',a.platform,'status',a.status)) FROM accounts a WHERE a.niche_id=n.id AND a.status!='archived') AS accounts_json FROM niches n WHERE user_id=? ORDER BY created_at DESC`,
           user.id,
         ),
       );
@@ -520,15 +516,111 @@ async function api(request, env) {
     return json(
       await all(
         env,
-        "SELECT id,niche_id,platform,display_name,status FROM accounts WHERE niche_id=?",
+        "SELECT id,niche_id,platform,display_name,provider_id,status,connection_kind,expires_at FROM accounts WHERE niche_id=? AND status!='archived'",
         niche.id,
       ),
     );
-  if (sub.startsWith("accounts/") && method === "POST")
-    fail(
-      503,
-      "Official OAuth is not configured. No social account has been connected. Use draft/export in the meantime.",
+  if (sub === "accounts" && method === "POST") {
+    const data = await body(request);
+    if (!["facebook", "instagram", "tiktok", "youtube"].includes(data.platform))
+      fail(400, "Choose a supported platform.");
+    const label = textValue(data.display_name, 100, true),
+      handle = textValue(data.handle, 100, true).replace(/^@/, "");
+    const existing = await one(
+      env,
+      "SELECT id FROM accounts WHERE niche_id=? AND platform=? AND provider_id=?",
+      niche.id,
+      data.platform,
+      "manual:" + handle.toLowerCase(),
     );
+    if (existing) fail(409, "This account is already listed in this niche.");
+    if (
+      (
+        await one(
+          env,
+          "SELECT COUNT(*) AS total FROM accounts WHERE niche_id=? AND status!='archived'",
+          niche.id,
+        )
+      ).total >= 50
+    )
+      fail(400, "This niche supports up to 50 accounts.");
+    const account = id();
+    await execute(
+      env,
+      "INSERT INTO accounts(id,niche_id,platform,display_name,provider_id,status,connection_kind,created_at) VALUES (?,?,?,?,?,'disconnected','manual',?)",
+      account,
+      niche.id,
+      data.platform,
+      label,
+      "manual:" + handle.toLowerCase(),
+      now(),
+    );
+    await audit(env, user.id, niche.id, "account.added", account);
+    return json(
+      {
+        id: account,
+        status: "disconnected",
+        message:
+          "Account added for planning. Authorise it before direct publishing.",
+      },
+      201,
+    );
+  }
+  const connect = sub.match(
+    /^accounts\/(facebook|instagram|tiktok|youtube)\/connect$/,
+  );
+  if (connect && method === "POST")
+    return beginOAuth(request, env, user, niche, connect[1]);
+  const selection = sub.match(/^connections\/([a-f0-9]{64})$/);
+  if (selection) {
+    if (method === "GET")
+      return json(await selectConnections(env, user, niche.id, selection[1]));
+    if (method === "POST") {
+      const data = await body(request);
+      return json(
+        await selectConnections(
+          env,
+          user,
+          niche.id,
+          selection[1],
+          data.selected,
+        ),
+      );
+    }
+  }
+  const accountAction = sub.match(
+    /^accounts\/([a-zA-Z0-9-]+)\/(disconnect|archive|creator)$/,
+  );
+  if (accountAction) {
+    const account = await one(
+      env,
+      "SELECT * FROM accounts WHERE id=? AND niche_id=?",
+      accountAction[1],
+      niche.id,
+    );
+    if (!account) fail(404, "Account not found");
+    if (accountAction[2] === "creator" && method === "GET") {
+      if (account.platform !== "tiktok")
+        fail(400, "Creator information is only required for TikTok.");
+      return json(await creatorInfo(env, account));
+    }
+    if (method === "POST" && accountAction[2] !== "creator") {
+      await execute(
+        env,
+        "UPDATE accounts SET status=?,encrypted_tokens=NULL,expires_at=NULL WHERE id=?",
+        accountAction[2] === "archive" ? "archived" : "disconnected",
+        account.id,
+      );
+      await audit(
+        env,
+        user.id,
+        niche.id,
+        "account." + accountAction[2],
+        account.id,
+      );
+      return json({ ok: true });
+    }
+  }
   if (sub === "activity" && method === "GET")
     return json(
       await all(
@@ -620,7 +712,11 @@ async function api(request, env) {
       ),
     );
   if (sub === "media" && method === "POST") {
-    if (!env.MEDIA) fail(503, "Media uploads are temporarily unavailable while private storage access is configured.");
+    if (!env.MEDIA)
+      fail(
+        503,
+        "Media uploads are temporarily unavailable while private storage access is configured.",
+      );
     const length = Number(request.headers.get("content-length")),
       max = Number(env.MAX_UPLOAD_MB || 25) * 1024 * 1024;
     if (!length || length > max)
@@ -657,6 +753,24 @@ async function api(request, env) {
       await env.MEDIA.delete(key);
       throw error;
     }
+    const duration = Number(request.headers.get("x-duration-seconds")) || null,
+      width = Number(request.headers.get("x-media-width")) || null,
+      height = Number(request.headers.get("x-media-height")) || null;
+    if (
+      (duration === null || (duration > 0 && duration <= 10800)) &&
+      (width === null ||
+        (Number.isInteger(width) && width > 0 && width < 20000)) &&
+      (height === null ||
+        (Number.isInteger(height) && height > 0 && height < 20000))
+    )
+      await execute(
+        env,
+        "UPDATE media SET duration_seconds=?,width=?,height=? WHERE id=?",
+        duration,
+        width,
+        height,
+        media,
+      );
     await audit(env, user.id, niche.id, "media.uploaded", media);
     return json({ id: media }, 201);
   }
@@ -669,7 +783,8 @@ async function api(request, env) {
       niche.id,
     );
     if (!media) fail(404, "Media not found");
-    if (!env.MEDIA) fail(503, "Private media storage is temporarily unavailable.");
+    if (!env.MEDIA)
+      fail(503, "Private media storage is temporarily unavailable.");
     const partial = request.headers.has("range");
     const object = await env.MEDIA.get(
       media.object_key,
@@ -695,7 +810,11 @@ async function api(request, env) {
     });
   }
   if (sub === "clips/import" && method === "POST") {
-    if (!env.MEDIA) fail(503, "Private media storage must be connected before importing clips.");
+    if (!env.MEDIA)
+      fail(
+        503,
+        "Private media storage must be connected before importing clips.",
+      );
     const data = await body(request),
       project = textValue(data.project_id, 80, true),
       candidate = textValue(data.candidate_id, 80, true);
@@ -738,7 +857,7 @@ async function api(request, env) {
     try {
       await execute(
         env,
-        "INSERT INTO media VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO media(id,niche_id,object_key,filename,mime,size,source_project,source_candidate,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
         media,
         niche.id,
         key,
@@ -774,6 +893,49 @@ async function api(request, env) {
         )
       ).map(postRow),
     );
+  const delivery = sub.match(
+    /^posts\/([a-zA-Z0-9-]+)\/(deliver|publications)$/,
+  );
+  if (delivery) {
+    const post = await one(
+      env,
+      "SELECT * FROM posts WHERE id=? AND niche_id=?",
+      delivery[1],
+      niche.id,
+    );
+    if (!post) fail(404, "Post not found");
+    if (delivery[2] === "publications" && method === "GET")
+      return json(
+        await all(
+          env,
+          "SELECT p.id,p.account_id,p.status,p.provider_post_id,p.error,p.error_code,p.attempt,p.updated_at,a.platform,a.display_name FROM publications p JOIN accounts a ON a.id=p.account_id WHERE p.post_id=?",
+          post.id,
+        ),
+      );
+    if (delivery[2] === "deliver" && method === "POST") {
+      const result = await queuePost(
+        env,
+        user,
+        niche,
+        post,
+        await body(request),
+      );
+      context?.waitUntil(runOutbox(env, 3));
+      return json(result, 202);
+    }
+  }
+  const retry = sub.match(/^publications\/([a-zA-Z0-9-]+)\/retry$/);
+  if (retry && method === "POST") {
+    const result = await retryPublication(
+      env,
+      user,
+      niche,
+      retry[1],
+      await body(request),
+    );
+    context?.waitUntil(runOutbox(env, 3));
+    return json(result, 202);
+  }
   const postMatch = sub.match(
     /^posts\/([a-zA-Z0-9-]+)(?:\/(approve|cancel|export))?$/,
   );
@@ -791,6 +953,18 @@ async function api(request, env) {
           )
         : null;
     if (postMatch && !existing) fail(404, "Draft not found");
+    if (
+      existing &&
+      (await one(
+        env,
+        "SELECT id FROM publications WHERE post_id=? LIMIT 1",
+        existing.id,
+      ))
+    )
+      fail(
+        409,
+        "This post has publishing history. Create a new draft to change its content.",
+      );
     if (
       existing &&
       existing.status !== "draft" &&
@@ -811,7 +985,7 @@ async function api(request, env) {
       fail(404, "Media not found in this niche");
     const accounts = await all(
       env,
-      "SELECT id FROM accounts WHERE niche_id=? AND status='connected'",
+      "SELECT id FROM accounts WHERE niche_id=? AND status!='archived'",
       niche.id,
     );
     const destinations = data.destinations ?? accounts.map((a) => a.id);
@@ -819,7 +993,7 @@ async function api(request, env) {
       !Array.isArray(destinations) ||
       destinations.some((a) => !accounts.some((b) => b.id === a))
     )
-      fail(400, "Every destination must be a connected account in this niche.");
+      fail(400, "Every destination must belong to this niche.");
     const overrides = data.overrides || {};
     if (
       typeof overrides !== "object" ||
@@ -827,14 +1001,33 @@ async function api(request, env) {
       JSON.stringify(overrides).length > 16000
     )
       fail(400, "Invalid platform overrides");
+    for (const [key, value] of Object.entries(overrides)) {
+      if (
+        ![
+          "facebook",
+          "instagram",
+          "tiktok",
+          "youtube",
+          ...accounts.map((a) => a.id),
+        ].includes(key) ||
+        !value ||
+        typeof value !== "object" ||
+        Array.isArray(value)
+      )
+        fail(400, "Invalid account metadata.");
+      overrides[key] = {
+        title: textValue(value.title || "", 120),
+        caption: textValue(value.caption || "", 10000),
+      };
+    }
     const title = textValue(data.title || "", 120),
       caption = textValue(data.caption || "", 10000),
       post = existing?.id || id(),
       stamp = now();
-    if (existing)
-      await execute(
+    if (existing) {
+      const result = await execute(
         env,
-        "UPDATE posts SET media_id=?,title=?,caption=?,destinations_json=?,overrides_json=?,status='draft',scheduled_at=NULL,approved_at=NULL,updated_at=? WHERE id=?",
+        "UPDATE posts SET media_id=?,title=?,caption=?,destinations_json=?,overrides_json=?,status='draft',delivery_status='draft',scheduled_at=NULL,approved_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
         mediaId,
         title,
         caption,
@@ -843,7 +1036,12 @@ async function api(request, env) {
         stamp,
         post,
       );
-    else
+      if (!result.meta.changes)
+        fail(
+          409,
+          "This draft changed publishing state. Refresh before editing.",
+        );
+    } else
       await execute(
         env,
         "INSERT INTO posts(id,niche_id,media_id,title,caption,destinations_json,overrides_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -899,6 +1097,29 @@ async function api(request, env) {
       );
     }
     if (postMatch[2] === "cancel" && method === "POST") {
+      if (post.publish_mode === "direct") {
+        if (
+          await one(
+            env,
+            "SELECT id FROM publications WHERE post_id=? AND (submission_started=1 OR status='published') LIMIT 1",
+            post.id,
+          )
+        )
+          fail(
+            409,
+            "A provider has started processing this post. Check its account-specific status before making changes.",
+          );
+        await execute(
+          env,
+          "UPDATE publications SET status='cancelled',lease_until=NULL WHERE post_id=? AND submission_started=0",
+          post.id,
+        );
+      }
+      await execute(
+        env,
+        "UPDATE posts SET delivery_status='cancelled' WHERE id=?",
+        post.id,
+      );
       await execute(
         env,
         "UPDATE posts SET status='cancelled',updated_at=? WHERE id=?",
@@ -952,9 +1173,10 @@ async function api(request, env) {
   fail(404, "Not found");
 }
 export async function scheduled(env) {
+  await runOutbox(env);
   const due = await all(
     env,
-    "SELECT p.id,p.niche_id,n.user_id FROM posts p JOIN niches n ON n.id=p.niche_id WHERE status='scheduled' AND scheduled_at<=? LIMIT 25",
+    "SELECT p.id,p.niche_id,n.user_id FROM posts p JOIN niches n ON n.id=p.niche_id WHERE publish_mode='export' AND status='scheduled' AND scheduled_at<=? LIMIT 25",
     now(),
   );
   for (const post of due) {
@@ -975,13 +1197,16 @@ export async function scheduled(env) {
   );
   await execute(env, "DELETE FROM sessions WHERE expires_at<?", now());
   await execute(env, "DELETE FROM password_resets WHERE expires_at<?", now());
+  await execute(env, "DELETE FROM oauth_states WHERE expires_at<?", now());
+  await execute(env, "DELETE FROM oauth_selections WHERE expires_at<?", now());
+  await execute(env, "DELETE FROM media_grants WHERE expires_at<?", now());
 }
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, context) {
     let response;
     try {
       response = new URL(request.url).pathname.startsWith("/api/")
-        ? await api(request, env)
+        ? await api(request, env, context)
         : await env.ASSETS.fetch(request);
     } catch (error) {
       response = json(

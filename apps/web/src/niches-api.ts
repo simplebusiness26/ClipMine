@@ -9,6 +9,8 @@ export interface Niche {
   draft_count?: number;
   scheduled_count?: number;
   account_count?: number;
+  connected_count?: number;
+  accounts_json?: string;
 }
 export interface Media {
   id: string;
@@ -22,14 +24,20 @@ export interface SocialAccount {
   platform: string;
   display_name: string;
   status: string;
+  provider_id?: string;
+  connection_kind?: string;
 }
 export interface Provider {
+  oauth_ready?: boolean;
+  publishing_enabled?: boolean;
+  callback?: string | null;
   id: string;
   name: string;
   status: string;
   reason: string;
 }
 export interface Post {
+  publish_mode?: string;
   id: string;
   media_id: string | null;
   title: string;
@@ -81,16 +89,66 @@ export async function call<T>(
 }
 export const mediaPath = (niche: string, media: string, download = false) =>
   `/api/niches/${niche}/media/${media}${download ? "?download=1" : ""}`;
-export async function uploadMedia(niche: string, file: File) {
-  const response = await fetch(`/api/niches/${niche}/media`, {
-    method: "POST",
-    headers: {
-      "Content-Type": file.type,
-      "X-Filename": file.name.replace(/[^\x20-\x7E]/g, "_"),
-    },
-    body: file,
+async function fileMetadata(file: File): Promise<Record<string, string>> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file),
+      element = file.type.startsWith("video/")
+        ? document.createElement("video")
+        : new Image();
+    const finish = () => {
+      const v = element as HTMLVideoElement;
+      const i = element as HTMLImageElement;
+      const result: Record<string, string> = {};
+      if (v.videoWidth || i.naturalWidth)
+        result["X-Media-Width"] = String(v.videoWidth || i.naturalWidth);
+      if (v.videoHeight || i.naturalHeight)
+        result["X-Media-Height"] = String(v.videoHeight || i.naturalHeight);
+      if (Number.isFinite(v.duration) && v.duration > 0)
+        result["X-Duration-Seconds"] = String(v.duration);
+      URL.revokeObjectURL(url);
+      clearTimeout(timeout);
+      resolve(result);
+    };
+    const timeout = setTimeout(finish, 8000);
+    element.onerror = finish;
+    if (element instanceof HTMLVideoElement) {
+      element.onloadedmetadata = finish;
+      element.preload = "metadata";
+    } else element.onload = finish;
+    element.src = url;
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.detail);
-  return data as { id: string };
+}
+export async function uploadMedia(
+  niche: string,
+  file: File,
+  onProgress?: (percent: number) => void,
+): Promise<{ id: string }> {
+  const metadata = await fileMetadata(file);
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api/niches/${niche}/media`);
+    xhr.responseType = "json";
+    xhr.setRequestHeader(
+      "Content-Type",
+      file.type || "application/octet-stream",
+    );
+    xhr.setRequestHeader("X-Filename", file.name.replace(/[^\x20-\x7E]/g, "_"));
+    for (const [k, v] of Object.entries(metadata)) xhr.setRequestHeader(k, v);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable)
+        onProgress?.(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onerror = () =>
+      reject(
+        new Error("Upload interrupted. Check your connection and try again."),
+      );
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response);
+      else
+        reject(
+          new Error(xhr.response?.detail || `Upload failed (${xhr.status})`),
+        );
+    };
+    xhr.send(file);
+  });
 }
