@@ -1,3 +1,4 @@
+import { withMedia } from "./kv-media.mjs";
 import {
   providerInfo,
   beginOAuth,
@@ -152,6 +153,13 @@ async function quota(env, user, size) {
   );
   if (usage.bytes + size > 250 * 1024 * 1024 || usage.files >= 100)
     fail(413, "This beta account has reached its 250 MB or 100 file limit.");
+  // Leave headroom for the account-wide 1 GB free Workers KV allowance.
+  // This is a conservative beta guard, not an atomic storage quota.
+  if (env.MEDIA_BACKEND === "kv") {
+    const total = await one(env, "SELECT COALESCE(SUM(size),0) AS bytes FROM media");
+    if (total.bytes + size > 500 * 1024 * 1024)
+      fail(413, "The free media beta has reached its shared 500 MB capacity.");
+  }
 }
 async function clipRequest(request, env, user, path) {
   if (!env.CLIPMINE_ORIGIN || !env.CLIPMINE_GATEWAY_KEY)
@@ -262,6 +270,7 @@ async function api(request, env, context) {
       build: env.BUILD_SHA || "development",
       database: !!env.DB,
       storage: !!env.MEDIA,
+      storage_backend: env.MEDIA_BACKEND || (env.MEDIA ? "r2" : "none"),
       clipmine: !!(env.CLIPMINE_ORIGIN && env.CLIPMINE_GATEWAY_KEY),
       publishing: providerInfo(env).some((p) => p.publishing_enabled)
         ? "configured_unverified"
@@ -1203,10 +1212,11 @@ export async function scheduled(env) {
 }
 export default {
   async fetch(request, env, context) {
+    const runtime = withMedia(env);
     let response;
     try {
       response = new URL(request.url).pathname.startsWith("/api/")
-        ? await api(request, env, context)
+        ? await api(request, runtime, context)
         : await env.ASSETS.fetch(request);
     } catch (error) {
       response = json(
@@ -1229,6 +1239,6 @@ export default {
     return new Response(response.body, { status: response.status, headers });
   },
   async scheduled(_controller, env) {
-    await scheduled(env);
+    await scheduled(withMedia(env));
   },
 };
