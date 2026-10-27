@@ -426,3 +426,24 @@ test("storage-disabled deployment keeps drafts available and fails uploads clear
   );
   assert.equal(drafts.status, 200);
 });
+
+
+test("media deletion enforces ownership and unlinks harmless drafts while removing private bytes", async () => {
+  const png = new Uint8Array([137,80,78,71,13,10,26,10,0,0]);
+  const uploaded = (await checked(
+    `/api/niches/${niche}/media`,
+    { method: "POST", cookie: first, raw: png, headers: {
+      "Content-Type": "image/png", "Content-Length": String(png.length), "X-Filename": "delete-me.png",
+    } }, 201,
+  )).data.id;
+  const draft = (await checked(`/api/niches/${niche}/posts`, {
+    method: "POST", cookie: first, data: { title: "Draft to unlink", media_id: uploaded },
+  }, 201)).data;
+  await checked(`/api/niches/${niche}/media/${uploaded}`, {method:"DELETE",cookie:second},404);
+  await checked(`/api/niches/${niche}/media/${uploaded}`, {method:"DELETE",cookie:first});
+  const posts = (await checked(`/api/niches/${niche}/posts`,{cookie:first})).data;
+  assert.equal(posts.find(p=>p.id===draft.id).media_id,null);
+  await checked(`/api/niches/${niche}/media/${uploaded}`,{cookie:first},404);
+  const mediaList = (await checked(`/api/niches/${niche}/media`,{cookie:first})).data;
+  assert.ok(!mediaList.some(x=>x.id===uploaded));
+});
