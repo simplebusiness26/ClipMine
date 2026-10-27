@@ -26,6 +26,7 @@ import { hash, now } from "./security.mjs";
 let mf, env, db, user, niche, cookie, otherCookie, otherUser;
 const modules = [
   "worker",
+        "kv-media",
   "security",
   "db",
   "token-vault",
