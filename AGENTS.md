@@ -24,6 +24,14 @@ Before implementation, read:
 - Record meaningful architectural choices in `docs/decisions/`.
 - Do not silently widen MVP scope.
 
+## Niches infrastructure access
+
+- Use AISO's existing operations route in `simplebusiness26/agentCart`, branch `ops/niches-cloudflare`, for Niches Cloudflare deployment and verification.
+- `.github/workflows/niches-access-check.yml` is the read-only account/entitlement check; `.github/workflows/niches-portal-deploy.yml` is the separate immutable-source deployment launcher.
+- The owner has reported Cloudflare browser sign-in does not work. Do not redirect them to Cloudflare browser login for tasks the authorised operations route can perform.
+- Keep credentials inside the authorised runner, target only Niches resources, and preserve AISO's application and bridge. Do not retrieve secret values.
+- A bridge credential does not bypass provider approval or account billing/entitlement. Diagnose those through the operations route and report exact evidence; do not activate paid products without owner approval.
+
 ## Completion report
 
 Every implementation handoff must state:
