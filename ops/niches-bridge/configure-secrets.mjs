@@ -49,6 +49,7 @@ for (const name of [
   "TIKTOK_CLIENT_SECRET",
   "META_APP_ID",
   "META_APP_SECRET",
+  "BREVO_API_KEY",
 ]) {
   const value = process.env["NICHES_" + name];
   if (!value) continue;
