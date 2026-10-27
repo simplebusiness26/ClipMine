@@ -447,3 +447,27 @@ test("media deletion enforces ownership and unlinks harmless drafts while removi
   const mediaList = (await checked(`/api/niches/${niche}/media`,{cookie:first})).data;
   assert.ok(!mediaList.some(x=>x.id===uploaded));
 });
+
+
+test("approved exports protect media until explicit cancellation", async () => {
+  const png = new Uint8Array([137,80,78,71,13,10,26,10,0,0]);
+  const uploaded = (await checked(`/api/niches/${niche}/media`,{
+    method:"POST", cookie:first, raw:png,
+    headers:{"Content-Type":"image/png","Content-Length":String(png.length),"X-Filename":"protected.png"},
+  },201)).data.id;
+  const post = (await checked(`/api/niches/${niche}/posts`,{
+    method:"POST",cookie:first,data:{title:"Approved media",media_id:uploaded},
+  },201)).data;
+  await checked(`/api/niches/${niche}/posts/${post.id}/approve`,{
+    method:"POST",cookie:first,data:{confirmed:true},
+  });
+  await checked(`/api/niches/${niche}/media/${uploaded}`,{
+    method:"DELETE",cookie:first,
+  },409);
+  await checked(`/api/niches/${niche}/posts/${post.id}/cancel`,{
+    method:"POST",cookie:first,data:{},
+  });
+  await checked(`/api/niches/${niche}/media/${uploaded}`,{
+    method:"DELETE",cookie:first,
+  });
+});
