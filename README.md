@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/simplebusiness26/ClipMine/actions/workflows/ci.yml/badge.svg)](https://github.com/simplebusiness26/ClipMine/actions/workflows/ci.yml)
 
-Niches is being built in this repository as a portal for independent content brands. Its partial portal is live at **<https://niches.ai-seo.workers.dev>** with verified accounts, niche creation and text drafts. **Media uploads are disabled pending R2 access; direct social publishing and hosted ClipMine processing are not enabled.**
+Niches is a portal for independent content brands. Its beta is live at **<https://niches.ai-seo.workers.dev>** with verified accounts, niche creation, multiple planning accounts per niche, text drafts and **private media upload/download through a dedicated free Workers KV namespace**. Production synthetic upload, full/range download and anonymous-denial checks passed in [the AISO-isolated deployment run](https://github.com/simplebusiness26/agentCart/actions/runs/40452645608). The free beta limits uploads to 25 MiB each and a conservative 500 MiB shared application cap; KV is eventually consistent and not intended as permanent bulk video storage. R2 remains disabled by the Cloudflare account entitlement. **Real social OAuth/publishing, password reset delivery and hosted ClipMine rendering are not yet production verified.**
 
 Start with the [Niches roadmap](docs/product/niches-roadmap.md) and [Cloudflare audit and rollout](docs/operations/niches-audit-and-rollout.md). The dedicated Worker, database and bucket must be configured in the confirmed AISO account, without touching AISO resources.
 
