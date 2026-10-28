@@ -1,4 +1,5 @@
 import PostHistory from "./PostHistory";
+import { parseBatchArchive } from "./batch-zip";
 import SocialAccounts from "./SocialAccounts";
 import PublishingReview from "./PublishingReview";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
@@ -756,6 +757,36 @@ function Workspace({
       setTab("Content");
     });
   }
+  async function importZip(file: File | undefined) {
+    if (!file) return;
+    if (!storageAvailable) {
+      setError("Cloud media storage is not available. Try again when uploads are enabled.");
+      return;
+    }
+    await run(async () => {
+      const batch = await parseBatchArchive(file);
+      let imported = 0;
+      try {
+        for (const asset of batch) {
+          setStatus(`Importing ${asset.file.name} (${imported + 1}/${batch.length})…`);
+          const uploaded = await uploadMedia(niche.id, asset.file, (percent) =>
+            setStatus(`Importing ${asset.file.name}: ${percent}% (${imported + 1}/${batch.length})`),
+          );
+          await call(base + "/posts", "POST", {
+            media_id: uploaded.id,
+            title: asset.title,
+            caption: asset.caption,
+            destinations: accounts.filter(a => a.status !== "archived").map(a => a.id),
+          });
+          imported++;
+        }
+      } catch (e) {
+        throw new Error(`Imported ${imported} of ${batch.length} drafts. Other files may remain in your private library. ${(e as Error).message}`);
+      }
+      setStatus(`Imported ${imported} ZIP videos/images with their matched captions and titles as private drafts. Review each one before scheduling or publishing.`);
+      setTab("Drafts");
+    });
+  }
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget));
@@ -970,6 +1001,36 @@ function Workspace({
               Only upload media you own or are authorised to publish. Private to
               your account.
             </p>
+          </section>
+          <section className="n-panel">
+            <span className="n-kicker">BULK CONTENT / PRIVATE BETA</span>
+            <h2>Import a ready-made content ZIP.</h2>
+            <p>
+              Upload a ZIP containing up to 20 videos or images. Niches matches
+              titles, captions, descriptions and hashtags by filename from
+              metadata.json, manifest.json or captions.csv. Matching filename.txt
+              caption files are supported too.
+            </p>
+            <p className="n-muted">
+              Each file must be under 25 MB, with no more than 120 MB of media per ZIP.
+              Imports become drafts, not published posts. Your accounts and each
+              platform’s required permissions still need review before scheduling.
+            </p>
+            <label className="n-primary">
+              {busy ? "Importing ZIP…" : "Import ZIP as drafts ↗"}
+              <input
+                aria-label="Import ZIP content pack"
+                type="file"
+                accept=".zip,application/zip"
+                disabled={busy || !storageAvailable}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  void importZip(file);
+                }}
+              />
+            </label>
+            {!storageAvailable && <p className="n-status-note">Cloud upload must be available to import a ZIP.</p>}
           </section>
           {recentUploaded.length > 0 && (
             <section className="n-panel">
