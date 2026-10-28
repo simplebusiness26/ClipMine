@@ -114,7 +114,7 @@ try {
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9S8AAAAASUVORK5CYII=",
       "base64",
     );
-    await page.locator("input[type=file]").setInputFiles({
+    await page.locator('input[type=file][accept^="video/"]').setInputFiles({
       name: "original-test.png",
       mimeType: "image/png",
       buffer: png,
