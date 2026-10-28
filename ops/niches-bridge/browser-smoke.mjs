@@ -5,6 +5,30 @@ const base = process.env.NICHES_URL;
 if (!base) throw new Error("NICHES_URL is required; never default to AISO.");
 const write = process.env.NICHES_TEST_WRITE === "1";
 validateBrowserTarget(base, write);
+
+// Small disposable archive with an original PNG and matching caption metadata.
+function zipFixture(files) {
+  const u16 = (n) => [n & 255, (n >>> 8) & 255];
+  const u32 = (n) => [...u16(n), ...u16(n >>> 16)];
+  const utf8 = new TextEncoder();
+  const local = [], directory = [];
+  for (const [filename, content] of files) {
+    const name = utf8.encode(filename);
+    const data = typeof content === "string" ? utf8.encode(content) : content;
+    const offset = local.length;
+    local.push(...u32(0x04034b50), ...u16(20), ...u16(0), ...u16(0),
+      ...u32(0), ...u32(0), ...u32(data.length), ...u32(data.length),
+      ...u16(name.length), ...u16(0), ...name, ...data);
+    directory.push(...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0),
+      ...u16(0), ...u32(0), ...u32(0), ...u32(data.length), ...u32(data.length),
+      ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0),
+      ...u32(0), ...u32(offset), ...name);
+  }
+  return Buffer.from([...local, ...directory, ...u32(0x06054b50),
+    ...u16(0), ...u16(0), ...u16(files.length), ...u16(files.length),
+    ...u32(directory.length), ...u32(local.length), ...u16(0)]);
+}
+
 const browser = await chromium.launch({ headless: true });
 const findings = [];
 await mkdir("test-results", { recursive: true });
@@ -90,7 +114,7 @@ try {
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9S8AAAAASUVORK5CYII=",
       "base64",
     );
-    await page.locator("input[type=file]").setInputFiles({
+    await page.locator('input[type=file][accept^="video/"]').setInputFiles({
       name: "original-test.png",
       mimeType: "image/png",
       buffer: png,
@@ -141,6 +165,28 @@ try {
     await page
       .getByRole("heading", { name: "Pick up where you left off." })
       .waitFor();
+    if (storage) {
+      // Browser-level real import → upload → draft persistence, never social publishing.
+      await page
+        .locator('nav[aria-label="Niche workspace"] button')
+        .filter({ has: page.locator("span", { hasText: /^Create$/ }) })
+        .click();
+      const zip = zipFixture([
+        ["original-zip.png", png],
+        ["metadata.json", JSON.stringify({ posts: [
+          { filename: "original-zip.png", title: "ZIP browser test",
+            description: "ZIP caption matched", hashtags: ["#realmetadata"] },
+        ] })],
+      ]);
+      await page.getByLabel("Import ZIP content pack").setInputFiles({
+        name: "niches-batch.zip",
+        mimeType: "application/zip",
+        buffer: zip,
+      });
+      await page.getByText("Imported 1 ZIP videos/images", { exact: false }).waitFor();
+      await page.getByText("ZIP caption matched", { exact: false }).waitFor();
+      await page.getByText("ZIP browser test", { exact: true }).waitFor();
+    }
     await page
       .getByRole("button", { name: "◈ All niches 1" })
       .click()
@@ -192,7 +238,7 @@ try {
       }
     }
     console.log(
-      "PASS local browser: register → niche → 3 Instagrams/2 TikToks/1 YouTube → select destinations → file upload/preview → draft; 12 tabs at 5 viewport widths",
+      "PASS local browser: register → niche → 3 Instagrams/2 TikToks/1 YouTube → select destinations → file upload/preview → draft → ZIP metadata import; 12 tabs at 5 viewport widths",
     );
   } else {
     for (const width of [320, 375, 390, 430]) {
