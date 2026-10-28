@@ -186,7 +186,7 @@ export async function parseBatchArchive(file: File): Promise<BatchAsset[]> {
     const withTags = [caption, tags].filter(Boolean).join("\n\n").slice(0,10000);
     const payload = await extract(bytes, entry);
     result.push({
-      file: new File([payload], entry.base, { type: MIME[extension(entry.base)] }),
+      file: new File([payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength) as ArrayBuffer], entry.base, { type: MIME[extension(entry.base)] }),
       title: safeText(row.title ?? row.headline, 120) || entry.base.replace(/\.[^.]+$/, ""),
       caption: withTags,
     });
