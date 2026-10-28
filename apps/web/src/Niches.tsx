@@ -692,9 +692,10 @@ function Workspace({
   useEffect(() => {
     void load();
   }, [niche.id, refreshKey]);
+  // Successful uploads/imports may navigate to another tab. Keep their result
+  // message visible rather than erasing it immediately after navigation.
   useEffect(() => {
     setError("");
-    setStatus("");
   }, [tab]);
   async function run(work: () => Promise<void>) {
     if (busy) return;
