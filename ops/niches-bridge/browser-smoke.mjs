@@ -117,6 +117,27 @@ try {
       if (!intercepted)
         throw new Error("Facebook Connect button never opened provider OAuth");
       await page.unroute(metaPattern);
+
+      // A successful Meta callback returns a Page-selection ticket. The
+      // browser should display authorised Pages without a second click.
+      // Supply fixture choices without granting tokens or writing accounts.
+      const selectionTicket = "f".repeat(64);
+      const selectionEndpoint = base + "/api/niches/" +
+        testNiche.id + "/connections/" + selectionTicket;
+      await page.route(selectionEndpoint, async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify([
+            { id: "fixture-meta-page", name: "Demo Page", platform: "facebook" },
+          ]),
+        });
+      });
+      await page.goto(base + "/?niche=" + testNiche.id +
+        "&section=Accounts&connect_ticket=" + selectionTicket);
+      await page.getByText("Demo Page · facebook").waitFor({ timeout: 15000 });
+      await page.unroute(selectionEndpoint);
+      await page.goto(base + "/?niche=" + testNiche.id + "&section=Accounts");
     }
     for (const account of [
       { platform: "instagram", name: "Instagram Main", handle: "carsmain" },
