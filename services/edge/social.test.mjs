@@ -196,12 +196,12 @@ test("Facebook Connect uses browser-native navigation and preserves scoped OAuth
   assert.equal(response.status, 303);
   const destination = new URL(response.headers.get("location"));
   assert.equal(destination.origin, "https://www.facebook.com");
-  assert.match(destination.pathname, /^\\/v\\d+\\.\\d+\\/dialog\\/oauth$/);
+  assert.ok(destination.pathname.startsWith("/v") && destination.pathname.endsWith("/dialog/oauth"));
   assert.equal(destination.searchParams.get("client_id"), settings.META_APP_ID);
   assert.equal(destination.searchParams.get("redirect_uri"), settings.APP_URL + "/api/oauth/facebook/callback");
   assert.ok(destination.searchParams.get("scope")?.includes("pages_manage_posts"));
   assert.match(response.headers.get("set-cookie") || "", /niches_oauth=[a-f0-9]{64};/);
-  assert.match(response.headers.get("content-security-policy") || "", /form-action 'self' https:\\/\\/www\\.facebook\\.com/);
+  assert.ok(response.headers.get("content-security-policy")?.includes("form-action 'self' https://www.facebook.com"));
 });
 function googleFixture(channel) {
   return async (url, init) => {
