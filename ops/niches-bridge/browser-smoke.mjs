@@ -89,7 +89,7 @@ try {
       const metaPattern = "https://www.facebook.com/**";
       await page.route(metaPattern, async (route) => {
         const auth = new URL(route.request().url());
-        if (!/^\\/v\\d+\\.\\d+\\/dialog\\/oauth$/.test(auth.pathname))
+        if (!auth.pathname.startsWith("/v") || !auth.pathname.endsWith("/dialog/oauth"))
           throw new Error("Facebook Connect navigated to the wrong path");
         if (!auth.searchParams.get("client_id") ||
             auth.searchParams.get("redirect_uri") !==
