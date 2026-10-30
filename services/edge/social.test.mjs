@@ -296,7 +296,7 @@ test("failed Facebook OAuth returns a scoped diagnostic instead of silently land
     .first();
   assert.equal(note.user_id, user.id);
   assert.equal(note.niche_id, niche.id);
-  assert.match(note.message, /Meta rejected the connection/i);
+  assert.match(note.message, /Meta rejected the login return address/i);
   const otherNotices = await json("/api/notifications", "GET", undefined, otherCookie);
   assert.ok(otherNotices.every((entry) => entry.id !== noticeId));
 });
