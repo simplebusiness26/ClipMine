@@ -1,24 +1,24 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { call, type SocialAccount, type Provider } from "./niches-api";
-function FacebookConnectForm({
+function FacebookConnectLink({
   url,
   label,
-  disabled,
   prominent = false,
 }: {
   url: string;
   label: string;
-  disabled: boolean;
   prominent?: boolean;
 }) {
-  // A real form submission preserves browser-controlled user navigation on
-  // mobile. Meta's OAuth cookie and 303 redirect are issued by our own Worker.
+  // The browser follows this same-origin link directly; no JavaScript
+  // navigation or form POST is required for Facebook OAuth.
   return (
-    <form action={url} method="POST">
-      <button type="submit" disabled={disabled} className={prominent ? "n-primary" : undefined}>
-        {label}
-      </button>
-    </form>
+    <a
+      href={url}
+      className={prominent ? "n-primary" : "n-connect-link"}
+      style={{ textDecoration: "none" }}
+    >
+      {label}
+    </a>
   );
 }
 
@@ -302,11 +302,16 @@ export default function SocialAccounts({
               </div>
               <div className="n-actions">
                 {a.platform === "facebook" ? (
-                  <FacebookConnectForm
-                    url={`${base}/accounts/facebook/connect`}
-                    label={a.status === "connected" ? "Add another / reconnect" : "Connect for publishing"}
-                    disabled={busy || !providers.find((p) => p.id === "facebook")?.oauth_ready}
-                  />
+                  providers.some((p) => p.id === "facebook" && p.oauth_ready) ? (
+                    <FacebookConnectLink
+                      url={`${base}/accounts/facebook/connect/start`}
+                      label={a.status === "connected" ? "Add another / reconnect" : "Connect for publishing"}
+                    />
+                  ) : (
+                    <button type="button" onClick={() => setSetup(providers.find((p) => p.id === "facebook") || null)}>
+                      Facebook connection setup required
+                    </button>
+                  )
                 ) : (
                   <button disabled={busy} onClick={() => void connect(a.platform)}>
                     {a.status === "connected" ? "Add another / reconnect" : "Connect for publishing"}
@@ -363,12 +368,17 @@ export default function SocialAccounts({
               connected
             </p>
             {p.id === "facebook" ? (
-              <FacebookConnectForm
-                url={`${base}/accounts/facebook/connect`}
-                label="+ Connect an account"
-                disabled={busy || !p.oauth_ready}
-                prominent
-              />
+              p.oauth_ready ? (
+                <FacebookConnectLink
+                  url={`${base}/accounts/facebook/connect/start`}
+                  label="+ Connect Facebook"
+                  prominent
+                />
+              ) : (
+                <button type="button" className="n-primary" onClick={() => setSetup(p)}>
+                  Facebook setup required — view details
+                </button>
+              )
             ) : (
               <button className="n-primary" disabled={busy} onClick={() => void connect(p.id)}>
                 {connectingPlatform === p.id

@@ -179,6 +179,35 @@ async function oauthStart(platform = "youtube") {
     url,
   };
 }
+test("Facebook Connect direct link follows a native GET and cannot bypass login", async () => {
+  const route = `http://localhost/api/niches/${niche.id}/accounts/facebook/connect/start`;
+  const anonymous = await worker.fetch(
+    new Request(route, { headers: { Accept: "text/html" } }),
+    env,
+  );
+  assert.equal(anonymous.status, 401, "An unsigned-in visitor cannot begin OAuth");
+
+  const response = await worker.fetch(
+    new Request(route, {
+      headers: {
+        Cookie: cookie,
+        Accept: "text/html",
+        "Sec-Fetch-Mode": "navigate",
+      },
+    }),
+    env,
+  );
+  assert.equal(response.status, 303, "Normal browser links must redirect to Meta");
+  const destination = new URL(response.headers.get("location"));
+  assert.equal(destination.origin, "https://www.facebook.com");
+  assert.ok(destination.pathname.endsWith("/dialog/oauth"));
+  assert.equal(destination.searchParams.get("client_id"), settings.META_APP_ID);
+  assert.equal(destination.searchParams.get("redirect_uri"), settings.APP_URL + "/api/oauth/facebook/callback");
+  assert.ok(destination.searchParams.get("scope")?.includes("pages_manage_posts"));
+  assert.match(destination.searchParams.get("state") || "", /^[a-f0-9]{64}$/);
+  assert.match(response.headers.get("set-cookie") || "", /niches_oauth=[a-f0-9]{64};/);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+});
 test("Facebook Connect uses browser-native navigation and preserves scoped OAuth cookie", async () => {
   const route = `http://localhost/api/niches/${niche.id}/accounts/facebook/connect`;
   const response = await worker.fetch(
