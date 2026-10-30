@@ -344,10 +344,16 @@ try {
         const metaPattern = "https://www.facebook.com/**";
         await page.route(metaPattern, async (route) => {
           const auth = new URL(route.request().url());
-          if (!route.request().isNavigationRequest() ||
-              !auth.pathname.endsWith("/dialog/oauth") ||
-              auth.searchParams.get("redirect_uri") !== base + "/api/oauth/facebook/callback" ||
-              !auth.searchParams.get("scope")?.includes("pages_manage_posts"))
+          const check = {
+            navigation: route.request().isNavigationRequest(),
+            method: route.request().method(),
+            path: auth.pathname,
+            correctCallback: auth.searchParams.get("redirect_uri") === base + "/api/oauth/facebook/callback",
+            publishScope: !!auth.searchParams.get("scope")?.includes("pages_manage_posts"),
+          };
+          console.log("Facebook native OAuth browser check:", JSON.stringify(check));
+          if (!check.navigation || !check.path.endsWith("/dialog/oauth") ||
+              !check.correctCallback || !check.publishScope)
             throw new Error("Native Facebook form did not navigate to the correct Meta OAuth request");
           reachedMeta = true;
           await route.fulfill({
