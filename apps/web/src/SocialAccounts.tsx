@@ -125,6 +125,16 @@ export default function SocialAccounts({
       setError((e as Error).message);
     }
   }
+  // Meta returns a selection ticket after authorisation. Load the authorised
+  // Pages automatically instead of leaving the user on an unchanged screen
+  // with a second button they may never notice.
+  useEffect(() => {
+    if (ticket) void loadChoices();
+  }, [ticket, nicheId]);
+  useEffect(() => {
+    if (choices?.length)
+      document.getElementById("niches-page-choices")?.scrollIntoView({ block: "start" });
+  }, [choices]);
   return (
     <>
       <section className="n-panel">
@@ -150,13 +160,18 @@ export default function SocialAccounts({
             {error}
           </p>
         )}
+        {connectionFeedback && (
+          <p className={connectionFeedback.failed ? "n-error" : "n-status-note"} role="alert">
+            {connectionFeedback.message}
+          </p>
+        )}
         {ticket && !choices && (
           <button className="n-primary" onClick={() => void loadChoices()}>
             Choose authorised Pages / accounts
           </button>
         )}
         {choices && (
-          <section className="n-panel">
+          <section id="niches-page-choices" className="n-panel">
             <h3>Choose what to add to this niche</h3>
             {choices.map((c) => (
               <label className="n-checkbox" key={c.id}>
