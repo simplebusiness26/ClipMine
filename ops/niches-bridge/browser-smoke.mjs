@@ -327,6 +327,50 @@ try {
       await page
         .getByRole("heading", { name: "Different niches. One place to grow." })
         .waitFor();
+
+      // Exercise the actual live Facebook button through its native form POST,
+      // the Worker 303 redirect, the scoped OAuth cookie and the callback.
+      // Intercept Meta before any real login: only simulate the user declining.
+      const providers = await (
+        await page.request.get(base + "/api/providers")
+      ).json();
+      if (providers.some((p) => p.id === "facebook" && p.oauth_ready)) {
+        const ownedNiches = await (
+          await page.request.get(base + "/api/niches")
+        ).json();
+        const smokeNiche = ownedNiches.find((n) => n.name === "Deployment check");
+        if (!smokeNiche) throw new Error("Missing deployment acceptance niche for Facebook smoke");
+        let reachedMeta = false;
+        const metaPattern = "https://www.facebook.com/**";
+        await page.route(metaPattern, async (route) => {
+          const auth = new URL(route.request().url());
+          if (!route.request().isNavigationRequest() ||
+              !auth.pathname.endsWith("/dialog/oauth") ||
+              auth.searchParams.get("redirect_uri") !== base + "/api/oauth/facebook/callback" ||
+              !auth.searchParams.get("scope")?.includes("pages_manage_posts"))
+            throw new Error("Native Facebook form did not navigate to the correct Meta OAuth request");
+          reachedMeta = true;
+          await route.fulfill({
+            status: 302,
+            headers: {
+              location: base + "/api/oauth/facebook/callback?state=" +
+                encodeURIComponent(auth.searchParams.get("state") || "") +
+                "&error=access_denied",
+            },
+            body: "",
+          });
+        });
+        await page.goto(base + "/?niche=" + encodeURIComponent(smokeNiche.id) + "&section=Accounts");
+        await page.locator(".n-account-grid section").filter({
+          has: page.getByRole("heading", { name: "Facebook Pages & Reels" }),
+        }).getByRole("button", { name: "+ Connect an account" }).click();
+        await page.getByText(
+          "Facebook Pages & Reels authorisation was cancelled or denied. No account was added.",
+        ).waitFor({ timeout: 15000 });
+        if (!reachedMeta) throw new Error("Facebook form POST never reached the Meta authorisation URL");
+        await page.unroute(metaPattern);
+        console.log("PASS live Facebook native browser POST → OAuth redirect → denied callback → visible result");
+      }
     } else
       console.log(
         "SKIP authenticated production smoke: dedicated Niches credentials are not configured.",

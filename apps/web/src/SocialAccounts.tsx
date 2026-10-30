@@ -1,5 +1,27 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { call, type SocialAccount, type Provider } from "./niches-api";
+function FacebookConnectForm({
+  url,
+  label,
+  disabled,
+  prominent = false,
+}: {
+  url: string;
+  label: string;
+  disabled: boolean;
+  prominent?: boolean;
+}) {
+  // A real form submission preserves browser-controlled user navigation on
+  // mobile. Meta's OAuth cookie and 303 redirect are issued by our own Worker.
+  return (
+    <form action={url} method="POST">
+      <button type="submit" disabled={disabled} className={prominent ? "n-primary" : undefined}>
+        {label}
+      </button>
+    </form>
+  );
+}
+
 export default function SocialAccounts({
   nicheId,
   accounts,
@@ -275,14 +297,17 @@ export default function SocialAccounts({
                 </span>
               </div>
               <div className="n-actions">
-                <button
-                  disabled={busy}
-                  onClick={() => void connect(a.platform)}
-                >
-                  {a.status === "connected"
-                    ? "Add another / reconnect"
-                    : "Connect for publishing"}
-                </button>
+                {a.platform === "facebook" ? (
+                  <FacebookConnectForm
+                    url={`${base}/accounts/facebook/connect`}
+                    label={a.status === "connected" ? "Add another / reconnect" : "Connect for publishing"}
+                    disabled={busy || !providers.find((p) => p.id === "facebook")?.oauth_ready}
+                  />
+                ) : (
+                  <button disabled={busy} onClick={() => void connect(a.platform)}>
+                    {a.status === "connected" ? "Add another / reconnect" : "Connect for publishing"}
+                  </button>
+                )}
                 <button
                   disabled={busy}
                   onClick={async () => {
@@ -333,15 +358,20 @@ export default function SocialAccounts({
               }{" "}
               connected
             </p>
-            <button
-              className="n-primary"
-              disabled={busy}
-              onClick={() => void connect(p.id)}
-            >
-              {connectingPlatform === p.id
-                ? `Opening ${p.name} authorisation…`
-                : `+ Connect ${p.id === "youtube" ? "a channel" : "an account"}`}
-            </button>
+            {p.id === "facebook" ? (
+              <FacebookConnectForm
+                url={`${base}/accounts/facebook/connect`}
+                label="+ Connect an account"
+                disabled={busy || !p.oauth_ready}
+                prominent
+              />
+            ) : (
+              <button className="n-primary" disabled={busy} onClick={() => void connect(p.id)}>
+                {connectingPlatform === p.id
+                  ? `Opening ${p.name} authorisation…`
+                  : `+ Connect ${p.id === "youtube" ? "a channel" : "an account"}`}
+              </button>
+            )}
             {connectionFeedback?.platform === p.id && (
               <p className={connectionFeedback.failed ? "n-error" : "n-status-note"} role="status">
                 {connectionFeedback.message}

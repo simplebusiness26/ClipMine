@@ -180,12 +180,19 @@ export async function beginOAuth(request, env, user, niche, p) {
     await seal(env, { verifier }, `oauth:${state}`),
     new Date(Date.now() + 600000).toISOString(),
   );
-  return json({ url: auth.href }, 200, {
-    "Set-Cookie": browserCookie(
-      browser,
-      new URL(request.url).protocol === "https:",
-    ),
-  });
+  const oauthCookie = browserCookie(
+    browser,
+    new URL(request.url).protocol === "https:",
+  );
+  // A browser-native POST form follows this redirect without relying on an
+  // asynchronous JavaScript navigation, which can stall on mobile browsers.
+  // Fetch/XHR clients still receive the existing JSON contract.
+  const nativeNavigation =
+    request.headers.get("sec-fetch-mode") === "navigate" ||
+    request.headers.get("accept")?.includes("text/html");
+  return nativeNavigation
+    ? redirect(auth.href, oauthCookie)
+    : json({ url: auth.href }, 200, { "Set-Cookie": oauthCookie });
 }
 export async function saveConnection(env, niche, choice) {
   const existing = await one(
