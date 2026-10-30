@@ -376,11 +376,6 @@ export default function SocialAccounts({
                   : `+ Connect ${p.id === "youtube" ? "a channel" : "an account"}`}
               </button>
             )}
-            {connectionFeedback?.platform === p.id && (
-              <p className={connectionFeedback.failed ? "n-error" : "n-status-note"} role="status">
-                {connectionFeedback.message}
-              </p>
-            )}
             {pendingAuthorisation?.platform === p.id && (
               <p className="n-status-note">
                 If your browser has not opened the provider,{" "}
