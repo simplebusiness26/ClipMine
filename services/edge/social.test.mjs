@@ -254,6 +254,53 @@ test("OAuth is browser/session bound, one-use, encrypted and permits multiple ch
     ),
   );
 });
+test("Facebook OAuth initiation returns a real Meta URL and scoped callback cookie", async () => {
+  const start = await oauthStart("facebook");
+  const url = new URL(start.url);
+  assert.equal(url.hostname, "www.facebook.com");
+  assert.equal(url.searchParams.get("client_id"), settings.META_APP_ID);
+  assert.equal(
+    url.searchParams.get("redirect_uri"),
+    "http://localhost/api/oauth/facebook/callback",
+  );
+  assert.ok(url.searchParams.get("scope").includes("pages_manage_posts"));
+  assert.match(start.browser, /^niches_oauth=[a-f0-9]{64}$/);
+});
+
+test("failed Facebook OAuth returns a scoped diagnostic instead of silently landing on Accounts", async () => {
+  const start = await oauthStart("facebook");
+  const response = await finishOAuth(
+    new Request(
+      `http://localhost/api/oauth/facebook/callback?state=${start.state}&code=bad-code`,
+      { headers: { Cookie: start.browser } },
+    ),
+    env,
+    "facebook",
+    async () =>
+      new Response(
+        JSON.stringify({ error: { code: 100, message: "Invalid OAuth redirect URI" } }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      ),
+  );
+  assert.equal(response.status, 303);
+  const destination = new URL(response.headers.get("location"));
+  assert.equal(destination.searchParams.get("section"), "Accounts");
+  assert.equal(destination.searchParams.get("platform"), "facebook");
+  assert.equal(destination.searchParams.get("connection"), "failed");
+  const noticeId = destination.searchParams.get("connection_error");
+  assert.match(noticeId, /^[a-f0-9-]{36}$/);
+  assert.ok(!response.headers.get("location").includes("Invalid OAuth"));
+  const note = await db
+    .prepare("SELECT user_id,niche_id,message FROM notifications WHERE id=?")
+    .bind(noticeId)
+    .first();
+  assert.equal(note.user_id, user.id);
+  assert.equal(note.niche_id, niche.id);
+  assert.match(note.message, /Meta rejected the login return address/i);
+  const otherNotices = await json("/api/notifications", "GET", undefined, otherCookie);
+  assert.ok(otherNotices.every((entry) => entry.id !== noticeId));
+});
+
 test("Meta Page selection reveals no tokens and cannot be claimed by another user", async () => {
   const start = await oauthStart("facebook");
   const fake = async (url) =>

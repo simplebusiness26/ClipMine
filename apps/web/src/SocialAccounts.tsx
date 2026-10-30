@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { call, type SocialAccount, type Provider } from "./niches-api";
 export default function SocialAccounts({
   nicheId,
@@ -14,6 +14,9 @@ export default function SocialAccounts({
   const [showAdd, setShowAdd] = useState(false),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
+    [connectingPlatform, setConnectingPlatform] = useState<string | null>(null),
+    [pendingAuthorisation, setPendingAuthorisation] = useState<{ platform: string; url: string } | null>(null),
+    [connectionFeedback, setConnectionFeedback] = useState<{ platform: string; message: string; failed: boolean } | null>(null),
     [setup, setSetup] = useState<Provider | null>(null),
     [choices, setChoices] = useState<
       { id: string; name: string; platform: string }[] | null
@@ -21,25 +24,77 @@ export default function SocialAccounts({
     [selected, setSelected] = useState<string[]>([]);
   const ticket = new URLSearchParams(location.search).get("connect_ticket");
   const base = `/api/niches/${nicheId}`;
+  // The provider returns via a full-page redirect; without this explicit
+  // acknowledgement the user appears to land back on an unchanged Accounts tab.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const outcome = params.get("connection");
+    if (!["failed", "cancelled", "connected"].includes(outcome || "")) return;
+    const platform = params.get("platform") || "social";
+    const name = providers.find((p) => p.id === platform)?.name || platform;
+    if (outcome === "failed") {
+      const fallback = `${name} connection failed. No account was added. Check your Meta app settings and retry.`;
+      const noticeId = params.get("connection_error");
+      if (noticeId) {
+        void call<{ id: string; niche_id: string | null; message: string }[]>("/api/notifications")
+          .then((notices) => {
+            const notice = notices.find((n) => n.id === noticeId && n.niche_id === nicheId);
+            setConnectionFeedback({ platform, message: notice?.message || fallback, failed: true });
+          })
+          .catch(() => setConnectionFeedback({ platform, message: fallback, failed: true }));
+      } else setConnectionFeedback({ platform, message: fallback, failed: true });
+    } else {
+      setConnectionFeedback({
+        platform,
+        message: outcome === "cancelled"
+          ? `${name} authorisation was cancelled or denied. No account was added.`
+          : `${name} is connected. Check the account list below.`,
+        failed: outcome !== "connected",
+      });
+    }
+    // Only strip one-time connection status; preserve the niche, selected tab
+    // and any pending Page-selection ticket.
+    const clean = new URL(location.href);
+    for (const key of ["connection", "connection_error", "platform"])
+      clean.searchParams.delete(key);
+    history.replaceState(null, "", clean.pathname + clean.search + clean.hash);
+  }, [nicheId, providers]);
   async function connect(platform: string) {
     setError("");
+    setConnectionFeedback(null);
+    setPendingAuthorisation(null);
     const provider = providers.find((p) => p.id === platform);
     if (!provider?.oauth_ready) {
       setSetup(provider || null);
       return;
     }
     setBusy(true);
+    setConnectingPlatform(platform);
     try {
       const result = await call<{ url: string }>(
         `${base}/accounts/${platform}/connect`,
         "POST",
         {},
       );
-      location.assign(result.url);
+      const url = new URL(result.url);
+      const hosts: Record<string, string> = {
+        facebook: "www.facebook.com",
+        instagram: "www.facebook.com",
+        tiktok: "www.tiktok.com",
+        youtube: "accounts.google.com",
+      };
+      if (url.protocol !== "https:" || url.hostname !== hosts[platform])
+        throw new Error("Unexpected authorisation address. The connection was stopped for safety.");
+      setPendingAuthorisation({ platform, url: url.href });
+      location.assign(url.href);
+      // Keep the direct-link fallback available if a mobile browser blocks
+      // the scripted navigation after an asynchronous request.
     } catch (e) {
-      setError((e as Error).message);
-    } finally {
+      const message = (e as Error).message;
+      setError(message);
+      setConnectionFeedback({ platform, message, failed: true });
       setBusy(false);
+      setConnectingPlatform(null);
     }
   }
   async function add(e: FormEvent<HTMLFormElement>) {
@@ -268,8 +323,21 @@ export default function SocialAccounts({
               disabled={busy}
               onClick={() => void connect(p.id)}
             >
-              + Connect {p.id === "youtube" ? "a channel" : "an account"}
+              {connectingPlatform === p.id
+                ? `Opening ${p.name} authorisation…`
+                : `+ Connect ${p.id === "youtube" ? "a channel" : "an account"}`}
             </button>
+            {connectionFeedback?.platform === p.id && (
+              <p className={connectionFeedback.failed ? "n-error" : "n-status-note"} role="status">
+                {connectionFeedback.message}
+              </p>
+            )}
+            {pendingAuthorisation?.platform === p.id && (
+              <p className="n-status-note">
+                If your browser has not opened the provider,{" "}
+                <a href={pendingAuthorisation.url}>continue to {p.name} authorisation</a>.
+              </p>
+            )}
             {!p.oauth_ready && (
               <p className="n-muted">
                 Developer app setup required before authorisation is available.

@@ -73,6 +73,51 @@ try {
       .locator('nav[aria-label="Niche workspace"] button')
       .filter({ has: page.locator("span", { hasText: /^Accounts$/ }) })
       .click();
+    // Exercise the real production Facebook Connect button, callback URL,
+    // browser/session cookie flow and visible cancellation result. Intercept
+    // Meta's website: never request a live person's Facebook permissions.
+    const socialProviders = await (
+      await page.request.get(base + "/api/providers")
+    ).json();
+    if (socialProviders.find((p) => p.id === "facebook")?.oauth_ready) {
+      const registeredNiches = await (
+        await page.request.get(base + "/api/niches")
+      ).json();
+      const testNiche = registeredNiches.find((n) => n.name === "Cars");
+      if (!testNiche) throw new Error("Facebook OAuth smoke niche not found");
+      let intercepted = false;
+      const metaPattern = "https://www.facebook.com/**";
+      await page.route(metaPattern, async (route) => {
+        const auth = new URL(route.request().url());
+        if (!auth.pathname.startsWith("/v") || !auth.pathname.endsWith("/dialog/oauth"))
+          throw new Error("Facebook Connect navigated to the wrong path");
+        if (!auth.searchParams.get("client_id") ||
+            auth.searchParams.get("redirect_uri") !==
+              base + "/api/oauth/facebook/callback" ||
+            !auth.searchParams.get("scope")?.includes("pages_manage_posts"))
+          throw new Error("Facebook Connect generated invalid OAuth parameters");
+        intercepted = true;
+        // A real Meta user-denial redirect, without exchanging any tokens.
+        await route.fulfill({
+          status: 302,
+          headers: {
+            location: base + "/api/oauth/facebook/callback?state=" +
+              encodeURIComponent(auth.searchParams.get("state") || "") +
+              "&error=access_denied",
+          },
+          body: "",
+        });
+      });
+      await page.locator(".n-account-grid section").filter({
+        has: page.getByRole("heading", { name: "Facebook Pages & Reels" }),
+      }).getByRole("button", { name: "+ Connect an account" }).click();
+      await page.getByText(
+        "Facebook Pages & Reels authorisation was cancelled or denied. No account was added.",
+      ).waitFor({ timeout: 15000 });
+      if (!intercepted)
+        throw new Error("Facebook Connect button never opened provider OAuth");
+      await page.unroute(metaPattern);
+    }
     for (const account of [
       { platform: "instagram", name: "Instagram Main", handle: "carsmain" },
       { platform: "instagram", name: "Instagram Daily", handle: "carsdaily" },
