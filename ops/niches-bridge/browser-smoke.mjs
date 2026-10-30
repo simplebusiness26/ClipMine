@@ -340,40 +340,57 @@ try {
         ).json();
         const smokeNiche = ownedNiches.find((n) => n.name === "Deployment check");
         if (!smokeNiche) throw new Error("Missing deployment acceptance niche for Facebook smoke");
-        let reachedMeta = false;
+        let metaState = null;
+        let metaProblem = null;
         const metaPattern = "https://www.facebook.com/**";
+        // The first navigation in a 303 redirect chain may not be intercepted
+        // by Playwright route handlers; observe network requests instead.
+        const observeMeta = (request) => {
+          const auth = new URL(request.url());
+          if (auth.origin !== "https://www.facebook.com" ||
+              !auth.pathname.endsWith("/dialog/oauth")) return;
+          if (request.method() !== "GET" ||
+              auth.searchParams.get("redirect_uri") !== base + "/api/oauth/facebook/callback" ||
+              !auth.searchParams.get("scope")?.includes("pages_manage_posts"))
+            metaProblem = "Meta OAuth navigation parameters were incorrect";
+          metaState = auth.searchParams.get("state");
+        };
+        page.on("request", observeMeta);
+        // Keep the test away from real account authorisation. If Playwright
+        // intercepts the OAuth navigation, use a harmless fake Meta page.
+        // Block any auxiliary Meta requests (e.g. /ajax/qm/) rather than
+        // treating them as OAuth navigations.
         await page.route(metaPattern, async (route) => {
           const auth = new URL(route.request().url());
-          const check = {
-            navigation: route.request().isNavigationRequest(),
-            method: route.request().method(),
-            path: auth.pathname,
-            correctCallback: auth.searchParams.get("redirect_uri") === base + "/api/oauth/facebook/callback",
-            publishScope: !!auth.searchParams.get("scope")?.includes("pages_manage_posts"),
-          };
-          console.log("Facebook native OAuth browser check:", JSON.stringify(check));
-          if (!check.navigation || !check.path.endsWith("/dialog/oauth") ||
-              !check.correctCallback || !check.publishScope)
-            throw new Error("Native Facebook form did not navigate to the correct Meta OAuth request");
-          reachedMeta = true;
-          await route.fulfill({
-            status: 302,
-            headers: {
-              location: base + "/api/oauth/facebook/callback?state=" +
-                encodeURIComponent(auth.searchParams.get("state") || "") +
-                "&error=access_denied",
-            },
-            body: "",
-          });
+          if (auth.pathname.endsWith("/dialog/oauth"))
+            await route.fulfill({
+              status: 200,
+              contentType: "text/html",
+              body: "<!doctype html><html><body>Meta login intercepted for Niches automated test</body></html>",
+            });
+          else await route.abort();
         });
         await page.goto(base + "/?niche=" + encodeURIComponent(smokeNiche.id) + "&section=Accounts");
         await page.locator(".n-account-grid section").filter({
           has: page.getByRole("heading", { name: "Facebook Pages & Reels" }),
-        }).getByRole("button", { name: "+ Connect an account" }).click();
+        }).getByRole("button", { name: "+ Connect an account" }).click({ noWaitAfter: true });
+        // A working browser-native connection MUST leave the Niches origin.
+        await page.waitForURL(
+          (url) => url.hostname === "www.facebook.com",
+          { waitUntil: "commit", timeout: 15000 },
+        );
+        if (metaProblem) throw new Error(metaProblem);
+        if (!metaState || !/^[a-f0-9]{64}$/.test(metaState))
+          throw new Error("Facebook Connect did not reach Meta with a valid OAuth state");
+        // Simulate Facebook user cancellation by visiting the real callback
+        // from the same browser. This also tests scoped cookie/state handling
+        // and the visible feedback after returning to Niches.
+        await page.goto(base + "/api/oauth/facebook/callback?state=" +
+          encodeURIComponent(metaState) + "&error=access_denied");
         await page.getByText(
           "Facebook Pages & Reels authorisation was cancelled or denied. No account was added.",
         ).waitFor({ timeout: 15000 });
-        if (!reachedMeta) throw new Error("Facebook form POST never reached the Meta authorisation URL");
+        page.off("request", observeMeta);
         await page.unroute(metaPattern);
         console.log("PASS live Facebook native browser POST → OAuth redirect → denied callback → visible result");
       }
