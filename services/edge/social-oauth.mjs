@@ -44,6 +44,27 @@ export function providerInfo(env) {
     };
   });
 }
+function providerFailureMessage(url, data, status) {
+  if (status === 401)
+    return "Social authorisation expired. Reconnect this account.";
+  if (new URL(String(url)).hostname !== "graph.facebook.com")
+    return "The social provider rejected this operation.";
+  const raw = String(data?.error?.message || "");
+  const code = String(data?.error?.code || "");
+  if (/redirect.?uri|redirect.?url|url blocked|whitelist/i.test(raw))
+    return "Meta rejected the login return address. Check both exact Valid OAuth Redirect URIs in Facebook Login for Business settings.";
+  if (/config_id|configuration (?:id|missing)|login configuration/i.test(raw))
+    return "Meta requires a Facebook Login for Business configuration for these permissions. Check its Configurations settings.";
+  if (/invalid scope|invalid permission/i.test(raw))
+    return "Meta rejected one of the requested permissions. Confirm all required Page permissions say Ready for testing.";
+  if (/development mode|app not set up|application.*not available|role/i.test(raw))
+    return "Meta restricted this connection. Use a Facebook account with a role on the unpublished Niches app.";
+  if (["10", "200"].includes(code) || /permission/i.test(raw))
+    return "Meta did not grant the required Page permissions. Check app permissions and that your Facebook account manages the Page.";
+  if (code === "190")
+    return "Meta access has expired or was rejected. Restart Facebook authorisation.";
+  return `Meta rejected the connection${code ? ` (error ${code})` : ""}. Check the app login settings and Page access.`;
+}
 export async function providerJSON(url, init = {}, fetcher = fetch) {
   const response = await fetcher(url, {
     signal: AbortSignal.timeout(25000),
@@ -59,9 +80,7 @@ export async function providerJSON(url, init = {}, fetcher = fetch) {
   if (!response.ok || (data.error && data.error.code !== "ok")) {
     const e = Object.assign(
       new Error(
-        response.status === 401
-          ? "Social authorisation expired. Reconnect this account."
-          : "The social provider rejected this operation.",
+        providerFailureMessage(url, data, response.status),
       ),
       {
         status: response.status === 401 ? 409 : 502,
