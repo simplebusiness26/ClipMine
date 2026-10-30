@@ -52,6 +52,10 @@ export default function SocialAccounts({
     const params = new URLSearchParams(location.search);
     const outcome = params.get("connection");
     if (!["failed", "cancelled", "connected"].includes(outcome || "")) return;
+    // Provider metadata loads asynchronously after the OAuth redirect. Do not
+    // consume the one-time URL status until the display names have arrived;
+    // otherwise "facebook" is shown instead of "Facebook Pages & Reels".
+    if (!providers.length) return;
     const platform = params.get("platform") || "social";
     const name = providers.find((p) => p.id === platform)?.name || platform;
     if (outcome === "failed") {
