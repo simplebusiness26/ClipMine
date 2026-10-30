@@ -387,9 +387,21 @@ try {
         // and the visible feedback after returning to Niches.
         await page.goto(base + "/api/oauth/facebook/callback?state=" +
           encodeURIComponent(metaState) + "&error=access_denied");
-        await page.getByText(
-          "Facebook Pages & Reels authorisation was cancelled or denied. No account was added.",
-        ).waitFor({ timeout: 15000 });
+        try {
+          await page.getByText(
+            "Facebook Pages & Reels authorisation was cancelled or denied. No account was added.",
+          ).waitFor({ timeout: 15000 });
+        } catch (error) {
+          const current = new URL(page.url());
+          console.log("Facebook OAuth callback status diagnostics:", JSON.stringify({
+            host: current.hostname,
+            path: current.pathname,
+            connection: current.searchParams.get("connection"),
+            showingLogin: await page.getByRole("heading", { name: "Welcome to your corner." }).isVisible().catch(() => false),
+            messages: (await page.locator(".n-error, .n-status-note").allTextContents()).filter((m) => m.includes("authorisation") || m.includes("connection")).map((m) => m.slice(0, 150)),
+          }));
+          throw error;
+        }
         page.off("request", observeMeta);
         await page.unroute(metaPattern);
         console.log("PASS live Facebook native browser POST → OAuth redirect → denied callback → visible result");
