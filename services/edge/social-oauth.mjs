@@ -236,6 +236,7 @@ export async function finishOAuth(request, env, p, fetcher = fetch) {
   const destination = new URL(env.APP_URL);
   destination.searchParams.set("niche", row.niche_id);
   destination.searchParams.set("section", "Accounts");
+  destination.searchParams.set("platform", p);
   const clear = browserCookie("", url.protocol === "https:");
   if (url.searchParams.has("error")) {
     destination.searchParams.set("connection", "cancelled");
@@ -366,10 +367,14 @@ export async function finishOAuth(request, env, p, fetcher = fetch) {
       destination.searchParams.set("connection", "connected");
     }
   } catch (error) {
+    // The browser lands back on Accounts even on failure. Preserve a short-lived,
+    // user-scoped notice identifier so the page can show the real failure.
+    // Never put provider tokens, error text or account details in the URL.
+    const noticeId = id();
     await execute(
       env,
       "INSERT INTO notifications VALUES (?,?,?,?,NULL,?)",
-      id(),
+      noticeId,
       row.user_id,
       row.niche_id,
       error.status
@@ -377,6 +382,7 @@ export async function finishOAuth(request, env, p, fetcher = fetch) {
         : "Social connection failed. Start again from Accounts.",
       now(),
     );
+    destination.searchParams.set("connection_error", noticeId);
     destination.searchParams.set("connection", "failed");
   }
   return redirect(destination.href, clear);
