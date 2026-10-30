@@ -32,22 +32,29 @@ function zipFixture(files) {
 async function verifyFacebookNativeLink(page, base, nicheId, contextLabel) {
   let state = null;
   let invalidParameters = false;
-  const metaPattern = "https://www.facebook.com/**";
+  const metaPattern = /^https:\/\/(?:www|m)\.facebook\.com\//;
   const observeMeta = (request) => {
-    const url = new URL(request.url());
-    if (url.hostname !== "www.facebook.com" || !url.pathname.endsWith("/dialog/oauth"))
+    const incoming = new URL(request.url());
+    if (!["www.facebook.com", "m.facebook.com"].includes(incoming.hostname))
       return;
-    state = url.searchParams.get("state");
+    // On Android, Meta often redirects its original /dialog/oauth page to
+    // m.facebook.com/unified/login_via/app?next=<original OAuth URL>.
+    const nested = incoming.searchParams.get("next");
+    const auth = incoming.pathname.endsWith("/dialog/oauth")
+      ? incoming
+      : nested ? new URL(nested) : null;
+    if (!auth || !auth.pathname.endsWith("/dialog/oauth")) return;
+    state = auth.searchParams.get("state");
     invalidParameters =
       request.method() !== "GET" ||
-      url.searchParams.get("redirect_uri") !== base + "/api/oauth/facebook/callback" ||
-      !url.searchParams.get("scope")?.includes("pages_manage_posts");
+      auth.searchParams.get("redirect_uri") !== base + "/api/oauth/facebook/callback" ||
+      !auth.searchParams.get("scope")?.includes("pages_manage_posts");
   };
   page.on("request", observeMeta);
-  // Never contact or authenticate a real Meta user during automated testing.
+  // Intercept either Facebook hostname, including mobile login redirects.
+  // Never interact with a real Meta account in automated tests.
   await page.route(metaPattern, async (route) => {
-    const url = new URL(route.request().url());
-    if (url.pathname.endsWith("/dialog/oauth"))
+    if (route.request().isNavigationRequest())
       await route.fulfill({
         status: 200,
         contentType: "text/html",
@@ -63,7 +70,7 @@ async function verifyFacebookNativeLink(page, base, nicheId, contextLabel) {
     if (url.origin !== base || !url.pathname.endsWith("/accounts/facebook/connect/start"))
       throw new Error("Facebook control is not a same-origin native link");
     await link.click({ noWaitAfter: true });
-    await page.waitForURL((u) => u.hostname === "www.facebook.com", {
+    await page.waitForURL((u) => ["www.facebook.com", "m.facebook.com"].includes(u.hostname), {
       waitUntil: "commit", timeout: 15000,
     });
     if (invalidParameters || !state || !/^[a-f0-9]{64}$/.test(state))
