@@ -29,7 +29,8 @@ function zipFixture(files) {
     ...u32(directory.length), ...u32(local.length), ...u16(0)]);
 }
 
-async function verifyFacebookNativeLink(page, base, nicheId, contextLabel) {
+async function verifyMetaNativeLink(page, base, nicheId, contextLabel, platform) {
+  if (!["facebook", "instagram"].includes(platform)) throw new Error("Unsupported Meta test platform");
   let state = null;
   let invalidParameters = false;
   const metaPattern = /^https:\/\/(?:www|m)\.facebook\.com\//;
@@ -47,8 +48,8 @@ async function verifyFacebookNativeLink(page, base, nicheId, contextLabel) {
     state = auth.searchParams.get("state");
     invalidParameters =
       request.method() !== "GET" ||
-      auth.searchParams.get("redirect_uri") !== base + "/api/oauth/facebook/callback" ||
-      !auth.searchParams.get("scope")?.includes("pages_manage_posts");
+      auth.searchParams.get("redirect_uri") !== base + "/api/oauth/" + platform + "/callback" ||
+      !auth.searchParams.get("scope")?.includes(platform === "facebook" ? "pages_manage_posts" : "instagram_basic");
   };
   page.on("request", observeMeta);
   // Intercept either Facebook hostname, including mobile login redirects.
@@ -64,25 +65,25 @@ async function verifyFacebookNativeLink(page, base, nicheId, contextLabel) {
   });
   try {
     await page.goto(base + "/?niche=" + encodeURIComponent(nicheId) + "&section=Accounts");
-    const link = page.getByRole("link", { name: "+ Connect Facebook" });
+    const link = page.getByRole("link", { name: "+ Connect " + (platform === "facebook" ? "Facebook" : "Instagram") });
     await link.waitFor({ state: "visible" });
     const url = new URL(await link.getAttribute("href"), base);
-    if (url.origin !== base || !url.pathname.endsWith("/accounts/facebook/connect/start"))
-      throw new Error("Facebook control is not a same-origin native link");
+    if (url.origin !== base || !url.pathname.endsWith("/accounts/" + platform + "/connect/start"))
+      throw new Error(platform + " control is not a same-origin native link");
     await link.click({ noWaitAfter: true });
     await page.waitForURL((u) => ["www.facebook.com", "m.facebook.com"].includes(u.hostname), {
       waitUntil: "commit", timeout: 15000,
     });
     if (invalidParameters || !state || !/^[a-f0-9]{64}$/.test(state))
-      throw new Error("Facebook native link did not navigate with a valid Meta OAuth state");
+      throw new Error(platform + " native link did not navigate with a valid Meta OAuth state");
     // Return in the same browser with the scoped cookie; do not exchange any
     // token or authorise a real account.
-    await page.goto(base + "/api/oauth/facebook/callback?state=" +
+    await page.goto(base + "/api/oauth/" + platform + "/callback?state=" +
       encodeURIComponent(state) + "&error=access_denied");
     await page.getByText(
-      "Facebook Pages & Reels authorisation was cancelled or denied. No account was added.",
+      (platform === "facebook" ? "Facebook Pages & Reels" : "Instagram") + " authorisation was cancelled or denied. No account was added.",
     ).waitFor({ timeout: 15000 });
-    console.log("PASS " + contextLabel + " Facebook native link → Meta OAuth → visible cancellation");
+    console.log("PASS " + contextLabel + " " + platform + " native link → Meta OAuth → visible cancellation");
   } finally {
     page.off("request", observeMeta);
     await page.unroute(metaPattern);
@@ -145,7 +146,9 @@ try {
       ).json();
       const testNiche = registeredNiches.find((n) => n.name === "Cars");
       if (!testNiche) throw new Error("Facebook OAuth smoke niche not found");
-      await verifyFacebookNativeLink(page, base, testNiche.id, "local desktop");
+      await for (const platform of ["facebook", "instagram"]) {
+         await verifyMetaNativeLink(page, base, testNiche.id, "local desktop", platform);
+       }
 
       // A successful Meta callback returns a Page-selection ticket. The
       // browser should display authorised Pages without a second click.
@@ -369,7 +372,9 @@ try {
         ).json();
         const smokeNiche = ownedNiches.find((n) => n.name === "Deployment check");
         if (!smokeNiche) throw new Error("Missing deployment acceptance niche for Facebook smoke");
-        await verifyFacebookNativeLink(page, base, smokeNiche.id, "production desktop");
+        for (const platform of ["facebook", "instagram"]) {
+           await verifyMetaNativeLink(page, base, smokeNiche.id, "production desktop", platform);
+         }
 
         // True Android touch/viewport/user-agent emulation, not just resizing
         // a desktop window. Reuse an existing disposable test login.
@@ -380,7 +385,9 @@ try {
         try {
           const androidPage = await androidContext.newPage();
           androidPage.on("pageerror", (e) => findings.push(e.message));
-          await verifyFacebookNativeLink(androidPage, base, smokeNiche.id, "production Android");
+          for (const platform of ["facebook", "instagram"]) {
+             await verifyMetaNativeLink(androidPage, base, smokeNiche.id, "production Android", platform);
+           }
         } finally {
           await androidContext.close();
         }
