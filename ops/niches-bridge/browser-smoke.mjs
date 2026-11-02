@@ -146,7 +146,7 @@ try {
       ).json();
       const testNiche = registeredNiches.find((n) => n.name === "Cars");
       if (!testNiche) throw new Error("Facebook OAuth smoke niche not found");
-      await for (const platform of ["facebook", "instagram"]) {
+      for (const platform of ["facebook", "instagram"]) {
          await verifyMetaNativeLink(page, base, testNiche.id, "local desktop", platform);
        }
 
