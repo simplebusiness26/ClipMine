@@ -81,7 +81,7 @@ async function verifyMetaNativeLink(page, base, nicheId, contextLabel, platform)
     await page.goto(base + "/api/oauth/" + platform + "/callback?state=" +
       encodeURIComponent(state) + "&error=access_denied");
     await page.getByText(
-      (platform === "facebook" ? "Facebook Pages & Reels" : "Instagram") + " authorisation was cancelled or denied. No account was added.",
+      (platform === "facebook" ? "Facebook Pages & Reels" : "Instagram professional & Reels") + " authorisation was cancelled or denied. No account was added.",
     ).waitFor({ timeout: 15000 });
     console.log("PASS " + contextLabel + " " + platform + " native link → Meta OAuth → visible cancellation");
   } finally {
