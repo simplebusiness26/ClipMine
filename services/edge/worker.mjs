@@ -563,14 +563,17 @@ async function api(request, env, context) {
       201,
     );
   }
-  // Native, same-origin GET navigation for Facebook on mobile: a normal
-  // anchor works even when JavaScript location.assign or a form submit stalls.
-  // Sessions use a SameSite=Strict cookie, so cross-site GETs cannot start an
-  // authorisation. Limit repeated starts; the resulting OAuth grant is still
-  // browser-bound, nonce-protected and cannot connect anything until callback.
-  if (sub === "accounts/facebook/connect/start" && method === "GET") {
+  // Native, same-origin navigation for Meta OAuth on mobile. Both Facebook
+  // and Instagram must begin inside the user's browser gesture; an async
+  // fetch followed by location.assign can be blocked by Android WebViews.
+  // SameSite=Strict session cookies still apply, and the OAuth grant remains
+  // browser-bound, nonce-protected and subject to rate limits.
+  const nativeMetaConnect = sub.match(
+    /^accounts\/(facebook|instagram)\/connect\/start$/,
+  );
+  if (nativeMetaConnect && method === "GET") {
     await rate(env, `oauth-start:${user.id}`, 12);
-    return beginOAuth(request, env, user, niche, "facebook");
+    return beginOAuth(request, env, user, niche, nativeMetaConnect[1]);
   }
   const connect = sub.match(
     /^accounts\/(facebook|instagram|tiktok|youtube)\/connect$/,
