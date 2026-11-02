@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { call, type SocialAccount, type Provider } from "./niches-api";
-function FacebookConnectLink({
+function MetaConnectLink({
   url,
   label,
   prominent = false,
@@ -10,7 +10,7 @@ function FacebookConnectLink({
   prominent?: boolean;
 }) {
   // The browser follows this same-origin link directly; no JavaScript
-  // navigation or form POST is required for Facebook OAuth.
+  // navigation or form POST is required for Meta OAuth.
   return (
     <a
       href={url}
@@ -301,15 +301,15 @@ export default function SocialAccounts({
                 </span>
               </div>
               <div className="n-actions">
-                {a.platform === "facebook" ? (
-                  providers.some((p) => p.id === "facebook" && p.oauth_ready) ? (
-                    <FacebookConnectLink
-                      url={`${base}/accounts/facebook/connect/start`}
+                {a.platform === "facebook" || a.platform === "instagram" ? (
+                  providers.some((p) => p.id === a.platform && p.oauth_ready) ? (
+                    <MetaConnectLink
+                      url={`${base}/accounts/${a.platform}/connect/start`}
                       label={a.status === "connected" ? "Add another / reconnect" : "Connect for publishing"}
                     />
                   ) : (
-                    <button type="button" onClick={() => setSetup(providers.find((p) => p.id === "facebook") || null)}>
-                      Facebook connection setup required
+                    <button type="button" onClick={() => setSetup(providers.find((p) => p.id === a.platform) || null)}>
+                      {a.platform === "facebook" ? "Facebook" : "Instagram"} connection setup required
                     </button>
                   )
                 ) : (
@@ -367,16 +367,16 @@ export default function SocialAccounts({
               }{" "}
               connected
             </p>
-            {p.id === "facebook" ? (
+            {p.id === "facebook" || p.id === "instagram" ? (
               p.oauth_ready ? (
-                <FacebookConnectLink
-                  url={`${base}/accounts/facebook/connect/start`}
-                  label="+ Connect Facebook"
+                <MetaConnectLink
+                  url={`${base}/accounts/${p.id}/connect/start`}
+                  label={p.id === "facebook" ? "+ Connect Facebook" : "+ Connect Instagram"}
                   prominent
                 />
               ) : (
                 <button type="button" className="n-primary" onClick={() => setSetup(p)}>
-                  Facebook setup required — view details
+                  {p.id === "facebook" ? "Facebook" : "Instagram"} setup required — view details
                 </button>
               )
             ) : (
