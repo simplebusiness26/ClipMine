@@ -42,6 +42,8 @@ const settings = {
   YOUTUBE_CLIENT_SECRET: "fixture-secret",
   META_APP_ID: "fixture-meta",
   META_APP_SECRET: "fixture-secret",
+  INSTAGRAM_APP_ID: "fixture-instagram-app",
+  INSTAGRAM_APP_SECRET: "fixture-instagram-secret",
   TIKTOK_CLIENT_KEY: "fixture-tiktok",
   TIKTOK_CLIENT_SECRET: "fixture-secret",
   YOUTUBE_PUBLISH_ENABLED: "1",
@@ -318,6 +320,58 @@ test("Facebook OAuth initiation returns a real Meta URL and scoped callback cook
   );
   assert.ok(url.searchParams.get("scope").includes("pages_manage_posts"));
   assert.match(start.browser, /^niches_oauth=[a-f0-9]{64}$/);
+});
+
+test("Instagram Login opens Instagram directly and connects the authorised IG account", async () => {
+  const start = await oauthStart("instagram");
+  const url = new URL(start.url);
+  assert.equal(url.hostname, "www.instagram.com");
+  assert.equal(url.pathname, "/oauth/authorize");
+  assert.equal(url.searchParams.get("client_id"), settings.INSTAGRAM_APP_ID);
+  assert.equal(url.searchParams.get("enable_fb_login"), "false");
+  assert.ok(url.searchParams.get("scope").includes("instagram_business_content_publish"));
+  assert.ok(!url.searchParams.get("scope").includes("pages_show_list"));
+  const visited = [];
+  const mock = async (requestUrl) => {
+    visited.push(String(requestUrl));
+    if (String(requestUrl).includes("/oauth/access_token")) return response({
+      access_token: "short-ig-token", user_id: "ig-test",
+      expires_in: 3600,
+    });
+    if (String(requestUrl).includes("/access_token?")) return response({
+      access_token: "long-ig-token", expires_in: 5184000,
+    });
+    if (String(requestUrl).includes("/me?")) return response({
+      id: "ig-test", username: "crazycartoons", account_type: "CREATOR",
+    });
+    throw Error("Unexpected Instagram request");
+  };
+  const result = await finishOAuth(
+    new Request(
+      `http://localhost/api/oauth/instagram/callback?state=${start.state}&code=fixture`,
+      { headers: { Cookie: start.browser } },
+    ),
+    env, "instagram", mock,
+  );
+  assert.equal(new URL(result.headers.get("location")).searchParams.get("connection"), "connected");
+  const connected = await db.prepare(
+    "SELECT * FROM accounts WHERE provider_id='ig-test' AND platform='instagram'"
+  ).first();
+  assert.equal(connected.connection_kind, "instagram_login");
+  const grant = await unseal(env, connected.encrypted_tokens, accountContext(connected));
+  assert.equal(grant.access_token, "long-ig-token");
+  assert.ok(visited.every((v) => !v.includes("graph.facebook.com")));
+  const publication = await advancePublisher({
+    env, account: connected, token: grant.access_token,
+    media: { mime: "image/jpeg" },
+    post: { title: "Test", caption: "Test photo" },
+    options: {}, state: {}, mediaURL: "https://example.test/photo.jpg",
+    fetcher: async (requestUrl) => {
+      assert.equal(new URL(String(requestUrl)).hostname, "graph.instagram.com");
+      return response({ id: "ig-media-container" });
+    },
+  });
+  assert.equal(publication.state.container_id, "ig-media-container");
 });
 
 test("failed Facebook OAuth returns a scoped diagnostic instead of silently landing on Accounts", async () => {
