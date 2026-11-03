@@ -249,6 +249,10 @@ export async function advancePublisher({
     };
   }
   if (p === "instagram") {
+    // Direct Instagram Login uses graph.instagram.com; legacy Page grants use Graph Facebook.
+    const instagramGraph = account.connection_kind === "instagram_login"
+      ? "https://graph.instagram.com"
+      : graph(env);
     if (!state.phase) {
       const values = media.mime.startsWith("video/")
         ? {
@@ -261,7 +265,7 @@ export async function advancePublisher({
       if (options.cover_ms !== undefined && media.mime.startsWith("video/"))
         values.thumb_offset = options.cover_ms;
       const result = await providerJSON(
-        `${graph(env)}/${account.provider_id}/media`,
+        `${instagramGraph}/${account.provider_id}/media`,
         {
           method: "POST",
           headers: { ...headers, "Content-Type": "application/json" },
@@ -277,7 +281,7 @@ export async function advancePublisher({
     }
     if (state.phase === "container" || state.phase === "confirm") {
       const result = await providerJSON(
-        `${graph(env)}/${state.container_id}?fields=status_code`,
+        `${instagramGraph}/${state.container_id}?fields=status_code`,
         { headers },
         fetcher,
       );
@@ -299,7 +303,7 @@ export async function advancePublisher({
     }
     if (state.phase === "finish") {
       const result = await providerJSON(
-        `${graph(env)}/${account.provider_id}/media_publish`,
+        `${instagramGraph}/${account.provider_id}/media_publish`,
         {
           method: "POST",
           headers: { ...headers, "Content-Type": "application/json" },
