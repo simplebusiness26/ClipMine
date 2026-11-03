@@ -31,6 +31,8 @@ Provider developer applications are external prerequisites. Configure the follow
 | `NICHES_TIKTOK_CLIENT_SECRET` | `TIKTOK_CLIENT_SECRET` |
 | `NICHES_META_APP_ID` | `META_APP_ID` |
 | `NICHES_META_APP_SECRET` | `META_APP_SECRET` |
+| `NICHES_INSTAGRAM_APP_ID` | `INSTAGRAM_APP_ID` |
+| `NICHES_INSTAGRAM_APP_SECRET` | `INSTAGRAM_APP_SECRET` |
 
 The runner creates `NICHES_TOKEN_KEY` once directly on Niches. It only reads secret names/types, never existing values; deployments never replace the encryption key. Back up or rotate this key only using an authorised secure procedure. Losing it requires social account reconnection.
 
@@ -41,7 +43,7 @@ Register these exact redirect URIs with their developer applications:
 - `https://niches.ai-seo.workers.dev/api/oauth/facebook/callback`
 - `https://niches.ai-seo.workers.dev/api/oauth/instagram/callback`
 
-Google needs YouTube Data API and appropriate OAuth verification; Meta needs Page/Instagram permissions, eligible accounts and any required app review; TikTok needs Content Posting access, required review and verification of the media URL/domain prefix. Account owners must complete OAuth. Never claim approval merely because credentials are configured.
+Google needs YouTube Data API and appropriate OAuth verification; For Instagram direct Login, use the Instagram app ID and secret shown under Meta’s **Instagram API with Instagram Login** setup (not the Facebook app credentials); register the Instagram callback in Instagram Business Login settings and request `instagram_business_basic` and `instagram_business_content_publish`. Instagram must be Business/Creator; a Facebook Page is not required. Facebook Page authorisation retains its separate Facebook Login setup. Meta needs eligible accounts and any required app review; TikTok needs Content Posting access, required review and verification of the media URL/domain prefix. Account owners must complete OAuth. Never claim approval merely because credentials are configured.
 
 Publishing defaults off. Only after the corresponding authorisation is suitable for a controlled real test, set the project-specific repository variable `NICHES_YOUTUBE_PUBLISH_ENABLED`, `NICHES_FACEBOOK_PUBLISH_ENABLED`, `NICHES_INSTAGRAM_PUBLISH_ENABLED` or `NICHES_TIKTOK_PUBLISH_ENABLED` to `1`. TikTok also requires `NICHES_TIKTOK_MEDIA_URL_VERIFIED=1` after actual developer-console verification. Deploy, connect the account, review its privacy choices and manually approve a real test post. Record its real provider ID and completion response before calling that integration verified. Provider configuration is not verification.
 
