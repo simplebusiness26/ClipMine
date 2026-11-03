@@ -1257,7 +1257,7 @@ export default {
     headers.set("X-Frame-Options", "DENY");
     headers.set(
       "Content-Security-Policy",
-      "default-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://www.facebook.com",
+      "default-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self' https://www.facebook.com https://www.instagram.com",
     );
     return new Response(response.body, { status: response.status, headers });
   },
