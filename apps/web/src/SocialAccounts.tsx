@@ -105,7 +105,7 @@ export default function SocialAccounts({
       const url = new URL(result.url);
       const hosts: Record<string, string> = {
         facebook: "www.facebook.com",
-        instagram: "www.facebook.com",
+        instagram: "www.instagram.com",
         tiktok: "www.tiktok.com",
         youtube: "accounts.google.com",
       };
