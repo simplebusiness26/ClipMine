@@ -218,7 +218,7 @@ export async function saveConnection(env, niche, choice) {
   const encrypted = await seal(env, choice.tokens, accountContext(record));
   await execute(
     env,
-    "INSERT INTO accounts(id,niche_id,platform,display_name,provider_id,status,encrypted_tokens,connection_kind,expires_at,created_at) VALUES (?,?,?,?,?,'connected',?,?,?,?,?) ON CONFLICT(niche_id,platform,provider_id) DO UPDATE SET display_name=excluded.display_name,status='connected',encrypted_tokens=excluded.encrypted_tokens,connection_kind=excluded.connection_kind,expires_at=excluded.expires_at,token_lock_until=NULL",
+    "INSERT INTO accounts(id,niche_id,platform,display_name,provider_id,status,encrypted_tokens,connection_kind,expires_at,created_at) VALUES (?,?,?,?,?,'connected',?,?,?,?) ON CONFLICT(niche_id,platform,provider_id) DO UPDATE SET display_name=excluded.display_name,status='connected',encrypted_tokens=excluded.encrypted_tokens,connection_kind=excluded.connection_kind,expires_at=excluded.expires_at,token_lock_until=NULL",
     record.id,
     niche,
     choice.platform,
