@@ -34,11 +34,11 @@ async function verifyMetaNativeLink(page, base, nicheId, contextLabel, platform,
   let state = null;
   let invalidParameters = false;
   const metaPattern = unified || platform === "facebook"
-    ? /^https:\/\/(?:www|m)\.facebook\.com\//
+    ? /^https:\/\/(?:www|m|business)\.facebook\.com\//
     : /^https:\/\/www\.instagram\.com\//;
   const observeMeta = (request) => {
     const incoming = new URL(request.url());
-    if (!["www.facebook.com", "m.facebook.com", "www.instagram.com"].includes(incoming.hostname))
+    if (!["www.facebook.com", "m.facebook.com", "business.facebook.com", "www.instagram.com"].includes(incoming.hostname))
       return;
     // On Android, Meta often redirects its original /dialog/oauth page to
     // m.facebook.com/unified/login_via/app?next=<original OAuth URL>.
@@ -78,7 +78,7 @@ async function verifyMetaNativeLink(page, base, nicheId, contextLabel, platform,
     if (url.origin !== base || !url.pathname.endsWith("/accounts/" + platform + "/connect/start"))
       throw new Error(platform + " control is not a same-origin native link");
     await link.click({ noWaitAfter: true });
-    await page.waitForURL((u) => ["www.facebook.com", "m.facebook.com", "www.instagram.com"].includes(u.hostname), {
+    await page.waitForURL((u) => ["www.facebook.com", "m.facebook.com", "business.facebook.com", "www.instagram.com"].includes(u.hostname), {
       waitUntil: "commit", timeout: 15000,
     });
     if (invalidParameters || !state || !/^[a-f0-9]{64}$/.test(state))
