@@ -25,7 +25,9 @@ export function credentials(env, p) {
     : p === "tiktok"
       ? { id: env.TIKTOK_CLIENT_KEY, secret: env.TIKTOK_CLIENT_SECRET }
       : p === "instagram"
-        ? { id: env.INSTAGRAM_APP_ID, secret: env.INSTAGRAM_APP_SECRET }
+        ? env.INSTAGRAM_CONFIG_ID
+          ? { id: env.META_APP_ID, secret: env.META_APP_SECRET }
+          : { id: env.INSTAGRAM_APP_ID, secret: env.INSTAGRAM_APP_SECRET }
         : { id: env.META_APP_ID, secret: env.META_APP_SECRET };
 }
 export function providerInfo(env) {
@@ -135,7 +137,7 @@ export async function beginOAuth(request, env, user, niche, p) {
       ? "https://accounts.google.com/o/oauth2/v2/auth"
       : p === "tiktok"
         ? "https://www.tiktok.com/v2/auth/authorize/"
-        : p === "instagram"
+        : p === "instagram" && !env.INSTAGRAM_CONFIG_ID
           ? "https://www.instagram.com/oauth/authorize"
           : `https://www.facebook.com/${graph(env).split("/").pop()}/dialog/oauth`,
   );
@@ -161,6 +163,13 @@ export async function beginOAuth(request, env, user, niche, p) {
     Object.assign(params, {
       client_key: c.id,
       scope: "user.info.basic,video.publish,video.upload",
+    });
+  else if (p === "instagram" && env.INSTAGRAM_CONFIG_ID)
+    Object.assign(params, {
+      client_id: c.id,
+      config_id: env.INSTAGRAM_CONFIG_ID,
+      override_default_response_type: "true",
+      prompt: "login",
     });
   else if (p === "instagram")
     Object.assign(params, {
@@ -287,7 +296,7 @@ export async function finishOAuth(request, env, p, fetcher = fetch) {
       ? "https://oauth2.googleapis.com/token"
       : p === "tiktok"
         ? "https://open.tiktokapis.com/v2/oauth/token/"
-        : p === "instagram"
+        : p === "instagram" && !env.INSTAGRAM_CONFIG_ID
         ? "https://api.instagram.com/oauth/access_token"
         : `${graph(env)}/oauth/access_token`;
   const values = {
@@ -309,7 +318,20 @@ export async function finishOAuth(request, env, p, fetcher = fetch) {
       ).toISOString(),
     };
     let choices = [];
-    if (p === "instagram") {
+    if (p === "instagram" && env.INSTAGRAM_CONFIG_ID) {
+      // Unified Login's business system-user token covers explicitly shared
+      // Instagram accounts. Unlike standalone login, /me is not an Instagram user.
+      const assigned = await providerJSON(
+        `${graph(env)}/me/assigned_instagram_accounts?fields=id,username&limit=100`,
+        { headers: { Authorization: "Bearer " + tokens.access_token } }, fetcher,
+      );
+      tokens = { access_token: tokens.access_token, expires_at: tokens.expires_in
+        ? new Date(Date.now() + Number(tokens.expires_in) * 1000).toISOString() : null };
+      choices = (assigned.data || []).filter((x) => x.id && x.username).map((x) => ({
+        platform: "instagram", provider_id: String(x.id), name: x.username,
+        tokens, connection_kind: "instagram_unified",
+      }));
+    } else if (p === "instagram") {
       // Instagram Login returns an IG-user token, not a Facebook Page token.
       const grant = await providerJSON(
         `https://graph.instagram.com/access_token?grant_type=ig_exchange_token&client_secret=${encodeURIComponent(c.secret)}&access_token=${encodeURIComponent(tokens.access_token)}`,
@@ -492,6 +514,11 @@ export async function accessToken(env, account, fetcher = fetch) {
     new Date(tokens.expires_at).getTime() > Date.now() + 120000
   )
     return tokens.access_token;
+  if (account.platform === "instagram" && account.connection_kind === "instagram_unified") {
+    if (!tokens.expires_at) return tokens.access_token;
+    await execute(env, "UPDATE accounts SET status='needs_reconnect' WHERE id=?", account.id);
+    fail(409, "Your Instagram business authorisation expired. Reconnect the account.");
+  }
   if (account.platform === "instagram" && account.connection_kind === "instagram_login") {
     const lock = await one(env,
       "UPDATE accounts SET token_lock_until=? WHERE id=? AND (token_lock_until IS NULL OR token_lock_until<?) RETURNING id",
