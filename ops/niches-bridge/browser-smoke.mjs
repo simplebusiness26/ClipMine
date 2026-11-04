@@ -147,8 +147,12 @@ try {
       const testNiche = registeredNiches.find((n) => n.name === "Cars");
       if (!testNiche) throw new Error("Facebook OAuth smoke niche not found");
       for (const platform of ["facebook", "instagram"]) {
-         await verifyMetaNativeLink(page, base, testNiche.id, "local desktop", platform);
-       }
+        if (!socialProviders.find((p) => p.id === platform)?.oauth_ready) {
+          console.log("SKIP " + platform + " OAuth smoke: application credentials not configured");
+          continue;
+        }
+        await verifyMetaNativeLink(page, base, testNiche.id, "local desktop", platform);
+      }
 
       // A successful Meta callback returns a Page-selection ticket. The
       // browser should display authorised Pages without a second click.
@@ -373,8 +377,12 @@ try {
         const smokeNiche = ownedNiches.find((n) => n.name === "Deployment check");
         if (!smokeNiche) throw new Error("Missing deployment acceptance niche for Facebook smoke");
         for (const platform of ["facebook", "instagram"]) {
-           await verifyMetaNativeLink(page, base, smokeNiche.id, "production desktop", platform);
-         }
+          if (!providers.find((p) => p.id === platform)?.oauth_ready) {
+            console.log("SKIP " + platform + " OAuth smoke: application credentials not configured");
+            continue;
+          }
+          await verifyMetaNativeLink(page, base, smokeNiche.id, "production desktop", platform);
+        }
 
         // True Android touch/viewport/user-agent emulation, not just resizing
         // a desktop window. Reuse an existing disposable test login.
@@ -386,8 +394,9 @@ try {
           const androidPage = await androidContext.newPage();
           androidPage.on("pageerror", (e) => findings.push(e.message));
           for (const platform of ["facebook", "instagram"]) {
-             await verifyMetaNativeLink(androidPage, base, smokeNiche.id, "production Android", platform);
-           }
+            if (!providers.find((p) => p.id === platform)?.oauth_ready) continue;
+            await verifyMetaNativeLink(androidPage, base, smokeNiche.id, "production Android", platform);
+          }
         } finally {
           await androidContext.close();
         }
