@@ -40,3 +40,11 @@ Use existing agentCart repository Actions secrets `NICHES_TIKTOK_CLIENT_KEY` and
 - <https://developers.tiktok.com/docs/en/login-kit-web>
 
 TikTok requires original creator content and a service intended for a wide audience; an internal/private uploader for accounts managed by one team is explicitly not acceptable for Direct Post audit. Unaudited clients have private visibility and user restrictions. Niches must be described truthfully. App review requires a genuine sandbox demonstration for apps not approved before.
+
+## Sandbox follow-up
+
+Created `Niches integration testing` within the existing app, sandbox ID `7704121996221204487`. URL: <https://developers.tiktok.com/app/7704110079788124167/sandbox/7704121996221204487>.
+
+Entered the matching category, description, Web URL, callback, Login Kit, Content Posting API, Direct Post and three scopes. The 1024x1024 icon was accepted. Apply changes is blocked by exactly two required fields: Terms URL and Privacy URL. Configuration is not yet applied; preserve this open tab as well as the production tab. No target user has been authorised, no sandbox secret has been transferred and no TikTok OAuth or publishing success is claimed.
+
+Prepared `docs/legal/niches-terms-draft.md` and `docs/legal/niches-privacy-draft.md`. They are not deployed. Real operator/controller name and authorised public contact email remain necessary. The privacy draft also explicitly requires confirmation of active processors, transfer arrangements and deletion handling before public publication.
