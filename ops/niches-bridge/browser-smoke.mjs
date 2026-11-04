@@ -29,27 +29,34 @@ function zipFixture(files) {
     ...u32(directory.length), ...u32(local.length), ...u16(0)]);
 }
 
-async function verifyMetaNativeLink(page, base, nicheId, contextLabel, platform) {
+async function verifyMetaNativeLink(page, base, nicheId, contextLabel, platform, unified = false) {
   if (!["facebook", "instagram"].includes(platform)) throw new Error("Unsupported Meta test platform");
   let state = null;
   let invalidParameters = false;
-  const metaPattern = /^https:\/\/(?:www|m)\.facebook\.com\//;
+  const metaPattern = unified || platform === "facebook"
+    ? /^https:\/\/(?:www|m)\.facebook\.com\//
+    : /^https:\/\/www\.instagram\.com\//;
   const observeMeta = (request) => {
     const incoming = new URL(request.url());
-    if (!["www.facebook.com", "m.facebook.com"].includes(incoming.hostname))
+    if (!["www.facebook.com", "m.facebook.com", "www.instagram.com"].includes(incoming.hostname))
       return;
     // On Android, Meta often redirects its original /dialog/oauth page to
     // m.facebook.com/unified/login_via/app?next=<original OAuth URL>.
     const nested = incoming.searchParams.get("next");
-    const auth = incoming.pathname.endsWith("/dialog/oauth")
+    const auth = incoming.pathname.endsWith("/dialog/oauth") ||
+      incoming.pathname === "/oauth/authorize"
       ? incoming
       : nested ? new URL(nested) : null;
-    if (!auth || !auth.pathname.endsWith("/dialog/oauth")) return;
+    if (!auth || !(auth.pathname.endsWith("/dialog/oauth") || auth.pathname === "/oauth/authorize")) return;
     state = auth.searchParams.get("state");
     invalidParameters =
       request.method() !== "GET" ||
       auth.searchParams.get("redirect_uri") !== base + "/api/oauth/" + platform + "/callback" ||
-      !auth.searchParams.get("scope")?.includes(platform === "facebook" ? "pages_manage_posts" : "instagram_basic");
+      (unified
+        ? !auth.searchParams.has("config_id") || auth.searchParams.has("scope")
+        : !auth.searchParams.get("scope")?.includes(
+            platform === "facebook" ? "pages_manage_posts" : "instagram_business_basic"
+          ));
   };
   page.on("request", observeMeta);
   // Intercept either Facebook hostname, including mobile login redirects.
@@ -71,7 +78,7 @@ async function verifyMetaNativeLink(page, base, nicheId, contextLabel, platform)
     if (url.origin !== base || !url.pathname.endsWith("/accounts/" + platform + "/connect/start"))
       throw new Error(platform + " control is not a same-origin native link");
     await link.click({ noWaitAfter: true });
-    await page.waitForURL((u) => ["www.facebook.com", "m.facebook.com"].includes(u.hostname), {
+    await page.waitForURL((u) => ["www.facebook.com", "m.facebook.com", "www.instagram.com"].includes(u.hostname), {
       waitUntil: "commit", timeout: 15000,
     });
     if (invalidParameters || !state || !/^[a-f0-9]{64}$/.test(state))
@@ -151,7 +158,8 @@ try {
           console.log("SKIP " + platform + " OAuth smoke: application credentials not configured");
           continue;
         }
-        await verifyMetaNativeLink(page, base, testNiche.id, "local desktop", platform);
+        await verifyMetaNativeLink(page, base, testNiche.id, "local desktop", platform,
+          platform === "instagram" && socialProviders.find((p) => p.id === platform)?.login_mode === "unified");
       }
 
       // A successful Meta callback returns a Page-selection ticket. The
@@ -381,7 +389,8 @@ try {
             console.log("SKIP " + platform + " OAuth smoke: application credentials not configured");
             continue;
           }
-          await verifyMetaNativeLink(page, base, smokeNiche.id, "production desktop", platform);
+          await verifyMetaNativeLink(page, base, smokeNiche.id, "production desktop", platform,
+            platform === "instagram" && providers.find((p) => p.id === platform)?.login_mode === "unified");
         }
 
         // True Android touch/viewport/user-agent emulation, not just resizing
@@ -395,7 +404,8 @@ try {
           androidPage.on("pageerror", (e) => findings.push(e.message));
           for (const platform of ["facebook", "instagram"]) {
             if (!providers.find((p) => p.id === platform)?.oauth_ready) continue;
-            await verifyMetaNativeLink(androidPage, base, smokeNiche.id, "production Android", platform);
+            await verifyMetaNativeLink(androidPage, base, smokeNiche.id, "production Android", platform,
+              platform === "instagram" && providers.find((p) => p.id === platform)?.login_mode === "unified");
           }
         } finally {
           await androidContext.close();
