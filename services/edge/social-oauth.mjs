@@ -39,6 +39,7 @@ export function providerInfo(env) {
       name: names[p],
       status: configured ? "oauth_ready" : "setup_required",
       oauth_ready: configured,
+      login_mode: p === "instagram" && env.INSTAGRAM_CONFIG_ID ? "unified" : "standard",
       publishing_enabled:
         configured && env[`${p.toUpperCase()}_PUBLISH_ENABLED`] === "1",
       reason: configured
