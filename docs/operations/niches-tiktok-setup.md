@@ -1,50 +1,54 @@
-# Niches TikTok setup — 2026-11-04
+# Niches TikTok setup — 4 November 2026
 
-## Confirmed live state
+## Current verified result
 
-- Existing developer app: Niches, app ID `7704110079788124167`, Production Draft. No duplicate app created.
-- URL prefix `https://niches.ai-seo.workers.dev/` is verified in TikTok Production. The exact signature is served from `apps/web/public/tiktokdF2GRe0W0jjwn9lFDwSY2iHKClGNEEDi.txt`.
-- Signature source release: `9993395aa1569b7f36983a161a3e510f92d3c164`. AISO operations launcher commit: `c6bb23f427838eb06107cc07f0b16a21c66dfece`, on `ops/niches-cloudflare` only.
-- Worker health returned that release with database=true, storage=true, storage_backend=kv. The exact public signature bytes were checked.
-- Workflow run `41761413692`: first attempt passed checks, edge/config tests, build and deployment; live acceptance failed with `ECONNRESET`. Attempt 2 succeeded, including live authenticated acceptance and public/mobile browser smoke.
-- `/api/providers` reports TikTok setup_required / oauth_ready=false / publishing_enabled=false. Facebook, Instagram and YouTube report oauth_ready=true. No existing integration credentials were changed.
-- `/terms` currently falls through to the workspace rather than displaying a policy. Legal pages are not verified or supplied to TikTok.
+- Existing app: Niches, ID `7704110079788124167`. No duplicate developer app was created.
+- Production URL prefix `https://niches.ai-seo.workers.dev/` is verified using the exact public signature file `tiktokdF2GRe0W0jjwn9lFDwSY2iHKClGNEEDi.txt`.
+- The corrected 1024x1024 icon was accepted.
+- Terms: <https://niches.ai-seo.workers.dev/terms>.
+- Privacy: <https://niches.ai-seo.workers.dev/privacy>.
+- Both pages were checked by public HTTP fetch and browser: actual policy headings, approved contact `Craigs.cartoons98@gmail.com`, no placeholder/draft checklist. Operator name supplied by the owner: Niches; no registered-company status is claimed.
+- Legal source release: `b4aead33d6ada4dbdab40395b9dcebfd7d8d3787`. Isolated bridge launcher: `6aaba6964a727b7641457dc23fd7fcbea0973fd2` on `ops/niches-cloudflare` in agentCart.
+- Deployment run [41764008242](https://github.com/simplebusiness26/agentCart/actions/runs/41764008242) passed, including edge/config tests, build, live authenticated portal/media acceptance and browser smoke. Local build/type-check passed, 4 configuration/legal checks passed, and all 14 social tests passed with simulated provider transport.
+- AISO application/database and existing provider credentials were not modified. Publishing flags remain disabled.
 
-## Portal draft work
+## Applied sandbox configuration
 
-Entered Productivity category, a description within TikTok's 120-character limit, Web platform, website URL and exact Login Kit callback `https://niches.ai-seo.workers.dev/api/oauth/tiktok/callback`. Added Login Kit and Content Posting API, with Direct Post selected and user.info.basic, video.upload and video.publish visible. Entered an honest review explanation identifying untested functionality.
+Existing-app sandbox `Niches integration testing`, ID `7704121996221204487`:
+<https://developers.tiktok.com/app/7704110079788124167/sandbox/7704121996221204487>
 
-These form edits are NOT confirmed saved: TikTok rejects Save while legal URLs and demo requirements are incomplete. Preserve the open draft tab. URL property verification is confirmed separately and persisted in the URL properties list.
+Applied successfully after publishing the policies: accepted icon, Productivity category, 114-character description, Web platform, website and legal URLs, Login Kit and Content Posting API with Direct Post. Scopes: `user.info.basic`, `video.upload`, `video.publish`.
 
-The previous icon was initially rejected for dimensions. A corrected 1024x1024 PNG (940,887 bytes) was accepted and visibly displayed in the form. The website URL now includes a trailing slash matching the verified prefix; its verification error cleared. Save remains blocked by exactly three errors: Terms URL, Privacy URL and demo video.
+Exact saved callback: `https://niches.ai-seo.workers.dev/api/oauth/tiktok/callback`.
 
-## Secure configuration
+Production form contains the same details and an honest review explanation, but its Save is still blocked by the required real demo video. Its current edits are not confirmed persisted. Preserve the production draft tab. No final review submission was made.
 
-Use existing agentCart repository Actions secrets `NICHES_TIKTOK_CLIENT_KEY` and `NICHES_TIKTOK_CLIENT_SECRET`. Existing configure-secrets.mjs imports them into the niches Worker only. Do not retrieve or print existing credentials; never commit values. Keep publish and media-verification feature flags off until the corresponding test gates are satisfied. No paid services are required by this setup.
+## Actual blocker at account login
 
-## Remaining gates
+Selected Add account in sandbox, then the owner chose email/username sign-in through the secure authentication flow. TikTok returned **Maximum number of attempts reached. Try again later.** after this step's single login submission. No repeat attempt or method-switch bypass was made. No target user is confirmed added; do not treat the signed-in developer portal as a signed-in TikTok creator account.
 
-1. Obtain real operator/controller name and an authorised public support/privacy email. Do not publish a personal email inferred from account screens or commit metadata. Prepare truthful UK-focused policies covering accounts, connected account IDs/tokens, original media, approvals/schedules, service providers, purposes/lawful bases, transfers, retention, deletion, rights, ICO complaints and contact. Verify public pages before filling portal URLs.
-2. Icon upload is accepted. Supply a genuine end-to-end sandbox demonstration. Do not fabricate demo footage.
-3. Configure sandbox for the same existing app, authorised test account and credentials through the secure workflow. Production Draft credentials alone are not proof OAuth is available.
-4. Test live OAuth state/session validation, redirect, callback, encrypted token storage, connection and refresh. Do not treat deployment or local fixtures as provider verification.
-5. Existing publisher implements Direct Post, creator-info validation and status polling. It does not implement the video.upload inbox-draft endpoint. Implement and demonstrate that flow, or remove the unused scope with the owner's agreement before review.
-6. Test one explicitly approved private video, recording provider ID and final completion. Test delayed execution separately. Do not publish public user content implicitly.
-7. Prepare final review explanation and recording, then ask the owner before final submission. Public Direct Post remains conditional on TikTok audit.
+Keep the current login tab for continuation once the platform allows another attempt. Never ask for passwords or OTPs in chat.
 
-## Official requirements checked
+## Credential and test gates
+
+TikTok remains unconnected to Niches. The Worker reported TikTok `setup_required` / `oauth_ready=false`; Facebook, Instagram and YouTube remained oauth_ready. The sandbox client key/secret have not been configured.
+
+Use the existing agentCart Actions secrets `NICHES_TIKTOK_CLIENT_KEY` and `NICHES_TIKTOK_CLIENT_SECRET` for the credentials of this sandbox while testing. Existing configure-secrets.mjs imports them into the niches Worker only. Do not retrieve AISO credentials, log secret values, commit values, or assume production and sandbox credentials are interchangeable. The connected GitHub tools do not expose a secret-write endpoint; use a secure owner-operated secrets entry if needed.
+
+After credentials are entered, trigger the existing isolated launcher, verify /api/providers, complete authorised TikTok OAuth, and verify encrypted token storage, connected account and refresh. Enable TikTok-only test publishing only when the account and review/approval screen are ready. Production prefix verification has succeeded; confirm any sandbox-specific media verification requirement before enabling its flag.
+
+Existing publisher supports Direct Post, creator-info validation and status polling. It does not implement the video.upload inbox-draft endpoint. Implement and demonstrate that flow, or remove the unused scope with the owner's agreement before review. The public privacy policy accurately marks inbox-draft upload unavailable.
+
+Then test one explicitly approved private original video and delayed execution, record the real provider ID and final completion, capture a genuine end-to-end sandbox demo, finish the production form, and obtain owner approval immediately before final submission. No real video publishing, scheduling or TikTok approval is claimed.
+
+## Official sources checked
 
 - <https://developers.tiktok.com/docs/en/getting-started-create-an-app>
+- <https://developers.tiktok.com/docs/en/add-a-sandbox>
 - <https://developers.tiktok.com/docs/en/content-sharing-guidelines>
 - <https://developers.tiktok.com/docs/en/content-posting-api-get-started>
 - <https://developers.tiktok.com/docs/en/login-kit-web>
+- <https://www.cloudflare.com/cloudflare-customer-dpa/>
+- <https://ico.org.uk/for-organisations/advice-for-small-organisations/getting-started-with-gdpr/data-protection-self-assessment-medium-businesses/what-information-you-must-supply-under-the-gdpr/>
 
-TikTok requires original creator content and a service intended for a wide audience; an internal/private uploader for accounts managed by one team is explicitly not acceptable for Direct Post audit. Unaudited clients have private visibility and user restrictions. Niches must be described truthfully. App review requires a genuine sandbox demonstration for apps not approved before.
-
-## Sandbox follow-up
-
-Created `Niches integration testing` within the existing app, sandbox ID `7704121996221204487`. URL: <https://developers.tiktok.com/app/7704110079788124167/sandbox/7704121996221204487>.
-
-Entered the matching category, description, Web URL, callback, Login Kit, Content Posting API, Direct Post and three scopes. The 1024x1024 icon was accepted. Apply changes is blocked by exactly two required fields: Terms URL and Privacy URL. Configuration is not yet applied; preserve this open tab as well as the production tab. No target user has been authorised, no sandbox secret has been transferred and no TikTok OAuth or publishing success is claimed.
-
-Prepared `docs/legal/niches-terms-draft.md` and `docs/legal/niches-privacy-draft.md`. They are not deployed. Real operator/controller name and authorised public contact email remain necessary. The privacy draft also explicitly requires confirmation of active processors, transfer arrangements and deletion handling before public publication.
+TikTok requires original creator content and an app intended for a wider audience; an internal/private uploader for accounts managed by one team is explicitly excluded from Direct Post audit. Sandbox does not enable public video publishing. Describe Niches truthfully and demonstrate actual functionality.
