@@ -543,6 +543,7 @@ export default function Niches() {
         <footer className="n-footer">
           NICHES <span>Make something worth sharing.</span>
           <span>Private beta · Publishing requires authorised accounts</span>
+          <span><a href="/terms">Terms</a> · <a href="/privacy">Privacy</a></span>
         </footer>
       </div>
       {creating && (

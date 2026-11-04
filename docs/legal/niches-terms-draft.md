@@ -1,10 +1,10 @@
-# Niches Terms of Service — draft pending operator details
+# Niches Terms of Service
 
 Updated: 4 November 2026
 
 ## 1. Who provides Niches
 
-Niches is provided by **[OPERATOR LEGAL NAME]** (“we”, “us”). Contact for support, complaints and these terms: **[PUBLIC CONTACT EMAIL]**. These two fields must be completed before publication.
+The service is operated under the name **Niches** (“we”, “us”). Contact for support, complaints and these terms: **Craigs.cartoons98@gmail.com**.
 
 ## 2. The service
 

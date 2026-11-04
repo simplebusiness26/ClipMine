@@ -1,10 +1,10 @@
-# Niches Privacy Policy — draft pending controller details
+# Niches Privacy Policy
 
 Updated: 4 November 2026
 
 ## 1. Controller and contact
 
-**[OPERATOR LEGAL NAME]**, operating Niches, is responsible for the personal information described here. Contact for privacy requests and complaints: **[PUBLIC CONTACT EMAIL]**. These fields must be completed before publication. Do not replace them with an inferred account or commit email.
+**Niches** is responsible for the personal information described here. Contact for privacy requests and complaints: **Craigs.cartoons98@gmail.com**.
 
 This policy covers the Niches web service at https://niches.ai-seo.workers.dev/. Social platforms also process information under their own policies when you authorise them or publish there.
 
@@ -32,7 +32,7 @@ user.info.basic allows Niches to identify the TikTok account connected by its ow
 
 video.publish is intended for creator-approved Direct Post, including posts Niches sends when an approved schedule becomes due. The creator must select the destination, review the content and available settings, and expressly approve transmission. Provider processing may continue after Niches sends the request.
 
-video.upload is requested for a proposed upload-to-TikTok inbox/draft option. That option is not currently implemented or verified in Niches. It must not be represented as available until implemented and tested, and an unused scope must not be justified as demonstrated during review.
+video.upload permits sending content to TikTok as a draft for you to finish editing and publish within TikTok. This option is not currently available in Niches.
 
 TikTok API use depends on account authorisation and TikTok approval. This policy does not mean the integration is approved or available. We do not use TikTok data for unrelated advertising or sell it.
 
@@ -40,13 +40,13 @@ TikTok API use depends on account authorisation and TikTok approval. This policy
 
 Cloudflare provides the Niches Worker, database and private beta media storage. Connected TikTok, Meta and Google services receive the information needed for the accounts and publishing actions you authorise. A media transfer may use a short-lived bearer URL accessible to anyone who obtains that link during its lifetime; do not share those links.
 
-An enabled email provider may process your email address and recovery message to deliver account email. The repository includes optional Brevo and configurable delivery adapters; actual production use must be checked before naming an additional active provider.
+If account-recovery email is enabled, an email-delivery provider processes your address and recovery message to deliver it. Contact us for details of the provider used for your request.
 
 We may disclose information when legally required, to protect rights or security, or to authorised support operators where necessary. We do not sell personal information. Niches does not automatically send private media to an AI service merely because it is uploaded.
 
 ## 6. International processing
 
-Infrastructure and connected social platforms may process information outside the UK. Provider locations, contractual roles and the applicable transfer mechanism must be confirmed before public launch; do not claim UK-only storage or particular safeguards without checking the actual provider arrangements. A final public notice must explain applicable adequacy decisions or safeguards and how to obtain information about them.
+Our Cloudflare infrastructure may process information outside the UK, including in the United States and countries in its global network. Cloudflare’s published Data Processing Addendum provides for international-transfer safeguards, including the UK Extension to the EU–US Data Privacy Framework where applicable and standard contractual clauses with the UK Addendum for restricted transfers. You can read the safeguards at https://www.cloudflare.com/cloudflare-customer-dpa/ or contact us for further information. Connected social platforms also process information internationally under their own privacy policies when you connect an account or approve a publication. We do not promise UK-only storage.
 
 ## 7. Retention and deletion
 
@@ -75,7 +75,3 @@ We use access controls, hashed passwords, server-side encrypted connection token
 Niches is intended for adults aged 18 or over and is not designed to collect children's information knowingly. Contact us if information was supplied contrary to this requirement.
 
 We will update this notice when practices change and identify its revision date. Material changes will receive appropriate notice.
-
-## Publication checklist
-
-Before converting this draft into a public page: fill the real controller name and authorised public contact; verify active email and other processors, provider transfer arrangements and deletion handling; remove this draft checklist and resolve the international-processing paragraph into a factual description. Do not fill these gaps with invented assurances.

@@ -3,6 +3,22 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { validateConfig } from "./check-config.mjs";
 const config = readFileSync("wrangler.toml", "utf8");
+test("public legal pages identify Niches, offer contact and explain account data rights without draft placeholders", () => {
+  for (const page of ["terms", "privacy"]) {
+    const html = readFileSync(`apps/web/public/${page}.html`, "utf8");
+    assert.match(html, /<html lang="en-GB">/);
+    assert.match(html, /mailto:Craigs\.cartoons98@gmail\.com/);
+    assert.match(html, /href="\/terms"/);
+    assert.match(html, /href="\/privacy"/);
+    assert.doesNotMatch(html, /\[OPERATOR|\[PUBLIC CONTACT|Publication checklist|<script/i);
+  }
+  const privacy = readFileSync("apps/web/public/privacy.html", "utf8");
+  assert.match(privacy, /user\.info\.basic/);
+  assert.match(privacy, /video\.publish/);
+  assert.match(privacy, /video\.upload/);
+  assert.match(privacy, /Retention and deletion/);
+  assert.match(privacy, /ico\.org\.uk\/make-a-complaint/);
+});
 const safe = {
   production: true,
   account: "a".repeat(32),
