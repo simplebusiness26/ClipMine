@@ -374,6 +374,60 @@ test("Instagram Login opens Instagram directly and connects the authorised IG ac
   assert.equal(publication.state.container_id, "ig-media-container");
 });
 
+test("Instagram Unified Login uses config_id and saves assigned business Instagram accounts", async () => {
+  env.INSTAGRAM_CONFIG_ID = "957793303720161";
+  try {
+    const start = await oauthStart("instagram");
+    const url = new URL(start.url);
+    assert.equal(url.hostname, "www.facebook.com");
+    assert.equal(url.searchParams.get("config_id"), env.INSTAGRAM_CONFIG_ID);
+    assert.equal(url.searchParams.get("client_id"), settings.META_APP_ID);
+    assert.equal(url.searchParams.get("prompt"), "login");
+    assert.equal(url.searchParams.get("scope"), null);
+    assert.equal(url.searchParams.get("redirect_uri"),
+      settings.APP_URL + "/api/oauth/instagram/callback");
+    const visited = [];
+    const mock = async (requestUrl) => {
+      visited.push(String(requestUrl));
+      if (String(requestUrl).includes("/oauth/access_token")) return response({
+        access_token: "unified-system-user-token",
+      });
+      if (String(requestUrl).includes("/me/assigned_instagram_accounts")) return response({
+        data: [{ id: "ig-unified-1", username: "craigscartoons" }],
+      });
+      throw Error("Unexpected Unified Login request");
+    };
+    const result = await finishOAuth(
+      new Request(
+        `http://localhost/api/oauth/instagram/callback?state=${start.state}&code=fixture`,
+        { headers: { Cookie: start.browser } },
+      ), env, "instagram", mock,
+    );
+    assert.equal(new URL(result.headers.get("location")).searchParams.get("connection"), "connected");
+    const connected = await db.prepare(
+      "SELECT * FROM accounts WHERE provider_id='ig-unified-1' AND platform='instagram'"
+    ).first();
+    assert.equal(connected.connection_kind, "instagram_unified");
+    const grant = await unseal(env, connected.encrypted_tokens, accountContext(connected));
+    assert.equal(grant.access_token, "unified-system-user-token");
+    assert.equal(grant.expires_at, null);
+    assert.ok(visited.every((url) => new URL(url).hostname === "graph.facebook.com"));
+    const publication = await advancePublisher({
+      env, account: connected, token: grant.access_token,
+      media: { mime: "image/jpeg" },
+      post: { title: "Test", caption: "Unified image" },
+      options: {}, state: {}, mediaURL: "https://example.test/photo.jpg",
+      fetcher: async (requestUrl) => {
+        assert.equal(new URL(String(requestUrl)).hostname, "graph.facebook.com");
+        return response({ id: "unified-container" });
+      },
+    });
+    assert.equal(publication.state.container_id, "unified-container");
+  } finally {
+    delete env.INSTAGRAM_CONFIG_ID;
+  }
+});
+
 test("failed Facebook OAuth returns a scoped diagnostic instead of silently landing on Accounts", async () => {
   const start = await oauthStart("facebook");
   const response = await finishOAuth(
