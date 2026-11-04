@@ -44,6 +44,14 @@ export default function SocialAccounts({
       { id: string; name: string; platform: string }[] | null
     >(null),
     [selected, setSelected] = useState<string[]>([]);
+  // The setup modal offers a planning account, not an OAuth connection.
+  // Reveal the actual form after closing the modal so mobile users can see it.
+  useEffect(() => {
+    if (!showAdd || setup) return;
+    const form = document.getElementById("niches-add-social-account");
+    form?.scrollIntoView({ block: "center", behavior: "instant" });
+    form?.querySelector<HTMLInputElement>('input[name="display_name"]')?.focus({ preventScroll: true });
+  }, [showAdd, setup]);
   const ticket = new URLSearchParams(location.search).get("connect_ticket");
   const base = `/api/niches/${nicheId}`;
   // The provider returns via a full-page redirect; without this explicit
@@ -243,7 +251,7 @@ export default function SocialAccounts({
           </section>
         )}
         {showAdd && (
-          <form className="n-panel" onSubmit={add}>
+          <form id="niches-add-social-account" className="n-panel" onSubmit={add}>
             <h3>Add an account</h3>
             <label>
               Platform
