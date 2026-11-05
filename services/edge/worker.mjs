@@ -11,6 +11,7 @@ import {
   runOutbox,
   providerMedia,
   retryPublication,
+  confirmPublishedExternally,
   creatorInfo,
 } from "./outbox.mjs";
 import {
@@ -967,6 +968,18 @@ async function api(request, env, context) {
     );
     context?.waitUntil(runOutbox(env, 3));
     return json(result, 202);
+  }
+  const verified = sub.match(/^publications\\/([a-zA-Z0-9-]+)\\/confirm-live$/);
+  if (verified && method === "POST") {
+    return json(
+      await confirmPublishedExternally(
+        env,
+        user,
+        niche,
+        verified[1],
+        await body(request),
+      ),
+    );
   }
   const postMatch = sub.match(
     /^posts\/([a-zA-Z0-9-]+)(?:\/(approve|cancel|export))?$/,
