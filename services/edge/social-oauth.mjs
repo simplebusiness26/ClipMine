@@ -41,9 +41,13 @@ export function providerInfo(env) {
       oauth_ready: configured,
       login_mode: p === "instagram" && env.INSTAGRAM_CONFIG_ID ? "unified" : "standard",
       publishing_enabled:
-        configured && env[`${p.toUpperCase()}_PUBLISH_ENABLED`] === "1",
+        configured &&
+        env[`${p.toUpperCase()}_PUBLISH_ENABLED`] === "1" &&
+        (p !== "tiktok" || env.TIKTOK_MEDIA_URL_VERIFIED === "1"),
       reason: configured
-        ? "Authorise each account you want to add to this niche."
+        ? p === "tiktok" && env.TIKTOK_MEDIA_URL_VERIFIED !== "1"
+          ? "TikTok requires ownership verification of the hosted video URL prefix before direct publishing."
+          : "Authorise each account you want to add to this niche."
         : `The Niches owner must register the ${p === "youtube" ? "Google" : p === "tiktok" ? "TikTok" : "Meta"} developer app and configure its credentials.`,
       callback: env.APP_URL ? `${env.APP_URL}/api/oauth/${p}/callback` : null,
     };
