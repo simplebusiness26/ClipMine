@@ -737,7 +737,13 @@ function Workspace({
           caption: post.caption,
           media_id: post.media_id,
           destinations: [account.id],
-          overrides: post.overrides,
+          // Carry over only the target account and its platform metadata.
+          // Archived accounts can no longer be valid keys in a new draft.
+          overrides: Object.fromEntries(
+            [account.platform, account.id]
+              .filter((key) => post.overrides[key])
+              .map((key) => [key, post.overrides[key]]),
+          ),
         });
         await load();
         changed();
