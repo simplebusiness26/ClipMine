@@ -45,7 +45,7 @@ export async function queuePost(env, user, niche, post, data) {
   for (const accountId of ids) {
     const a = await one(
       env,
-      "SELECT * FROM accounts WHERE id=? AND niche_id=? AND status='connected' AND connection_kind='oauth'",
+      "SELECT * FROM accounts WHERE id=? AND niche_id=? AND status='connected' AND (connection_kind='oauth' OR (platform='instagram' AND connection_kind IN ('instagram_login','instagram_unified')))",
       accountId,
       niche.id,
     );
