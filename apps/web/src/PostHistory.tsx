@@ -59,7 +59,11 @@ export default function PostHistory({
                   </strong>
                   <p className="n-badge">{r.status.replaceAll("_", " ")}</p>
                   {r.error && <p role="alert">{r.error}</p>}
-                  {r.error_code && <small>Provider error: {r.error_code}</small>}
+                  {r.error_code === "owner_verified" ? (
+                    <small>Confirmed live by account owner; no duplicate post submitted.</small>
+                  ) : r.error_code ? (
+                    <small>Provider error: {r.error_code}</small>
+                  ) : null}
                 </div>
                 {r.platform === "youtube" &&
                   r.provider_post_id &&
@@ -72,6 +76,30 @@ export default function PostHistory({
                       Open video
                     </a>
                   )}
+                {r.status === "needs_review" && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!window.confirm(
+                        `Have you personally checked ${r.display_name} on ${r.platform} and seen this exact post live? This only records your confirmation; it does not upload anything.`
+                      )) return;
+                      setError("");
+                      try {
+                        await call(
+                          `/api/niches/${nicheId}/publications/${r.id}/confirm-live`,
+                          "POST",
+                          { confirmed_live: true },
+                        );
+                        await load();
+                        onChanged();
+                      } catch (e) {
+                        setError((e as Error).message);
+                      }
+                    }}
+                  >
+                    Already published — confirm on Niches
+                  </button>
+                )}
                 {["failed", "needs_review"].includes(r.status) && (
                   <button
                     onClick={async () => {
