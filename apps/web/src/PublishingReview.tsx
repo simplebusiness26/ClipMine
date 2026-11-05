@@ -141,6 +141,13 @@ export default function PublishingReview({
                 draft.overrides[a.platform]?.caption ||
                 draft.caption}
             </p>
+            {a.platform === "instagram" && (
+              <p className="n-status-note">
+                Instagram publishes this Reel or post to the connected account.
+                There is no Private visibility option in this publishing flow.
+                Only confirm when you are ready for the post to go live.
+              </p>
+            )}
             {a.platform === "youtube" && (
               <>
                 <label>
