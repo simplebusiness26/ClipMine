@@ -892,6 +892,35 @@ html {
   font-size: 9px;
   color: #97a18c;
 }
+.n-draft-accounts {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 500px;
+}
+.n-draft-account {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid #e6ecdf;
+  border-radius: 6px;
+  font-size: 11px;
+}
+.n-draft-account span {
+  flex: 1 1 150px;
+  overflow-wrap: anywhere;
+}
+.n-draft-account button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.n-draft-account small {
+  flex: 1 0 100%;
+  color: #8e745b;
+}
 .n-badge {
   background: #eff4e7;
   padding: 4px 9px;
