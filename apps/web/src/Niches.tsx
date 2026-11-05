@@ -720,6 +720,40 @@ function Workspace({
     );
     setTab("Publish");
   }
+  // Prepare a single-platform copy rather than approving every destination in
+  // the original draft. Each account still requires its own final review.
+  async function publishSeparately(post: Post, account: SocialAccount) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      if (!post.media_id) throw new Error("Upload this cartoon before publishing.");
+      let separate = post;
+      const alreadySingle =
+        post.destinations.length === 1 && post.destinations[0] === account.id;
+      if (!alreadySingle) {
+        separate = await call<Post>(base + "/posts", "POST", {
+          title: post.title,
+          caption: post.caption,
+          media_id: post.media_id,
+          destinations: [account.id],
+          overrides: post.overrides,
+        });
+        await load();
+        changed();
+      }
+      edit(separate);
+      setStatus(
+        alreadySingle
+          ? `Review ${account.display_name}'s settings before publishing.`
+          : `A separate draft for ${account.display_name} is ready. Your original draft is unchanged. Review before publishing.`,
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function upload(files: FileList | null) {
     if (!files?.length) return;
     if (!storageAvailable) {
@@ -1369,6 +1403,41 @@ function Workspace({
                   {p.status.replaceAll("_", " ")}
                   {p.scheduled_at ? ` · ${date(p.scheduled_at)}` : ""}
                 </small>
+                {["draft", "blocked", "cancelled"].includes(p.status) && (
+                  <div className="n-draft-accounts" aria-label="Publish separately by account">
+                    {p.destinations.map((accountId) => {
+                      const account = accounts.find((a) => a.id === accountId);
+                      if (!account) return null;
+                      const ready =
+                        account.status === "connected" &&
+                        providers.some(
+                          (provider) =>
+                            provider.id === account.platform &&
+                            provider.publishing_enabled,
+                        );
+                      return (
+                        <div className="n-draft-account" key={account.id}>
+                          <span>{account.display_name} · {account.platform}</span>
+                          <button
+                            type="button"
+                            aria-label={`Publish separately to ${account.display_name} on ${account.platform}`}
+                            disabled={busy || !p.media_id || !ready}
+                            onClick={() => void publishSeparately(p, account)}
+                          >
+                            Publish separately ↗
+                          </button>
+                          {!ready && (
+                            <small>
+                              {account.status === "connected"
+                                ? "Publishing approval required"
+                                : "Connect this account first"}
+                            </small>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
               <div className="n-actions">
                 {["draft", "blocked", "cancelled"].includes(p.status) ? (
