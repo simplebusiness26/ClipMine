@@ -10,6 +10,7 @@ import {
   saveConnection,
   selectConnections,
   providerInfo,
+  providerJSON,
 } from "./social-oauth.mjs";
 import {
   queuePost,
@@ -130,6 +131,13 @@ test("encrypted grants reject tampering and cross-account transplantation", asyn
     providerInfo({}).every((p) => !p.oauth_ready && !p.publishing_enabled),
   );
 });
+test("TikTok errors expose only allowlisted provider codes", async () => {
+  const fetcher = async () => new Response(JSON.stringify({ error: { code: "url_ownership_unverified", message: "private detail" } }), { status: 403 });
+  await assert.rejects(providerJSON("https://open.tiktokapis.com/v2/post/publish/video/init/", {}, fetcher), /url_ownership_unverified/);
+  const unsafe = async () => new Response(JSON.stringify({ error: { code: "sensitive_value", message: "secret detail" } }), { status: 403 });
+  await assert.rejects(providerJSON("https://open.tiktokapis.com/v2/post/publish/video/init/", {}, unsafe), e => !e.message.includes("sensitive_value") && !e.message.includes("secret detail"));
+});
+
 test("TikTok readiness requires verified media URL ownership even when credentials and publishing switch exist", () => {
   const unverified = providerInfo({ ...settings, TIKTOK_MEDIA_URL_VERIFIED: "0" });
   const tiktok = unverified.find((p) => p.id === "tiktok");
