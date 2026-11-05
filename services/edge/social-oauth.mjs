@@ -56,6 +56,21 @@ export function providerInfo(env) {
 function providerFailureMessage(url, data, status) {
   if (status === 401)
     return "Social authorisation expired. Reconnect this account.";
+  if (new URL(String(url)).hostname === "open.tiktokapis.com") {
+    // Only disclose documented, non-sensitive error identifiers; never echo provider text.
+    const safeCodes = new Set([
+      "access_token_invalid", "scope_not_authorized", "url_ownership_unverified",
+      "invalid_param", "spam_risk_too_many_pending_share",
+      "spam_risk_user_banned_from_posting", "spam_risk_user_has_reached_active_user_cap",
+      "privacy_level_option_mismatch", "unaudited_client_can_only_post_to_private_accounts",
+      "unaudited_client_can_only_post_to_private_users", "rate_limit_exceeded",
+      "internal_error", "client_not_audited",
+    ]);
+    const code = data?.error?.code;
+    return typeof code === "string" && safeCodes.has(code)
+      ? `TikTok rejected the request (${code}).`
+      : "TikTok rejected the request. Check its developer configuration and permissions.";
+  }
   if (!["graph.facebook.com", "graph.instagram.com", "api.instagram.com"].includes(new URL(String(url)).hostname))
     return "The social provider rejected this operation.";
   const raw = String(data?.error?.message || "");
