@@ -130,6 +130,18 @@ test("encrypted grants reject tampering and cross-account transplantation", asyn
     providerInfo({}).every((p) => !p.oauth_ready && !p.publishing_enabled),
   );
 });
+test("TikTok readiness requires verified media URL ownership even when credentials and publishing switch exist", () => {
+  const unverified = providerInfo({ ...settings, TIKTOK_MEDIA_URL_VERIFIED: "0" });
+  const tiktok = unverified.find((p) => p.id === "tiktok");
+  assert.ok(tiktok.oauth_ready);
+  assert.equal(tiktok.publishing_enabled, false);
+  assert.match(tiktok.reason, /ownership verification/i);
+  assert.equal(unverified.find((p) => p.id === "facebook").publishing_enabled, true);
+  const verified = providerInfo(settings).find((p) => p.id === "tiktok");
+  assert.equal(verified.publishing_enabled, true);
+  assert.equal(providerInfo({ ...settings, TIKTOK_PUBLISH_ENABLED: "0" })
+    .find((p) => p.id === "tiktok").publishing_enabled, false);
+});
 test("multiple same-platform accounts can be planned without pretending they are connected", async () => {
   for (const [platform, handle] of [
     ["instagram", "cars_main"],
