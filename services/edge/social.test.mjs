@@ -547,6 +547,37 @@ async function fixturePost(accounts, overrides = {}) {
     overrides,
   });
 }
+test("single-account draft copy leaves the original multi-account draft intact", async () => {
+  const accounts = (
+    await db
+      .prepare("SELECT * FROM accounts WHERE connection_kind='oauth' AND platform='youtube'")
+      .all()
+  ).results;
+  const original = await fixturePost(accounts, {
+    youtube: { caption: "YouTube caption" },
+    [accounts[0].id]: { caption: "Account-specific caption" },
+  });
+  const isolated = await json(`/api/niches/${niche.id}/posts`, "POST", {
+    title: original.title,
+    caption: original.caption,
+    media_id: original.media_id,
+    destinations: [accounts[0].id],
+    overrides: {
+      youtube: original.overrides.youtube,
+      [accounts[0].id]: original.overrides[accounts[0].id],
+    },
+  });
+  assert.notEqual(isolated.id, original.id);
+  assert.equal(isolated.media_id, original.media_id);
+  assert.deepEqual(isolated.destinations, [accounts[0].id]);
+  assert.equal(isolated.status, "draft");
+  const drafts = await json(`/api/niches/${niche.id}/posts`, "GET");
+  const intact = drafts.find((post) => post.id === original.id);
+  assert.ok(intact);
+  assert.deepEqual(intact.destinations, accounts.map((a) => a.id));
+  assert.equal(intact.status, "draft");
+  assert.equal(isolated.overrides[accounts[0].id].caption, "Account-specific caption");
+});
 test("master caption fallback and per-account overrides survive a multi-account approval", async () => {
   const accounts = (
     await db
