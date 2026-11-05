@@ -275,6 +275,19 @@ try {
     await page
       .getByRole("heading", { name: "Pick up where you left off." })
       .waitFor();
+    // A multi-account draft must expose separate per-account controls, but
+    // unconnected planning accounts must never be allowed to publish.
+    const savedRow = page.locator(".n-post-row").filter({
+      hasText: "My first original post",
+    });
+    const accountButtons = savedRow.getByRole("button", {
+      name: /^Publish separately to /,
+    });
+    if ((await accountButtons.count()) !== 5)
+      throw new Error("Five individual draft publishing controls expected");
+    for (const button of await accountButtons.all())
+      if (!(await button.isDisabled()))
+        throw new Error("An unauthorised account was enabled for individual publishing");
     if (storage) {
       // Browser-level real import → upload → draft persistence, never social publishing.
       await page
