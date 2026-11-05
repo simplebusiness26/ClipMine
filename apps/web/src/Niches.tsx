@@ -1452,7 +1452,8 @@ function Workspace({
                           {!ready && (
                             <small>
                               {account.status === "connected"
-                                ? "Publishing approval required"
+                                ? providers.find((provider) => provider.id === account.platform)?.reason ||
+                                  "Publishing permissions or app verification required"
                                 : "Connect this account first"}
                             </small>
                           )}
