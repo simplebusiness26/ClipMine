@@ -969,7 +969,7 @@ async function api(request, env, context) {
     context?.waitUntil(runOutbox(env, 3));
     return json(result, 202);
   }
-  const verified = sub.match(/^publications\\/([a-zA-Z0-9-]+)\\/confirm-live$/);
+  const verified = sub.match(/^publications\/([a-zA-Z0-9-]+)\/confirm-live$/);
   if (verified && method === "POST") {
     return json(
       await confirmPublishedExternally(
