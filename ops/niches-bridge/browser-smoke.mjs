@@ -280,6 +280,12 @@ try {
     const savedRow = page.locator(".n-post-row").filter({
       hasText: "My first original post",
     });
+    const destinations = savedRow.locator(".n-post-destination");
+    if ((await destinations.count()) !== 5)
+      throw new Error("Every saved post must label all five target accounts");
+    for (const platform of ["instagram", "tiktok", "youtube"])
+      if (!(await savedRow.locator(".n-post-destinations").textContent()).includes(platform))
+        throw new Error("Draft destination label missing: " + platform);
     const accountButtons = savedRow.getByRole("button", {
       name: /^Publish separately to /,
     });
