@@ -12,13 +12,15 @@ type Publication = {
 export default function PostHistory({
   nicheId,
   postId,
+  autoOpen = false,
   onChanged,
 }: {
   nicheId: string;
   postId: string;
+  autoOpen?: boolean;
   onChanged: () => void;
 }) {
-  const [open, setOpen] = useState(false),
+  const [open, setOpen] = useState(autoOpen),
     [rows, setRows] = useState<Publication[]>([]),
     [error, setError] = useState("");
   async function load() {
@@ -56,7 +58,8 @@ export default function PostHistory({
                     {r.display_name} · {r.platform}
                   </strong>
                   <p className="n-badge">{r.status.replaceAll("_", " ")}</p>
-                  {r.error && <p>{r.error}</p>}
+                  {r.error && <p role="alert">{r.error}</p>}
+                  {r.error_code && <small>Provider error: {r.error_code}</small>}
                 </div>
                 {r.platform === "youtube" &&
                   r.provider_post_id &&
