@@ -892,6 +892,27 @@ html {
   font-size: 9px;
   color: #97a18c;
 }
+.n-post-destinations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0;
+  max-width: 100%;
+}
+.n-post-destination {
+  background: #eef4e8;
+  color: #405734;
+  border: 1px solid #dce7d4;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.n-post-destination strong {
+  text-transform: capitalize;
+  font-weight: 700;
+}
 .n-draft-accounts {
   margin-top: 14px;
   display: flex;
