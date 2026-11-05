@@ -547,6 +547,35 @@ async function fixturePost(accounts, overrides = {}) {
     overrides,
   });
 }
+test("Instagram direct and Unified Login accounts can be approved without reconnecting", async () => {
+  for (const kind of ["instagram_login", "instagram_unified"]) {
+    const providerId = "publish-" + kind;
+    await saveConnection(env, niche.id, {
+      platform: "instagram",
+      provider_id: providerId,
+      name: providerId,
+      connection_kind: kind,
+      tokens: { access_token: "fixture-" + kind, expires_at: null },
+    });
+    const account = await db
+      .prepare("SELECT * FROM accounts WHERE niche_id=? AND platform='instagram' AND provider_id=?")
+      .bind(niche.id, providerId)
+      .first();
+    assert.equal(account.connection_kind, kind);
+    const draft = await fixturePost([account]);
+    const raw = await db.prepare("SELECT * FROM posts WHERE id=?").bind(draft.id).first();
+    const result = await queuePost(env, user, niche, raw, {
+      confirmed: true,
+      accounts: { [account.id]: {} },
+    });
+    assert.equal(result.status, "queued");
+    const publications = (
+      await db.prepare("SELECT account_id,status FROM publications WHERE post_id=?")
+        .bind(draft.id).all()
+    ).results;
+    assert.deepEqual(publications, [{ account_id: account.id, status: "pending" }]);
+  }
+});
 test("single-account draft copy leaves the original multi-account draft intact", async () => {
   const accounts = (
     await db
