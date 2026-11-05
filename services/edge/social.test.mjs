@@ -775,6 +775,38 @@ test("scheduled jobs stay queued until due and uncertain submissions never retry
     .first();
   assert.equal(pub.status, "published");
 });
+test("owner can confirm a provider-uncertain post already live without a second upload", async () => {
+  const account = await db.prepare("SELECT * FROM accounts WHERE provider_id='page1'").first();
+  const draft = await fixturePost([account]);
+  await db.prepare("UPDATE media SET mime='image/jpeg' WHERE id=?").bind(draft.media_id).run();
+  const raw = await db.prepare("SELECT * FROM posts WHERE id=?").bind(draft.id).first();
+  await queuePost(env, user, niche, raw, { confirmed: true, accounts: {} });
+  let submissions = 0;
+  await runOutbox(env, 10, async () => {
+    submissions++;
+    throw new Error("Provider connection lost after submission");
+  });
+  const pub = await db.prepare("SELECT * FROM publications WHERE post_id=?").bind(draft.id).first();
+  assert.equal(pub.status, "needs_review");
+  const url = `/api/niches/${niche.id}/publications/${pub.id}/confirm-live`;
+  assert.ok((await request(url, "POST", { confirmed_live: true }, otherCookie)).status >= 400);
+  assert.equal((await request(url, "POST", { confirmed_live: false })).status, 400);
+  const confirmation = await json(url, "POST", { confirmed_live: true });
+  assert.deepEqual(confirmation, { status: "published", verification: "owner_verified" });
+  const confirmed = await db.prepare("SELECT * FROM publications WHERE id=?").bind(pub.id).first();
+  assert.equal(confirmed.status, "published");
+  assert.equal(confirmed.error_code, "owner_verified");
+  const updatedPost = await db.prepare("SELECT delivery_status FROM posts WHERE id=?").bind(draft.id).first();
+  assert.equal(updatedPost.delivery_status, "published");
+  assert.equal((await request(url, "POST", { confirmed_live: true })).status, 409);
+  await assert.rejects(retryPublication(env, user, niche, pub.id, { checked_not_published: true }));
+  await runOutbox(env, 10, async () => {
+    submissions++;
+    throw new Error("Do not send again");
+  });
+  assert.equal(submissions, 1);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS total FROM publications WHERE post_id=?").bind(draft.id).first()).total, 1);
+});
 test("TikTok visibility, duration and consent use actual creator capabilities", () => {
   const a = { platform: "tiktok" },
     m = { mime: "video/mp4", duration_seconds: 12 },
