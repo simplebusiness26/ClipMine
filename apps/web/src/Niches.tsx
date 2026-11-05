@@ -1405,6 +1405,23 @@ function Workspace({
               <div>
                 <strong>{p.title || "Untitled post"}</strong>
                 <p>{p.caption.slice(0, 100) || "No caption"}</p>
+                <div className="n-post-destinations" aria-label="Destination accounts">
+                  {p.destinations.map((accountId) => {
+                    const account = accounts.find((a) => a.id === accountId);
+                    return (
+                      <span className="n-post-destination" key={accountId}>
+                        {account ? (
+                          <>
+                            <strong>{account.platform}</strong>
+                            <span> · {account.display_name}</span>
+                          </>
+                        ) : (
+                          "Previously selected account"
+                        )}
+                      </span>
+                    );
+                  })}
+                </div>
                 <small className="n-badge">
                   {p.status.replaceAll("_", " ")}
                   {p.scheduled_at ? ` · ${date(p.scheduled_at)}` : ""}
@@ -1467,6 +1484,7 @@ function Workspace({
               <PostHistory
                 nicheId={niche.id}
                 postId={p.id}
+                autoOpen={p.status === "failed"}
                 onChanged={changed}
               />
             </div>
