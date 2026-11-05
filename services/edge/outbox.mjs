@@ -372,6 +372,41 @@ export async function runOutbox(env, limit = 5, fetcher = fetch) {
     await refreshPostStatus(env, pub.post_id);
   }
 }
+// Owner confirmation is a reconciliation of an externally visible post, never
+// a publishing attempt. Preserve the distinction from a provider API receipt.
+export async function confirmPublishedExternally(env, user, niche, pubId, data) {
+  if (data?.confirmed_live !== true)
+    fail(400, "Confirm that you have seen this exact post live on the selected social account.");
+  const pub = await one(
+    env,
+    "SELECT p.* FROM publications p JOIN posts s ON s.id=p.post_id WHERE p.id=? AND s.niche_id=?",
+    pubId,
+    niche.id,
+  );
+  if (!pub) fail(404, "Publication not found");
+  if (pub.status !== "needs_review")
+    fail(409, "Only uncertain publication outcomes can be confirmed manually.");
+  const changed = await execute(
+    env,
+    "UPDATE publications SET status='published',error=NULL,error_code='owner_verified',lease_until=NULL,next_attempt_at=NULL,updated_at=? WHERE id=? AND status='needs_review'",
+    now(),
+    pub.id,
+  );
+  if (!changed.meta.changes)
+    fail(409, "Publication status changed. Refresh and check the platform.");
+  await execute(
+    env,
+    "INSERT INTO audit_events VALUES (?,?,?,?,?,?)",
+    id(),
+    user.id,
+    niche.id,
+    "publication.owner_verified",
+    pub.id,
+    now(),
+  );
+  await refreshPostStatus(env, pub.post_id);
+  return { status: "published", verification: "owner_verified" };
+}
 export async function retryPublication(env, user, niche, pubId, data) {
   const pub = await one(
     env,
