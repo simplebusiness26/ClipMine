@@ -148,6 +148,20 @@ export default function PublishingReview({
                 Only confirm when you are ready for the post to go live.
               </p>
             )}
+            {a.platform === "facebook" && (
+              <p className="n-status-note">
+                Facebook publishes this video or Reel to the connected Page.
+                Check the Page and caption before confirming the public post.
+              </p>
+            )}
+            {a.platform === "tiktok" && (
+              <p className="n-status-note">
+                TikTok requires verified media URL ownership and publishing access.
+                Unaudited apps are limited to private accounts and Only you posts.
+                Choose Only you for the first test if it is available.
+                {!p?.publishing_enabled && p?.reason ? ` ${p.reason}` : ""}
+              </p>
+            )}
             {a.platform === "youtube" && (
               <>
                 <label>
