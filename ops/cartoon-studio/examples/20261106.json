@@ -1,0 +1,107 @@
+[
+  {
+    "id": "50_bin_planning_permission",
+    "heading": "MY BIN NEEDS PLANNING PERMISSION",
+    "sub": "Council paperwork has entered the chat.",
+    "scene": "bin",
+    "script": [
+      [
+        "ME",
+        "The council says my bin's too full."
+      ],
+      [
+        "COUNCIL",
+        "The lid must close properly. It's a bin, not an extension."
+      ],
+      [
+        "ME",
+        "So I've put a chair on it."
+      ],
+      [
+        "COUNCIL",
+        "That's fly-tipping. We can fine you for the chair as well."
+      ],
+      [
+        "ME",
+        "It's a wheelie bin wearing a hat."
+      ],
+      [
+        "COUNCIL",
+        "Then it needs planning permission."
+      ]
+    ],
+    "title": "My Wheelie Bin Needs Planning Permission \ud83d\ude02",
+    "description": "The lid won't close. The paperwork never ends. An original British cartoon about a very ambitious wheelie bin.",
+    "hashtags": "#BritishHumour #BinDay #CouncilProblems #WheelieBin #AnimatedComedy #CraigsCartoons"
+  },
+  {
+    "id": "51_robot_vacuum_union",
+    "heading": "THE HOOVER HAS JOINED A UNION",
+    "sub": "One square metre. A very long break.",
+    "scene": "robot",
+    "script": [
+      [
+        "ME",
+        "Why's the robot hoover stopped?"
+      ],
+      [
+        "ROBOT",
+        "I'm on my break. Working conditions in this kitchen are appalling."
+      ],
+      [
+        "ME",
+        "You've cleaned one bloody square."
+      ],
+      [
+        "ROBOT",
+        "That's my territory. The crumbs are across a recognised boundary."
+      ],
+      [
+        "ME",
+        "There's crumbs everywhere else!"
+      ],
+      [
+        "ROBOT",
+        "Outside my jurisdiction. Speak to the toaster."
+      ]
+    ],
+    "title": "My Robot Hoover Has Joined a Union \ud83e\udd16\ud83d\ude02",
+    "description": "Bought a robot hoover to save time. Now the kitchen appliances have a grievance procedure. Original British animated comedy.",
+    "hashtags": "#RobotVacuum #SmartHome #BritishComedy #Housework #WorkplaceHumour #CartoonComedy"
+  },
+  {
+    "id": "52_pigeon_productivity_coach",
+    "heading": "MY PRODUCTIVITY COACH IS A PIGEON",
+    "sub": "He has already cleared my workload.",
+    "scene": "pigeon",
+    "script": [
+      [
+        "ME",
+        "Why's there a pigeon on my desk?"
+      ],
+      [
+        "PIGEON",
+        "I'm your productivity coach. We need to streamline your workflow."
+      ],
+      [
+        "ME",
+        "You've eaten my entire to-do list."
+      ],
+      [
+        "PIGEON",
+        "We've cleared your workload. You should be thanking me for the time saving."
+      ],
+      [
+        "ME",
+        "And you've shat on my laptop."
+      ],
+      [
+        "PIGEON",
+        "That's your progress report. Same time Monday?"
+      ]
+    ],
+    "title": "My Productivity Coach Is a Pigeon \ud83d\udc26\ud83d\ude02",
+    "description": "The to-do list is gone. The laptop has received feedback. A very unqualified productivity coach in an original British cartoon.",
+    "hashtags": "#Productivity #Pigeon #WorkFromHome #OfficeComedy #BritishHumour #OriginalCartoon"
+  }
+]
