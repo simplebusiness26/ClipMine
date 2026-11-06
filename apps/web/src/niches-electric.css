@@ -424,3 +424,54 @@ html:has(.n-electric) { color-scheme: dark; background: #05091a; }
   .n-electric .electric-library-actions { width:100%; }
   .n-electric .electric-library-actions label { flex:1; }
 }
+
+
+/* Mobile composer: stack preparation and review on narrow viewports. */
+@media (max-width: 760px) {
+  /* Keep dashboard stats side-by-side, but never squeeze publishing forms. */
+  .n-electric .composer.n-two-col {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+    width: 100%;
+  }
+  .n-electric .composer > .n-panel {
+    width: 100%;
+    min-width: 0;
+    margin-bottom: 0;
+    padding: 16px;
+  }
+  .n-electric .composer form,
+  .n-electric .composer details,
+  .n-electric .composer .n-status-note {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .n-electric .composer .n-status-note {
+    padding: 12px 14px;
+    font-size: 12px;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+  }
+  .n-electric .composer :is(input:not([type="checkbox"]), select, textarea) {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .n-electric .composer form > .n-primary,
+  .n-electric .composer .n-review form > button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 44px;
+    padding: 12px 14px;
+    white-space: normal;
+    text-align: center;
+    border-radius: 10px;
+  }
+  .n-electric .composer .n-review form > button:not(.n-primary) {
+    color: #f0e2ff;
+    background: #292052;
+    border: 1px solid #7652ba;
+  }
+}
