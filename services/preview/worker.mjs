@@ -5,7 +5,7 @@ const PRODUCTION = "https://niches.ai-seo.workers.dev";
 const PREVIEW = "https://niches-electric.ai-seo.workers.dev";
 const unsafe = (method) => !["GET", "HEAD", "OPTIONS"].includes(method);
 
-export async function handlePreview(request, env, upstreamFetch = env.NICHES_API.fetch.bind(env.NICHES_API)) {
+export async function handlePreview(request, env, upstreamFetch) {
   const incoming = new URL(request.url);
   if (incoming.origin !== PREVIEW) {
     return new Response("Unexpected preview hostname", { status: 421 });
@@ -35,7 +35,9 @@ export async function handlePreview(request, env, upstreamFetch = env.NICHES_API
   // Do not change the body or session cookies. Existing backend owns all
   // authorisation, idempotency, per-account publication checks and storage.
   // Cloudflare Service Binding: worker-to-worker, no public fetch or database access.
-  const upstream = await upstreamFetch(target, {
+  const backend = upstreamFetch || env.NICHES_API?.fetch?.bind(env.NICHES_API);
+  if (!backend) return new Response('Preview backend unavailable', { status: 503 });
+  const upstream = await backend(target, {
     method: request.method,
     headers,
     body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
