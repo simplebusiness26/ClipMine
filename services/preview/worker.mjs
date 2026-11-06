@@ -34,7 +34,8 @@ export async function handlePreview(request, env, upstreamFetch = env.NICHES_API
   }
   // Do not change the body or session cookies. Existing backend owns all
   // authorisation, idempotency, per-account publication checks and storage.
-  // Cloudflare Service Binding: worker-to-worker, no public fetch or database access.\n  const upstream = await upstreamFetch(target, {
+  // Cloudflare Service Binding: worker-to-worker, no public fetch or database access.
+  const upstream = await upstreamFetch(target, {
     method: request.method,
     headers,
     body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
