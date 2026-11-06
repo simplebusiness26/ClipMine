@@ -203,6 +203,7 @@ export default function Niches() {
     [creating, setCreating] = useState(false),
     [notices, setNotices] = useState<Notice[]>([]),
     [showNotices, setShowNotices] = useState(false),
+    [mobileMenuOpen, setMobileMenuOpen] = useState(false),
     [error, setError] = useState(""),
     [refreshKey, setRefreshKey] = useState(0);
   async function refresh() {
@@ -376,6 +377,9 @@ export default function Niches() {
                   onClick={() => setShowNotices(!showNotices)}>
                   ♧ {notices.filter((n) => !n.read_at).length || ""}
                 </button>
+                <button className="electric-menu-button" type="button"
+                  aria-label="Open all Niches sections" aria-expanded={mobileMenuOpen}
+                  onClick={() => setMobileMenuOpen((open) => !open)}>☰</button>
                 <button className="electric-top-upload" onClick={() => {
                   if (active) setTab("Create");
                   else if (niches.length) open(niches[0], "Create");
@@ -579,6 +583,36 @@ export default function Niches() {
           <span><a href="/terms">Terms</a> · <a href="/privacy">Privacy</a></span>
         </footer>
       </div>
+      {electricSkin && mobileMenuOpen && (
+        <div className="electric-menu-overlay">
+          <nav className="electric-menu-drawer" aria-label="All Niches sections">
+            <div className="electric-menu-header">
+              <strong>All Niches sections</strong>
+              <button type="button" aria-label="Close navigation" onClick={() => setMobileMenuOpen(false)}>✕</button>
+            </div>
+            <button type="button" onClick={() => {
+              setMobileMenuOpen(false); setActive(null); setTab("Overview");
+            }}>◈ All niches</button>
+            {tabs.map((target, index) => (
+              <button key={target} type="button"
+                aria-current={active && tab === target ? "page" : undefined}
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  if (active) setTab(target);
+                  else if (niches.length) open(niches[0], target);
+                  else setCreating(true);
+                }}>
+                <span aria-hidden="true">{symbols[index]}</span> {target}
+              </button>
+            ))}
+            <button type="button" onClick={async () => {
+              setMobileMenuOpen(false);
+              await call("/api/auth/logout", "POST", {});
+              setUser(null); setActive(null);
+            }}>Log out</button>
+          </nav>
+        </div>
+      )}
       {electricSkin && (
         <nav className="electric-bottom-nav" aria-label="Mobile navigation">
           {([
