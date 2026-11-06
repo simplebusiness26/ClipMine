@@ -2,6 +2,7 @@ import PostHistory from "./PostHistory";
 import { parseBatchArchive } from "./batch-zip";
 import SocialAccounts from "./SocialAccounts";
 import PublishingReview from "./PublishingReview";
+import { contentMatches } from "./content-filter";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import ClipMine from "./App";
 import {
@@ -739,6 +740,7 @@ function Workspace({
     [ideas, setIdeas] = useState<Idea[]>([]),
     [revenue, setRevenue] = useState<Revenue[]>([]),
     [query, setQuery] = useState(""),
+    [contentFilter, setContentFilter] = useState<"All" | "Drafts" | "Scheduled" | "Published">("All"),
     [error, setError] = useState(""),
     [status, setStatus] = useState(""),
     [busy, setBusy] = useState(false),
@@ -961,9 +963,7 @@ function Workspace({
     }, 8000);
     return () => clearInterval(interval);
   }, [tab, niche.id]);
-  const visible = media.filter((m) =>
-    m.filename.toLowerCase().includes(query.toLowerCase()),
-  );
+  const visible = media.filter((m) => contentMatches(m, posts, query, electricSkin ? contentFilter : "All"));
   const pending = posts.filter(
     (p) =>
       p.status === "draft" ||
@@ -972,7 +972,7 @@ function Workspace({
   );
   return (
     <>
-      <div className={electricSkin && tab === "Overview" ? "n-page-head compact electric-workspace-heading" : "n-page-head compact"}>
+      <div className={electricSkin && (tab === "Overview" || tab === "Content") ? "n-page-head compact electric-workspace-heading" : "n-page-head compact"}>
         <div>
           <span className="n-kicker">
             {niche.name.toUpperCase()} / {tab.toUpperCase()}
@@ -1019,7 +1019,7 @@ function Workspace({
           {status}
         </p>
       )}
-      <div className={electricSkin && tab === "Overview" ? "n-actions electric-overview-secondary-actions" : "n-actions"} style={{ marginBottom: 20 }}>
+      <div className={electricSkin && (tab === "Overview" || tab === "Content") ? "n-actions electric-overview-secondary-actions" : "n-actions"} style={{ marginBottom: 20 }}>
         <button type="button" onClick={() => setTab("Accounts")}>
           + Add / manage social accounts ({accounts.length})
         </button>
@@ -1106,10 +1106,10 @@ function Workspace({
         <div className="electric-dashboard">
           <div className="electric-hero">
             <div>
-              <h1>{niche.name} Workspace</h1>
+              <h1>{niche.name}<span className="electric-desktop-title"> Workspace</span><span className="electric-mobile-title"> 👋</span></h1>
               <p>Manage your content, drafts, schedule and publishing.</p>
             </div>
-            <div className="electric-brand-art" aria-label={`${niche.name} brand workspace`}>
+            <div className={`electric-brand-art ${niche.name.trim().toLowerCase() === "craig's cartoons" ? "electric-cartoon-art" : ""}`} aria-label={`${niche.name} brand workspace`}>
               <strong>{niche.name}</strong>
               <small>{niche.description || "Your content workspace"}</small>
             </div>
@@ -1146,7 +1146,7 @@ function Workspace({
           </div>
           <section className="electric-section" aria-label="Publishing queue">
             <div className="electric-section-head">
-              <h2>▦ Publishing Queue</h2>
+              <h2><span className="electric-desktop-queue">▦ Publishing Queue</span><span className="electric-mobile-queue">Next in Queue</span></h2>
               <button onClick={() => setTab("Calendar")}>View Calendar ›</button>
             </div>
             {posts.some((p) => p.status === "scheduled" && p.scheduled_at) ? (
@@ -1230,7 +1230,7 @@ function Workspace({
       )}
       {(tab === "Content" || tab === "Create") && (
         <>
-          <section className="n-upload">
+          <section className={electricSkin && tab === "Content" ? "n-upload electric-library-upload" : "n-upload"}>
             {!storageAvailable && (
               <div className="n-status-note" role="status">
                 Cloud storage is not enabled yet. You can choose and preview
@@ -1259,7 +1259,7 @@ function Workspace({
               your account.
             </p>
           </section>
-          <section className="n-panel">
+          <section className={electricSkin && tab === "Content" ? "n-panel electric-library-import" : "n-panel"}>
             <span className="n-kicker">BULK CONTENT / PRIVATE BETA</span>
             <h2>Import a ready-made content ZIP.</h2>
             <p>
@@ -1377,8 +1377,18 @@ function Workspace({
           )}
           {tab === "Content" && (
             <>
+              {electricSkin && <div className="electric-library-toolbar">
+                <h2>▱ Content Library</h2>
+                <div className="electric-library-actions">
+                  <label className="n-primary">↑ Upload Files<input type="file" multiple aria-label="Upload files to content library" accept="video/mp4,video/quicktime,video/webm,image/jpeg,image/png,image/webp" disabled={busy} onChange={(e) => void upload(e.target.files)} /></label>
+                  <label className="n-primary">▱ Import ZIP<input type="file" aria-label="Import ZIP to content library" accept=".zip,application/zip" disabled={busy || !storageAvailable} onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; void importZip(file); }} /></label>
+                </div>
+              </div>}
+              {electricSkin && <div className="electric-library-filters" aria-label="Filter content by status">
+                {(["All", "Drafts", "Scheduled", "Published"] as const).map((filter) => <button key={filter} type="button" aria-pressed={contentFilter === filter} onClick={() => setContentFilter(filter)}>{filter}</button>)}
+              </div>}
               <div className="n-section-head">
-                <h2>Content library</h2>
+                {!electricSkin && <h2>Content library</h2>}
                 <input
                   aria-label="Search content"
                   placeholder="Search your content…"
@@ -1710,14 +1720,15 @@ function Workspace({
       {tab === "Calendar" && (
         <section className="n-panel">
           <div className="n-section-head">
-            <h2>Coming up next.</h2>
+            <h2>{electricSkin ? "▦ Upcoming Posts" : "Coming up next."}</h2>
             <span>Device timezone · Scheduled posts & legacy reminders</span>
           </div>
           {posts
             .filter((p) => p.scheduled_at && p.status === "scheduled")
             .sort((a, b) => a.scheduled_at!.localeCompare(b.scheduled_at!))
             .map((p) => (
-              <div className="n-post-row" key={p.id}>
+              <div className={electricSkin ? "n-post-row electric-calendar-row" : "n-post-row"} key={p.id}>
+                {electricSkin && <span className="electric-calendar-thumb">{media.find((m) => m.id === p.media_id) ? <Preview niche={niche.id} media={media.find((m) => m.id === p.media_id)!} /> : "▷"}</span>}
                 <div>
                   <span className="n-kicker">{date(p.scheduled_at!)}</span>
                   <h3>{p.title || "Untitled post"}</h3>
@@ -1727,6 +1738,7 @@ function Workspace({
                       : "Legacy export reminder · No automatic social posting"}
                   </p>
                 </div>
+                {electricSkin && <span className="electric-status">{p.publish_mode === "direct" ? "Scheduled" : "Reminder"}</span>}
                 <button
                   disabled={busy}
                   onClick={() =>
