@@ -4,9 +4,9 @@ Updated: 4 November 2026
 
 ## 1. Controller and contact
 
-**Niches** is responsible for the personal information described here. Contact for privacy requests and complaints: **Craigs.cartoons98@gmail.com**.
+**Niches** is responsible for the personal information described here. Contact for privacy requests and complaints: **<Craigs.cartoons98@gmail.com>**.
 
-This policy covers the Niches web service at https://niches.ai-seo.workers.dev/. Social platforms also process information under their own policies when you authorise them or publish there.
+This policy covers the Niches web service at <https://niches.ai-seo.workers.dev/>. Social platforms also process information under their own policies when you authorise them or publish there.
 
 ## 2. Information we use and where it comes from
 
@@ -46,7 +46,7 @@ We may disclose information when legally required, to protect rights or security
 
 ## 6. International processing
 
-Our Cloudflare infrastructure may process information outside the UK, including in the United States and countries in its global network. Cloudflare’s published Data Processing Addendum provides for international-transfer safeguards, including the UK Extension to the EU–US Data Privacy Framework where applicable and standard contractual clauses with the UK Addendum for restricted transfers. You can read the safeguards at https://www.cloudflare.com/cloudflare-customer-dpa/ or contact us for further information. Connected social platforms also process information internationally under their own privacy policies when you connect an account or approve a publication. We do not promise UK-only storage.
+Our Cloudflare infrastructure may process information outside the UK, including in the United States and countries in its global network. Cloudflare’s published Data Processing Addendum provides for international-transfer safeguards, including the UK Extension to the EU–US Data Privacy Framework where applicable and standard contractual clauses with the UK Addendum for restricted transfers. You can read the safeguards at <https://www.cloudflare.com/cloudflare-customer-dpa/> or contact us for further information. Connected social platforms also process information internationally under their own privacy policies when you connect an account or approve a publication. We do not promise UK-only storage.
 
 ## 7. Retention and deletion
 
@@ -66,7 +66,7 @@ Niches uses a session cookie for sign-in and short-lived browser-bound state to 
 
 Depending on the processing and applicable law, you may request access, correction, deletion, restriction or portability of your personal information, and object to processing based on legitimate interests. You may withdraw consent where consent is our basis. Contact the address above to exercise rights or complain; we will respond within applicable legal timescales and explain any lawful limits.
 
-You can also complain to the UK Information Commissioner's Office: https://ico.org.uk/make-a-complaint/. You do not have to contact us first to exercise that right.
+You can also complain to the UK Information Commissioner's Office: <https://ico.org.uk/make-a-complaint/>. You do not have to contact us first to exercise that right.
 
 ## 10. Security, age and changes
 

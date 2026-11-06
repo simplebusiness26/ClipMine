@@ -1,0 +1,17 @@
+# UI-only preview. Deliberately no D1/KV/R2 bindings, secrets, or cron.
+# API traffic goes through a narrowly scoped proxy to existing Niches Worker.
+name = "niches-electric"
+main = "services/preview/worker.mjs"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[assets]
+directory = "apps/web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+# Only an internal service reference. The target Niches Worker owns the database.
+[[services]]
+binding = "NICHES_API"
+service = "niches"
