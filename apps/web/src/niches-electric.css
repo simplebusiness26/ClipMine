@@ -319,3 +319,17 @@ html:has(.n-electric) { color-scheme: dark; background: #05091a; }
 @media (prefers-reduced-motion:reduce) {
   .n-electric *, .n-electric *::before, .n-electric *::after { animation:none!important;scroll-behavior:auto!important; }
 }
+
+/* One-screen overview: the electric dashboard owns its heading and actions. */
+.n-electric .electric-workspace-heading,
+.n-electric .electric-overview-secondary-actions { display:none; }
+.n-electric .n-auth-form label { color:#e4eaff; }
+.n-electric .n-auth-form button { color:#f5dcff; }
+.n-electric .n-auth .n-auth-links button { color:#bca0f4; }
+.n-electric .n-post-row p { color:#a6b5de; }
+.n-electric .n-section-head button { color:#e0baff; }
+@media (max-width:760px){
+  .n-electric .electric-overview-secondary-actions { display:none; }
+  .n-electric .n-sidebar .n-brand { color:#fff!important; }
+  .n-electric .electric-hero p { line-height:1.3; }
+}
