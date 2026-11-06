@@ -333,3 +333,39 @@ html:has(.n-electric) { color-scheme: dark; background: #05091a; }
   .n-electric .n-sidebar .n-brand { color:#fff!important; }
   .n-electric .electric-hero p { line-height:1.3; }
 }
+
+/* Accessible access to every existing page on compact mobile layouts. */
+.n-electric .electric-menu-button { display:none; }
+.n-electric .electric-menu-overlay { display:none; }
+@media (max-width:760px) {
+  .n-electric .electric-menu-button {
+    display:grid;place-items:center; width:34px;height:34px;
+    color:#f7d4ff;background:#26144b;border:1px solid #6c3bb4;
+    border-radius:8px;font-size:18px; flex:none;
+  }
+  .n-electric .electric-menu-overlay {
+    display:flex;position:fixed;inset:0;z-index:150;
+    background:#030511cd;align-items:stretch;justify-content:flex-end;
+  }
+  .n-electric .electric-menu-drawer {
+    display:flex;flex-direction:column;overflow-y:auto;
+    width:min(85vw,330px);height:100%;padding:16px 15px 30px;
+    background:linear-gradient(155deg,#12183d,#080d21);
+    border-left:1px solid #9549fa;box-shadow:-12px 0 33px #010311aa;
+  }
+  .n-electric .electric-menu-header {
+    display:flex;align-items:center;justify-content:space-between;
+    padding:0 0 12px;border-bottom:1px solid #3f3f74;
+  }
+  .n-electric .electric-menu-header strong { color:white;font-size:16px; }
+  .n-electric .electric-menu-drawer button {
+    border:0;background:transparent;color:#e8e6ff;
+    text-align:left;padding:10px 12px;border-radius:9px;font-size:13px;
+  }
+  .n-electric .electric-menu-drawer button[aria-current="page"] {
+    background:linear-gradient(90deg,#6122bc,#2a215f);color:#fff;
+    border:1px solid #7436d2;
+  }
+  .n-electric .electric-menu-drawer button span {display:inline-block;width:23px;color:#cb91ff}
+  .n-electric .electric-menu-header button {font-size:18px}
+}
