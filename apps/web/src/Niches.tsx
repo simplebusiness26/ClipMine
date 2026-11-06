@@ -283,7 +283,7 @@ export default function Niches() {
             setTab("Overview");
           }}
         >
-          <Mark /> niches<span className="n-beta">BETA</span>
+          <Mark /> {electricSkin ? "Niches" : "niches"}{!electricSkin && <span className="n-beta">BETA</span>}
         </button>
         <span className="n-sidebar-label">WORKSPACE</span>
         <button
