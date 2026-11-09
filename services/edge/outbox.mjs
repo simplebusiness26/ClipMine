@@ -53,6 +53,8 @@ export async function queuePost(env, user, niche, post, data) {
     );
     if (!a)
       fail(409, "Every selected account must be connected for publishing.");
+    if (niche.master_name && a.routing_group !== "master")
+      fail(400, "Only master accounts can publish in this niche.");
     const provider = providerInfo(env).find((p) => p.id === a.platform);
     if (!provider?.publishing_enabled)
       fail(
@@ -65,6 +67,8 @@ export async function queuePost(env, user, niche, post, data) {
         "The TikTok media URL/domain must be verified in the developer portal.",
       );
     const selected = resolveOptions(post, a, options);
+    if (niche.master_name && a.platform === "instagram" && selected.instagram_collaborator !== undefined)
+      fail(400, "Instagram Collab invites are unavailable in master-only niches.");
     if (a.platform === "instagram") {
       instagramDestinations++;
       hasInstagramCollab ||= selected.instagram_collaborator !== undefined;
@@ -277,6 +281,9 @@ export async function runOutbox(env, limit = 5, fetcher = fetch) {
             { uncertain: true },
           );
       }
+      const routing = await one(env, "SELECT master_name FROM niches WHERE id=?", post.niche_id);
+      if (routing?.master_name && account.routing_group !== "master" && !pub.submission_started)
+        fail(400, "The approved account is no longer a master destination.");
       const options = resolveOptions(
         post,
         account,
