@@ -3,6 +3,7 @@ import { parseBatchArchive } from "./batch-zip";
 import SocialAccounts from "./SocialAccounts";
 import PublishingReview from "./PublishingReview";
 import PublishingCalendar from "./PublishingCalendar";
+import ElectricDrafts from "./ElectricDrafts";
 import { contentMatches } from "./content-filter";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import ClipMine from "./App";
@@ -22,6 +23,7 @@ import {
 } from "./niches-api";
 import "./niches.css";
 import "./niches-electric.css";
+import "./electric-launch.css";
 // Only the separately deployed preview opts into this skin; production stays unchanged.
 const electricSkin = import.meta.env.VITE_NICHES_SKIN === "electric";
 const tabs = [
@@ -230,7 +232,8 @@ export default function Niches() {
         const found = list.find((n) => n.id === nicheId);
         if (found) {
           setActive(found);
-          if (params.get("section") === "Accounts") setTab("Accounts");
+          const requested = params.get("section");
+          if (requested && tabs.some((section) => section === requested)) setTab(requested as Tab);
         }
       }
     } catch {
@@ -621,6 +624,7 @@ export default function Niches() {
             ["Overview", "⌂", "Home"],
             ["Content", "▱", "Content"],
             ["Create", "+", "Create"],
+            ["Drafts", "▤", "Drafts"],
             ["Calendar", "▦", "Calendar"],
             ["Accounts", "♧", "Accounts"],
           ] as const).map(([target, symbol, label]) => (
@@ -747,6 +751,7 @@ function Workspace({
     [busy, setBusy] = useState(false),
     [storageAvailable, setStorageAvailable] = useState(false),
     [draft, setDraft] = useState<Post | null>(null),
+    [composeStage, setComposeStage] = useState<"prepare" | "review">("prepare"),
     [selectedMedia, setSelectedMedia] = useState(""),
     [destinations, setDestinations] = useState<string[]>([]),
     [analytics, setAnalytics] = useState<{ source: string }>({
@@ -804,8 +809,9 @@ function Workspace({
       setBusy(false);
     }
   }
-  function edit(post: Post) {
+  function edit(post: Post, stage: "prepare" | "review" = "prepare") {
     setDraft(post);
+    setComposeStage(stage);
     setSelectedMedia(post.media_id || "");
     setDestinations(
       post.destinations.filter((id) => accounts.some((a) => a.id === id)),
@@ -950,9 +956,16 @@ function Workspace({
         },
       );
       setDraft(post);
-      setStatus(
-        "Draft saved. Review below to prepare your export or reminder.",
-      );
+      if (electricSkin) {
+        setComposeStage("review");
+        window.scrollTo({
+          top: 0,
+          behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
+        });
+      }
+      setStatus(electricSkin
+        ? "Draft saved safely. You're in publishing review — nothing goes live until you approve."
+        : "Draft saved. Review below to prepare your export or reminder.");
     });
   }
   useEffect(() => {
@@ -973,7 +986,7 @@ function Workspace({
   );
   return (
     <>
-      <div className={electricSkin && (tab === "Overview" || tab === "Content") ? "n-page-head compact electric-workspace-heading" : "n-page-head compact"}>
+      <div className={electricSkin && (tab === "Overview" || tab === "Content" || tab === "Drafts") ? "n-page-head compact electric-workspace-heading" : "n-page-head compact"}>
         <div>
           <span className="n-kicker">
             {niche.name.toUpperCase()} / {tab.toUpperCase()}
@@ -1020,7 +1033,7 @@ function Workspace({
           {status}
         </p>
       )}
-      <div className={electricSkin && (tab === "Overview" || tab === "Content") ? "n-actions electric-overview-secondary-actions" : "n-actions"} style={{ marginBottom: 20 }}>
+      <div className={electricSkin && (tab === "Overview" || tab === "Content" || tab === "Drafts") ? "n-actions electric-overview-secondary-actions" : "n-actions"} style={{ marginBottom: 20 }}>
         <button type="button" onClick={() => setTab("Accounts")}>
           + Add / manage social accounts ({accounts.length})
         </button>
@@ -1459,10 +1472,23 @@ function Workspace({
         </>
       )}
       {tab === "Publish" && (
-        <div className="n-two-col composer">
-          <section className="n-panel">
+        <div className={electricSkin ? "n-two-col composer electric-launch-flow" : "n-two-col composer"}>
+          {electricSkin && (
+            <div className="electric-launch-progress" aria-label="Publishing stages">
+              <span className="electric-launch-brand">NICHES <b>·</b> LAUNCH SEQUENCE</span>
+              <div className="electric-launch-steps">
+                <span className={composeStage === "prepare" || !draft ? "active" : "done"}>01 <strong>COMPOSE</strong></span>
+                <i aria-hidden="true" />
+                <span className={composeStage === "review" && !!draft ? "active" : ""}>02 <strong>REVIEW</strong></span>
+                <i aria-hidden="true" />
+                <span>03 <strong>LAUNCH</strong></span>
+              </div>
+            </div>
+          )}
+          {(!electricSkin || composeStage === "prepare" || !draft) && (
+          <section className="n-panel electric-stage electric-compose-stage">
             <span className="n-kicker">01 / PREPARE</span>
-            <h2>One post. Your whole niche.</h2>
+            <h2>{electricSkin ? "Build your next drop." : "One post. Your whole niche."}</h2>
             <form key={draft?.id || "new"} onSubmit={save}>
               <label>
                 Media
@@ -1588,13 +1614,23 @@ function Workspace({
                   </details>
                 ))}
               <button className="n-primary" disabled={busy}>
-                Save draft ↗
+                {electricSkin ? "Save & enter launch review ↗" : "Save draft ↗"}
               </button>
             </form>
           </section>
-          <section className="n-panel n-review">
+          )}
+          {(!electricSkin || (composeStage === "review" && !!draft)) && (
+          <section className="n-panel n-review electric-stage electric-review-stage">
+            {electricSkin && (
+              <div className="electric-launch-review-intro">
+                <span className="electric-pulse" aria-hidden="true" />
+                <span>STAGE 02 · SAFETY CHECK</span>
+                <button type="button" onClick={() => setComposeStage("prepare")}>← Edit details</button>
+              </div>
+            )}
             <span className="n-kicker">02 / REVIEW</span>
-            <h2>Your final say.</h2>
+            <h2>{electricSkin ? "Ready for lift-off?" : "Your final say."}</h2>
+            {electricSkin && <p className="electric-launch-review-subtitle">Check the destination accounts. Remove any platform you're unsure about. Nothing publishes until you confirm.</p>}
             {draft ? (
               <PublishingReview
                 nicheId={niche.id}
@@ -1602,8 +1638,15 @@ function Workspace({
                 accounts={accounts}
                 providers={providers}
                 onAccounts={() => setTab("Accounts")}
+                onDraftUpdated={(updated) => {
+                  setDraft(updated);
+                  setDestinations(updated.destinations);
+                  setStatus("Platform removed from this saved draft. No publishing job was created.");
+                  changed();
+                }}
                 onResult={(message) => {
                   setDraft(null);
+                  setComposeStage("prepare");
                   setStatus(message);
                   setTab("Drafts");
                   changed();
@@ -1616,9 +1659,26 @@ function Workspace({
               </Empty>
             )}
           </section>
+          )}
         </div>
       )}
-      {tab === "Drafts" && (
+      {tab === "Drafts" && electricSkin && (
+        <ElectricDrafts
+          nicheId={niche.id}
+          posts={posts}
+          media={media}
+          accounts={accounts}
+          onEdit={(post) => edit(post)}
+          onReview={(post) => edit(post, "review")}
+          onCreate={() => {
+            setDraft(null);
+            setComposeStage("prepare");
+            setSelectedMedia("");
+            setTab("Publish");
+          }}
+        />
+      )}
+      {tab === "Drafts" && !electricSkin && (
         <section className="n-panel">
           <h2>Pick up where you left off.</h2>
           {!posts.length && (
