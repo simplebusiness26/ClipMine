@@ -7,6 +7,16 @@ R2 is still blocked by the Cloudflare account entitlement (10042). The approved 
 The Worker also supports an optional direct Brevo reset sender (300 free emails/day according to Brevo's published plan) in addition to the existing HTTPS adapter. It requires separate `NICHES_BREVO_API_KEY` in the AISO operations secret configuration and a verified `NICHES_BREVO_SENDER_EMAIL` repository variable for the Niches Worker only; no real delivery has been validated. Keep these out of source code and never reuse unrelated AISO application credentials.
 
 
+## Instagram Reel collaboration
+
+In the final publishing review, select one Meta-connected Instagram account as
+the publisher and enter one optional collaborator username. The same settings
+apply to Publish now and Schedule. The worker adds the invite to the Reel
+container request. The invited account accepts in Instagram. Direct Instagram
+Login and image posts do not use this option. The existing approval and
+publication records carry the option without a database migration. A live
+provider test is required to verify the invite with the connected account.
+
 ## Implemented and tested locally
 
 Each niche supports multiple accounts per platform, including planning accounts that remain explicitly unconnected. The composer proposes the niche's accounts, allows deselection, and saves master, platform and individual-account captions. Uploaded media supports batch drafting and upload progress. File selection and temporary previews also work when cloud storage is unavailable; previews are not cloud uploads and disappear when the page closes.
