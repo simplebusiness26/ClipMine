@@ -2,6 +2,7 @@ import PostHistory from "./PostHistory";
 import { parseBatchArchive } from "./batch-zip";
 import SocialAccounts from "./SocialAccounts";
 import PublishingReview from "./PublishingReview";
+import PublishingCalendar from "./PublishingCalendar";
 import { contentMatches } from "./content-filter";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import ClipMine from "./App";
@@ -21,7 +22,7 @@ import {
 } from "./niches-api";
 import "./niches.css";
 import "./niches-electric.css";
-// Only the separately deployed preview opts into this skin; production stays unchanged.
+// Electric is the default skin when built with VITE_NICHES_SKIN=electric; backend stays shared.
 const electricSkin = import.meta.env.VITE_NICHES_SKIN === "electric";
 const tabs = [
   "Overview",
@@ -373,7 +374,7 @@ export default function Niches() {
                 </label>
               </div>
               <div className="electric-toolbar">
-                <span className="electric-preview-notice">ELECTRIC PREVIEW</span>
+                <span className="electric-preview-notice">ELECTRIC</span>
                 <button className="n-icon-button" aria-label="Notifications"
                   onClick={() => setShowNotices(!showNotices)}>
                   ♧ {notices.filter((n) => !n.read_at).length || ""}
@@ -1718,45 +1719,12 @@ function Workspace({
         </section>
       )}
       {tab === "Calendar" && (
-        <section className="n-panel">
-          <div className="n-section-head">
-            <h2>{electricSkin ? "▦ Upcoming Posts" : "Coming up next."}</h2>
-            <span>Device timezone · Scheduled posts & legacy reminders</span>
-          </div>
-          {posts
-            .filter((p) => p.scheduled_at && p.status === "scheduled")
-            .sort((a, b) => a.scheduled_at!.localeCompare(b.scheduled_at!))
-            .map((p) => (
-              <div className={electricSkin ? "n-post-row electric-calendar-row" : "n-post-row"} key={p.id}>
-                {electricSkin && <span className="electric-calendar-thumb">{media.find((m) => m.id === p.media_id) ? <Preview niche={niche.id} media={media.find((m) => m.id === p.media_id)!} /> : "▷"}</span>}
-                <div>
-                  <span className="n-kicker">{date(p.scheduled_at!)}</span>
-                  <h3>{p.title || "Untitled post"}</h3>
-                  <p>
-                    {p.publish_mode === "direct"
-                      ? "Scheduled social publication"
-                      : "Legacy export reminder · No automatic social posting"}
-                  </p>
-                </div>
-                {electricSkin && <span className="electric-status">{p.publish_mode === "direct" ? "Scheduled" : "Reminder"}</span>}
-                <button
-                  disabled={busy}
-                  onClick={() =>
-                    void run(async () => {
-                      await call(`${base}/posts/${p.id}/cancel`, "POST", {});
-                    })
-                  }
-                >
-                  Cancel
-                </button>
-              </div>
-            ))}
-          {!posts.some((p) => p.status === "scheduled") && (
-            <Empty title="A little breathing room.">
-              Choose Schedule for later when reviewing your post.
-            </Empty>
-          )}
-        </section>
+        <PublishingCalendar
+          nicheId={niche.id}
+          posts={posts}
+          accounts={accounts}
+          onChanged={changed}
+        />
       )}
       {tab === "Accounts" && (
         <SocialAccounts
