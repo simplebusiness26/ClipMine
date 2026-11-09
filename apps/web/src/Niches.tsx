@@ -2,6 +2,7 @@ import PostHistory from "./PostHistory";
 import { parseBatchArchive } from "./batch-zip";
 import SocialAccounts from "./SocialAccounts";
 import PublishingReview from "./PublishingReview";
+import PublishingCalendar from "./PublishingCalendar";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import ClipMine from "./App";
 import {
@@ -1493,43 +1494,12 @@ function Workspace({
         </section>
       )}
       {tab === "Calendar" && (
-        <section className="n-panel">
-          <div className="n-section-head">
-            <h2>Coming up next.</h2>
-            <span>Device timezone · Scheduled posts & legacy reminders</span>
-          </div>
-          {posts
-            .filter((p) => p.scheduled_at && p.status === "scheduled")
-            .sort((a, b) => a.scheduled_at!.localeCompare(b.scheduled_at!))
-            .map((p) => (
-              <div className="n-post-row" key={p.id}>
-                <div>
-                  <span className="n-kicker">{date(p.scheduled_at!)}</span>
-                  <h3>{p.title || "Untitled post"}</h3>
-                  <p>
-                    {p.publish_mode === "direct"
-                      ? "Scheduled social publication"
-                      : "Legacy export reminder · No automatic social posting"}
-                  </p>
-                </div>
-                <button
-                  disabled={busy}
-                  onClick={() =>
-                    void run(async () => {
-                      await call(`${base}/posts/${p.id}/cancel`, "POST", {});
-                    })
-                  }
-                >
-                  Cancel
-                </button>
-              </div>
-            ))}
-          {!posts.some((p) => p.status === "scheduled") && (
-            <Empty title="A little breathing room.">
-              Choose Schedule for later when reviewing your post.
-            </Empty>
-          )}
-        </section>
+        <PublishingCalendar
+          nicheId={niche.id}
+          posts={posts}
+          accounts={accounts}
+          onChanged={changed}
+        />
       )}
       {tab === "Accounts" && (
         <SocialAccounts
