@@ -486,3 +486,52 @@ test("approved exports protect media until explicit cancellation", async () => {
     method:"DELETE",cookie:ownerCookie,
   });
 });
+
+
+test("master niche routes source drafts only to its master accounts", async () => {
+  const { cookie: hubOwner } = await checked("/api/auth/register", {
+    method: "POST", data: { email: "hub-owner@example.test", password: "master routing fixture password" },
+  });
+  const { data: hub } = await checked("/api/niches", {
+    method: "POST", cookie: hubOwner, data: {
+      name: "Podcasts", master_name: "PodClipCast",
+      source_groups: "War Clip Cast, Football Clip Cast",
+    },
+  }, 201);
+  const path = "/api/niches/" + hub.id;
+  assert.deepEqual(JSON.parse(hub.source_groups_json), ["War Clip Cast", "Football Clip Cast"]);
+  const { data: extended } = await checked(path + "/source-groups", {
+    method: "POST", cookie: hubOwner, data: { name: "Comedy Clip Cast" },
+  }, 201);
+  assert.equal(JSON.parse(extended.source_groups_json).length, 3);
+  const add = (handle) => checked(path + "/accounts", {
+    method: "POST", cookie: hubOwner,
+    data: { platform: "instagram", display_name: handle, handle },
+  }, 201);
+  const { data: master } = await add("podclipcasts");
+  const { data: source } = await add("war.clipcast");
+  const role = (account, group, cookie = hubOwner, status = 200) => checked(
+    path + "/accounts/" + account.id + "/routing",
+    { method: "PATCH", cookie, data: { group } },
+    status,
+  );
+  await role(master, "master");
+  await role(source, "source:War Clip Cast");
+  const { cookie: outsider } = await checked("/api/auth/register", {
+    method: "POST", data: { email: "hub-outsider@example.test", password: "outsider routing fixture password" },
+  });
+  await role(source, "master", outsider, 404);
+  const create = (data, status = 201) => checked(path + "/posts", {
+    method: "POST", cookie: hubOwner, data: { title: "Archive clip", ...data },
+  }, status);
+  const { data: draft } = await create({ source_group: "War Clip Cast" });
+  assert.equal(draft.source_group, "War Clip Cast");
+  assert.deepEqual(draft.destinations, [master.id]);
+  await create({ source_group: "War Clip Cast", destinations: [source.id] }, 400);
+  await create({ source_group: "Unrelated source" }, 400);
+  const { data: edited } = await checked(path + "/posts/" + draft.id, {
+    method: "PATCH", cookie: hubOwner, data: { title: "Edited", destinations: [master.id] },
+  });
+  assert.equal(edited.source_group, "War Clip Cast");
+  assert.deepEqual(edited.destinations, [master.id]);
+});
