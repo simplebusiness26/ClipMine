@@ -448,12 +448,18 @@ async function api(request, env, context) {
       const data = await body(request),
         name = textValue(data.name, 80, true),
         niche = id();
+      const masterName = textValue(data.master_name || "", 80);
+      const groups = masterName
+        ? [...new Set(textValue(data.source_groups || "", 800).split(",").map((name) => name.trim()).filter(Boolean))]
+        : [];
+      if (groups.length > 20 || groups.some((group) => group.length > 80))
+        fail(400, "Use up to 20 source groups with names of at most 80 characters.");
       const colour = /^#[a-f0-9]{6}$/i.test(data.colour || "")
         ? data.colour
         : "#c6f66b";
       await execute(
         env,
-        "INSERT INTO niches(id,user_id,name,description,colour,initials,created_at) VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO niches(id,user_id,name,description,colour,initials,created_at,master_name,source_groups_json) VALUES (?,?,?,?,?,?,?,?,?)",
         niche,
         user.id,
         name,
@@ -461,6 +467,8 @@ async function api(request, env, context) {
         colour,
         name.slice(0, 2).toUpperCase(),
         now(),
+        masterName,
+        JSON.stringify(groups),
       );
       await audit(env, user.id, niche, "niche.created", niche);
       return json(await nicheFor(env, user.id, niche), 201);
@@ -510,11 +518,45 @@ async function api(request, env, context) {
       return json(await nicheFor(env, user.id, niche.id));
     }
   }
+  if (sub === "source-groups" && method === "POST") {
+    if (!niche.master_name) fail(400, "This niche has no master account.");
+    const data = await body(request);
+    const name = textValue(data.name, 80, true).trim();
+    if (!name || name.includes(",")) fail(400, "Enter one source group name.");
+    const groups = JSON.parse(niche.source_groups_json);
+    if (groups.includes(name)) return json(niche);
+    if (groups.length >= 20) fail(400, "This niche already has 20 source groups.");
+    const result = await execute(
+      env,
+      "UPDATE niches SET source_groups_json=? WHERE id=? AND source_groups_json=?",
+      JSON.stringify([...groups, name]), niche.id, niche.source_groups_json,
+    );
+    if (!result.meta.changes) fail(409, "Source groups changed. Refresh and try again.");
+    return json(await nicheFor(env, user.id, niche.id), 201);
+  }
+  const routing = sub.match(/^accounts\/([a-zA-Z0-9-]+)\/routing$/);
+  if (routing && method === "PATCH") {
+    if (!niche.master_name) fail(400, "This niche has no master account.");
+    const data = await body(request);
+    const group = data.group;
+    if (group !== "" && group !== "master" &&
+      !JSON.parse(niche.source_groups_json).some((name) => group === "source:" + name))
+      fail(400, "Choose a group in this niche.");
+    const result = await execute(
+      env,
+      "UPDATE accounts SET routing_group=? WHERE id=? AND niche_id=? AND status!='archived' AND (routing_group=? OR NOT EXISTS(SELECT 1 FROM publications WHERE account_id=accounts.id AND status IN ('pending','processing','retry','needs_review')))",
+      group, routing[1], niche.id, group,
+    );
+    if (!result.meta.changes)
+      fail(409, "This account is unavailable or has publishing work in progress.");
+
+    return json({ group });
+  }
   if (sub === "accounts" && method === "GET")
     return json(
       await all(
         env,
-        "SELECT id,niche_id,platform,display_name,provider_id,status,connection_kind,expires_at FROM accounts WHERE niche_id=? AND status!='archived'",
+        "SELECT id,niche_id,platform,display_name,provider_id,status,connection_kind,expires_at,routing_group FROM accounts WHERE niche_id=? AND status!='archived'",
         niche.id,
       ),
     );
@@ -1030,15 +1072,21 @@ async function api(request, env, context) {
       fail(404, "Media not found in this niche");
     const accounts = await all(
       env,
-      "SELECT id FROM accounts WHERE niche_id=? AND status!='archived'",
+      "SELECT id,routing_group FROM accounts WHERE niche_id=? AND status!='archived'",
       niche.id,
     );
-    const destinations = data.destinations ?? accounts.map((a) => a.id);
+    const eligible = niche.master_name
+      ? accounts.filter((account) => account.routing_group === "master")
+      : accounts;
+    const sourceGroup = data.source_group ?? existing?.source_group ?? "";
+    if (sourceGroup !== "" && (!niche.master_name || !JSON.parse(niche.source_groups_json).includes(sourceGroup)))
+      fail(400, "Choose a source group in this niche.");
+    const destinations = data.destinations ?? eligible.map((a) => a.id);
     if (
       !Array.isArray(destinations) ||
-      destinations.some((a) => !accounts.some((b) => b.id === a))
+      destinations.some((a) => !eligible.some((b) => b.id === a))
     )
-      fail(400, "Every destination must belong to this niche.");
+      fail(400, niche.master_name ? "Only master accounts can publish in this niche." : "Every destination must belong to this niche.");
     const overrides = data.overrides || {};
     if (
       typeof overrides !== "object" ||
@@ -1072,12 +1120,13 @@ async function api(request, env, context) {
     if (existing) {
       const result = await execute(
         env,
-        "UPDATE posts SET media_id=?,title=?,caption=?,destinations_json=?,overrides_json=?,status='draft',delivery_status='draft',scheduled_at=NULL,approved_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
+        "UPDATE posts SET media_id=?,title=?,caption=?,destinations_json=?,overrides_json=?,source_group=?,status='draft',delivery_status='draft',scheduled_at=NULL,approved_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
         mediaId,
         title,
         caption,
         JSON.stringify([...new Set(destinations)]),
         JSON.stringify(overrides),
+        sourceGroup,
         stamp,
         post,
       );
@@ -1089,7 +1138,7 @@ async function api(request, env, context) {
     } else
       await execute(
         env,
-        "INSERT INTO posts(id,niche_id,media_id,title,caption,destinations_json,overrides_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO posts(id,niche_id,media_id,title,caption,destinations_json,overrides_json,source_group,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
         post,
         niche.id,
         mediaId,
@@ -1097,6 +1146,7 @@ async function api(request, env, context) {
         caption,
         JSON.stringify([...new Set(destinations)]),
         JSON.stringify(overrides),
+        sourceGroup,
         stamp,
         stamp,
       );
