@@ -282,7 +282,7 @@ export async function runOutbox(env, limit = 5, fetcher = fetch) {
           );
       }
       const routing = await one(env, "SELECT master_name FROM niches WHERE id=?", post.niche_id);
-      if (routing?.master_name && account.routing_group !== "master" && !pub.submission_started)
+      if (routing?.master_name && account.routing_group !== "master")
         fail(400, "The approved account is no longer a master destination.");
       const options = resolveOptions(
         post,
