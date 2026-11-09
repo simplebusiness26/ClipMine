@@ -5,6 +5,8 @@ export interface Niche {
   colour: string;
   initials: string;
   brand_json: string;
+  master_name?: string;
+  source_groups_json?: string;
   media_count?: number;
   draft_count?: number;
   scheduled_count?: number;
@@ -26,6 +28,7 @@ export interface SocialAccount {
   status: string;
   provider_id?: string;
   connection_kind?: string;
+  routing_group?: string;
 }
 export interface Provider {
   oauth_ready?: boolean;
@@ -38,6 +41,7 @@ export interface Provider {
 }
 export interface Post {
   publish_mode?: string;
+  source_group?: string;
   id: string;
   media_id: string | null;
   title: string;
