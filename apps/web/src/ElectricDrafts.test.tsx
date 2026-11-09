@@ -44,7 +44,7 @@ describe("Electric creator launch workflow", () => {
       nicheId: "niche-1",
       draft: post("A"),
       accounts: [account],
-      providers: [{ id: "youtube", name: "YouTube", publishing_enabled: true, oauth_ready: true, reason: "" }],
+      providers: [{ id: "youtube", name: "YouTube", status: "connected", publishing_enabled: true, oauth_ready: true, reason: "" }],
       onAccounts: () => {},
       onResult: () => {},
       onDraftUpdated: () => {},
