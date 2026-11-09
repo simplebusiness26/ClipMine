@@ -682,6 +682,12 @@ export default function Niches() {
                 Brand colour
                 <input name="colour" type="color" defaultValue="#c6f66b" />
               </label>
+              <details>
+                <summary>Optional master account</summary>
+                <label>Master brand name<input name="master_name" maxLength={80} placeholder="PodClipCast" /></label>
+                <label>Source groups, separated by commas<input name="source_groups" maxLength={800} placeholder="War Clip Cast, Football Clip Cast" /></label>
+                <p className="n-muted">Posts from these groups go only to the master brand’s connected accounts.</p>
+              </details>
               {error && (
                 <p className="n-error" role="alert">
                   {error}
@@ -753,10 +759,15 @@ function Workspace({
     [draft, setDraft] = useState<Post | null>(null),
     [composeStage, setComposeStage] = useState<"prepare" | "review">("prepare"),
     [selectedMedia, setSelectedMedia] = useState(""),
+    [sourceGroup, setSourceGroup] = useState(""),
     [destinations, setDestinations] = useState<string[]>([]),
     [analytics, setAnalytics] = useState<{ source: string }>({
       source: "Loading metrics availability…",
     });
+  const sourceGroups: string[] = JSON.parse(niche.source_groups_json || "[]");
+  const destinationsFor = (list: SocialAccount[]) => niche.master_name
+    ? list.filter((account) => account.routing_group === "master")
+    : list;
   async function load() {
     try {
       const [m, p, a, pr, ac, i, r, an, capabilities] = await Promise.all([
@@ -781,7 +792,7 @@ function Workspace({
       setAnalytics(an);
       if (!draft)
         setDestinations(
-          a.filter((x) => x.status !== "archived").map((x) => x.id),
+          destinationsFor(a).filter((x) => niche.master_name ? x.status === "connected" : x.status !== "archived").map((x) => x.id),
         );
     } catch (e) {
       setError((e as Error).message);
@@ -813,6 +824,7 @@ function Workspace({
     setDraft(post);
     setComposeStage(stage);
     setSelectedMedia(post.media_id || "");
+    setSourceGroup(post.source_group || "");
     setDestinations(
       post.destinations.filter((id) => accounts.some((a) => a.id === id)),
     );
@@ -835,6 +847,7 @@ function Workspace({
           caption: post.caption,
           media_id: post.media_id,
           destinations: [account.id],
+          source_group: post.source_group,
           // Carry over only the target account and its platform metadata.
           // Archived accounts can no longer be valid keys in a new draft.
           overrides: Object.fromEntries(
@@ -916,7 +929,7 @@ function Workspace({
             media_id: uploaded.id,
             title: asset.title,
             caption: asset.caption,
-            destinations: accounts.filter(a => a.status !== "archived").map(a => a.id),
+            destinations: destinationsFor(accounts).filter(a => niche.master_name ? a.status === "connected" : a.status !== "archived").map(a => a.id),
           });
           imported++;
         }
@@ -952,6 +965,7 @@ function Workspace({
           caption: data.caption,
           media_id: selectedMedia || null,
           destinations,
+          source_group: niche.master_name ? sourceGroup : "",
           overrides,
         },
       );
@@ -1041,6 +1055,59 @@ function Workspace({
           Upload content
         </button>
       </div>
+      {niche.master_name && (tab === "Overview" || tab === "Accounts") && (
+        <section className="n-panel" aria-label="Master and source accounts">
+          <span className="n-kicker">MASTER PUBLISHING</span>
+          <h2>{niche.master_name}</h2>
+          <p>Only accounts in the master group receive published posts.</p>
+          {[["master", niche.master_name], ...sourceGroups.map((name) => ["source:" + name, name]), ["", "Unassigned"]].map(([group, name]) => (
+            <div key={group} className="n-panel">
+              <h3>{name}{group === "master" ? " · Master" : ""}</h3>
+              {accounts.filter((a) => (a.routing_group || "") === group).map((a) => (
+                <div key={a.id}>
+                  <label>
+                    {a.display_name} · {a.platform} · {a.status}
+                    <select
+                      aria-label={`Group for ${a.display_name}`}
+                      value={a.routing_group || ""}
+                      disabled={busy}
+                      onChange={(event) => {
+                        const next = event.currentTarget.value;
+                        void run(async () => { await call(base + `/accounts/${a.id}/routing`, "PATCH", { group: next }); });
+                      }}
+                    >
+                      <option value="">Unassigned</option>
+                      <option value="master">{niche.master_name} · Master</option>
+                      {sourceGroups.map((source) => <option key={source} value={"source:" + source}>{source}</option>)}
+                    </select>
+                  </label>
+                </div>
+              ))}
+              {group.startsWith("source:") && <button type="button" onClick={() => {
+                setDraft(null);
+                setSelectedMedia("");
+                setSourceGroup(name);
+                setComposeStage("prepare");
+                setDestinations(destinationsFor(accounts).filter((a) => a.status === "connected").map((a) => a.id));
+                setTab("Publish");
+              }}>Create post from {name}</button>}
+            </div>
+          ))}
+          <form onSubmit={(event) => {
+            event.preventDefault();
+            const form = event.currentTarget;
+            const name = new FormData(form).get("source");
+            void run(async () => {
+              await call(base + "/source-groups", "POST", { name });
+              form.reset();
+            });
+          }}>
+            <label>New source group<input name="source" maxLength={80} required /></label>
+            <button type="submit" disabled={busy}>Add source group</button>
+          </form>
+          {tab === "Overview" && <button type="button" onClick={() => setTab("Accounts")}>Connect social accounts</button>}
+        </section>
+      )}
       {tab === "Overview" && !electricSkin && (
         <>
           <div className="n-stats">
@@ -1490,6 +1557,15 @@ function Workspace({
             <span className="n-kicker">01 / PREPARE</span>
             <h2>{electricSkin ? "Build your next drop." : "One post. Your whole niche."}</h2>
             <form key={draft?.id || "new"} onSubmit={save}>
+              {niche.master_name && (
+                <label>
+                  Source group · publishes only to {niche.master_name}
+                  <select value={sourceGroup} onChange={(event) => setSourceGroup(event.currentTarget.value)}>
+                    <option value="">Master brand post</option>
+                    {sourceGroups.map((name) => <option key={name} value={name}>{name}</option>)}
+                  </select>
+                </label>
+              )}
               <label>
                 Media
                 <select
@@ -1536,8 +1612,8 @@ function Workspace({
                 <h3>Destinations</h3>
                 <small>Selected from this niche</small>
               </div>
-              {accounts.length ? (
-                accounts.map((a) => (
+              {destinationsFor(accounts).length ? (
+                destinationsFor(accounts).map((a) => (
                   <label className="n-checkbox" key={a.id}>
                     <input
                       type="checkbox"
@@ -1634,6 +1710,7 @@ function Workspace({
             {draft ? (
               <PublishingReview
                 nicheId={niche.id}
+                masterName={niche.master_name}
                 draft={draft}
                 accounts={accounts}
                 providers={providers}
@@ -1674,6 +1751,7 @@ function Workspace({
             setDraft(null);
             setComposeStage("prepare");
             setSelectedMedia("");
+            setSourceGroup("");
             setTab("Publish");
           }}
         />
