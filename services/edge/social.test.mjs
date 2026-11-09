@@ -596,6 +596,29 @@ test("Instagram direct and Unified Login accounts can be approved without reconn
     assert.deepEqual(publications, [{ account_id: account.id, status: "pending" }]);
   }
 });
+test("Instagram Collab schedules one publisher and rejects a second destination", async () => {
+  const accounts = (
+    await db.prepare("SELECT * FROM accounts WHERE niche_id=? AND platform='instagram' AND status='connected' ORDER BY connection_kind DESC")
+      .bind(niche.id).all()
+  ).results;
+  const publisher = accounts.find((account) => account.connection_kind === "instagram_unified");
+  const other = accounts.find((account) => account.id !== publisher.id);
+  const both = await fixturePost([publisher, other]);
+  const single = await fixturePost([publisher]);
+  const settings = { [publisher.id]: { instagram_collaborator: "@podclipcasts" } };
+  const approved = {
+    confirmed: true,
+    scheduled_at: new Date(Date.now() + 300000).toISOString(),
+    accounts: settings,
+  };
+  const raw = (draft) => db.prepare("SELECT * FROM posts WHERE id=?").bind(draft.id).first();
+  await assert.rejects(queuePost(env, user, niche, await raw(both), approved), /one Instagram publishing account/);
+  assert.equal((await raw(both)).delivery_status, "draft");
+  assert.equal((await queuePost(env, user, niche, await raw(single), approved)).status, "scheduled");
+  assert.deepEqual(JSON.parse((await raw(single)).options_json), settings);
+  assert.deepEqual((await db.prepare("SELECT account_id FROM publications WHERE post_id=?")
+    .bind(single.id).all()).results, [{ account_id: publisher.id }]);
+});
 test("single-account draft copy leaves the original multi-account draft intact", async () => {
   const accounts = (
     await db
