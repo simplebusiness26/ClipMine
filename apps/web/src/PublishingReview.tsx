@@ -95,7 +95,9 @@ export default function PublishingReview({
     const data = new FormData(event.currentTarget);
     const settings: Record<string, unknown> = {};
     for (const a of selected) {
+      const collaborator = String(data.get(`${a.id}_collaborator`) || "").trim();
       settings[a.id] = {
+        ...(collaborator ? { instagram_collaborator: collaborator } : {}),
         privacy: data.get(`${a.id}_privacy`),
         made_for_kids: data.get(`${a.id}_audience`) === "yes",
         allow_comments: data.get(`${a.id}_comments`) === "on",
@@ -188,6 +190,23 @@ export default function PublishingReview({
                 There is no Private visibility option in this publishing flow.
                 Only confirm when you are ready for the post to go live.
               </p>
+            )}
+            {a.platform === "instagram" && a.status === "connected" && (
+              a.connection_kind === "instagram_login" ? (
+                <p className="n-muted">Collab invites require an Instagram connection through Meta. Direct Instagram Login can still publish ordinary Reels.</p>
+              ) : (
+                <label>
+                  Instagram Reel collaborator (optional)
+                  <input
+                    name={`${a.id}_collaborator`}
+                    placeholder="@podclipcasts"
+                    maxLength={31}
+                    autoCapitalize="none"
+                    spellCheck={false}
+                  />
+                  <small>Select one Instagram publishing account. The collaborator accepts the invite in Instagram.</small>
+                </label>
+              )
             )}
             {a.platform === "facebook" && (
               <p className="n-status-note">
