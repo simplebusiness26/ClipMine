@@ -21,6 +21,7 @@ export default function PublishingReview({
   providers,
   onResult,
   onAccounts,
+  onDraftUpdated,
 }: {
   nicheId: string;
   draft: Post;
@@ -28,9 +29,11 @@ export default function PublishingReview({
   providers: Provider[];
   onResult: (message: string) => void;
   onAccounts: () => void;
+  onDraftUpdated?: (updated: Post) => void;
 }) {
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
+    [removingAccountId, setRemovingAccountId] = useState<string | null>(null),
     [creators, setCreators] = useState<Record<string, Creator>>({}),
     [mode, setMode] = useState<"now" | "schedule">("now");
   const selected = accounts.filter((a) => draft.destinations.includes(a.id));
@@ -58,6 +61,33 @@ export default function PublishingReview({
       alive = false;
     };
   }, [draft.id, draft.destinations.join(","), nicheId]);
+  async function removeAccount(account: SocialAccount) {
+    if (busy || removingAccountId) return;
+    // Only an editable draft can be changed. The server refuses any draft
+    // with existing publication records, preventing accidental alterations
+    // to queued/published content.
+    setError("");
+    setRemovingAccountId(account.id);
+    try {
+      const updated = await call<Post>(
+        `/api/niches/${nicheId}/posts/${draft.id}`,
+        "PATCH",
+        {
+          media_id: draft.media_id,
+          title: draft.title,
+          caption: draft.caption,
+          overrides: draft.overrides,
+          destinations: draft.destinations.filter((id) => id !== account.id),
+        },
+      );
+      onDraftUpdated?.(updated);
+    } catch (error) {
+      setError((error as Error).message);
+    } finally {
+      setRemovingAccountId(null);
+    }
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
@@ -125,10 +155,21 @@ export default function PublishingReview({
         const creator = creators[a.id],
           p = providers.find((p) => p.id === a.platform);
         return (
-          <details key={a.id} open>
-            <summary>
-              {a.display_name} · {a.platform}
-            </summary>
+          <div className="electric-review-account" key={a.id}>
+            <div className="electric-review-account-bar">
+              <div className="electric-review-platform-title">
+                <span className="electric-review-platform-icon" aria-hidden="true">{a.platform.slice(0, 1).toUpperCase()}</span>
+                <span><strong>{a.display_name}</strong><small>{a.platform.toUpperCase()}</small></span>
+              </div>
+              <button type="button" className="electric-review-remove"
+                disabled={busy || !!removingAccountId || !onDraftUpdated}
+                onClick={() => void removeAccount(a)}
+                aria-label={`Remove ${a.display_name} from this draft`}>
+                {removingAccountId === a.id ? "Removing…" : "✕ Remove"}
+              </button>
+            </div>
+            <details open>
+              <summary>Platform preview and posting options</summary>
             <p className="n-muted">
               {a.status === "connected"
                 ? p?.publishing_enabled
@@ -293,7 +334,8 @@ export default function PublishingReview({
                 <input type="number" min="0" step="1" name={`${a.id}_cover`} />
               </label>
             )}
-          </details>
+            </details>
+          </div>
         );
       })}
       {blocked && (
