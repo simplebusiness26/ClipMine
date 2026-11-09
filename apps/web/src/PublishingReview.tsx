@@ -16,6 +16,7 @@ type Creator = {
 };
 export default function PublishingReview({
   nicheId,
+  masterName,
   draft,
   accounts,
   providers,
@@ -24,6 +25,7 @@ export default function PublishingReview({
   onDraftUpdated,
 }: {
   nicheId: string;
+  masterName?: string;
   draft: Post;
   accounts: SocialAccount[];
   providers: Provider[];
@@ -153,6 +155,7 @@ export default function PublishingReview({
           uploaded.
         </p>
       )}
+      {masterName && <p className="n-status-note">{draft.source_group ? `${draft.source_group} → ` : ""}{masterName} only.</p>}
       {selected.map((a) => {
         const creator = creators[a.id],
           p = providers.find((p) => p.id === a.platform);
@@ -191,7 +194,7 @@ export default function PublishingReview({
                 Only confirm when you are ready for the post to go live.
               </p>
             )}
-            {a.platform === "instagram" && a.status === "connected" && (
+            {a.platform === "instagram" && a.status === "connected" && !masterName && (
               a.connection_kind === "instagram_login" ? (
                 <p className="n-muted">Collab invites require an Instagram connection through Meta. Direct Instagram Login can still publish ordinary Reels.</p>
               ) : (
