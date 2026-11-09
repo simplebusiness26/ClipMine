@@ -42,6 +42,8 @@ export async function queuePost(env, user, niche, post, data) {
     fail(400, "Invalid account publishing settings.");
   if (ids.length > 20)
     fail(400, "Choose up to 20 accounts for one publishing batch.");
+  let instagramDestinations = 0;
+  let hasInstagramCollab = false;
   for (const accountId of ids) {
     const a = await one(
       env,
@@ -63,6 +65,11 @@ export async function queuePost(env, user, niche, post, data) {
         "The TikTok media URL/domain must be verified in the developer portal.",
       );
     const selected = resolveOptions(post, a, options);
+    if (a.platform === "instagram") {
+      instagramDestinations++;
+      hasInstagramCollab ||= selected.instagram_collaborator !== undefined;
+    }
+
     validatePost(
       a,
       media,
@@ -71,6 +78,8 @@ export async function queuePost(env, user, niche, post, data) {
       a.platform === "tiktok" ? await creatorInfo(env, a) : null,
     );
   }
+  if (hasInstagramCollab && instagramDestinations > 1)
+    fail(400, "Choose one Instagram publishing account when inviting a collaborator.");
   const date = data.scheduled_at ? new Date(data.scheduled_at) : null;
   if (
     date &&
