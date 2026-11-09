@@ -7,6 +7,19 @@ R2 is still blocked by the Cloudflare account entitlement (10042). The approved 
 The Worker also supports an optional direct Brevo reset sender (300 free emails/day according to Brevo's published plan) in addition to the existing HTTPS adapter. It requires separate `NICHES_BREVO_API_KEY` in the AISO operations secret configuration and a verified `NICHES_BREVO_SENDER_EMAIL` repository variable for the Niches Worker only; no real delivery has been validated. Keep these out of source code and never reuse unrelated AISO application credentials.
 
 
+## Master-only niches
+
+Create a niche with an optional master brand and source groups. Connect each
+platform account in that niche, then assign it to the master brand or a source
+group. Open a source group’s composer to label the draft with that group.
+Publish now and Schedule use only selected master destinations. A source
+account is for organisation and cannot receive a publication from that niche.
+Master-only niches do not send Instagram Collab invitations.
+
+Migration 0003 adds default-empty routing fields. Existing niches retain the
+ordinary destination flow. Queued destinations remain pinned to the approved
+account and accounts with work in progress cannot be moved between groups.
+
 ## Instagram Reel collaboration
 
 In the final publishing review, select one Meta-connected Instagram account as
