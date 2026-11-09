@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import PublishingCalendar from "./PublishingCalendar";
@@ -20,6 +20,8 @@ function post(status: string, id: string, scheduled_at: string): Post {
 }
 
 describe("PublishingCalendar", () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-11-09T12:00:00Z")); });
+  afterEach(() => { vi.useRealTimers(); });
   it("shows a real seven-column calendar and per-day publishing states", () => {
     const today = new Date();
     const when = today.toISOString();
@@ -43,12 +45,10 @@ describe("PublishingCalendar", () => {
   });
 
   it("does not mislabel an overdue scheduled post as confirmed failed", () => {
-    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    // If yesterday was in the previous month, the post still appears in
-    // the original calendar timeline but not in this month's totals.
+    const overdue = new Date(Date.now() - 7 * 60 * 1000);
     const html = renderToStaticMarkup(createElement(PublishingCalendar, {
       nicheId: "test-niche",
-      posts: [post("scheduled", "past-due", yesterday.toISOString())],
+      posts: [post("scheduled", "past-due", overdue.toISOString())],
       accounts: [],
       onChanged: () => {},
     }));
