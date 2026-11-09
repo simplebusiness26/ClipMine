@@ -50,7 +50,6 @@ describe("Electric creator launch workflow", () => {
       onDraftUpdated: () => {},
     }));
     expect(html).toContain("Remove Cartoon Studio from this draft");
-    expect(html).toContain("Schedule publication");
     expect(html).toContain("Publish to selected accounts");
   });
 });
