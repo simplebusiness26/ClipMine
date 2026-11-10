@@ -5,6 +5,7 @@ import {
   type SocialAccount,
   type Provider,
 } from "./niches-api";
+type DeliveryPlan = { selected: string[]; automatic: string | null; notice?: string };
 type Creator = {
   creator_nickname: string;
   creator_username: string;
@@ -37,9 +38,21 @@ export default function PublishingReview({
     [busy, setBusy] = useState(false),
     [removingAccountId, setRemovingAccountId] = useState<string | null>(null),
     [creators, setCreators] = useState<Record<string, Creator>>({}),
-    [mode, setMode] = useState<"now" | "schedule">("now");
-  const selected = accounts.filter((a) => draft.destinations.includes(a.id));
+    [mode, setMode] = useState<"now" | "schedule">("now"),
+    [reviewed, setReviewed] = useState<{ key: string; plan: DeliveryPlan } | null>(null);
+  const planKey = [draft.id, draft.brand_id, ...draft.destinations].join(":");
+  const plan = reviewed?.key === planKey ? reviewed.plan : null;
+  const selected = accounts.filter((a) => draft.destinations.includes(a.id) || plan?.automatic === a.id);
+  useEffect(() => {
+    if (!draft.brand_id) return;
+    let active = true;
+    void call<DeliveryPlan>(`/api/niches/${nicheId}/posts/${draft.id}/destinations`)
+      .then((result) => { if (active) setReviewed({ key: planKey, plan: result }); })
+      .catch((error: Error) => { if (active) setError(error.message); });
+    return () => { active = false; };
+  }, [nicheId, draft.id, draft.brand_id, planKey]);
   const blocked =
+    (!!draft.brand_id && (!plan || (!!plan.automatic && !selected.some((a) => a.id === plan.automatic)))) ||
     selected.some(
       (a) =>
         a.status !== "connected" ||
@@ -126,6 +139,7 @@ export default function PublishingReview({
               ? new Date(String(data.get("scheduled_at"))).toISOString()
               : null,
           accounts: settings,
+          automatic_destination: plan?.automatic ?? null,
         },
       );
       onResult(result.message);
@@ -155,6 +169,7 @@ export default function PublishingReview({
           uploaded.
         </p>
       )}
+      {plan?.notice && <p className="n-status-note">{plan.notice}</p>}
       {masterName && <p className="n-status-note">{draft.source_group ? `${draft.source_group} → ` : ""}{masterName} only.</p>}
       {selected.map((a) => {
         const creator = creators[a.id],
@@ -166,12 +181,12 @@ export default function PublishingReview({
                 <span className="electric-review-platform-icon" aria-hidden="true">{a.platform.slice(0, 1).toUpperCase()}</span>
                 <span><strong>{a.display_name}</strong><small>{a.platform.toUpperCase()}</small></span>
               </div>
-              <button type="button" className="electric-review-remove"
+              {a.id === plan?.automatic ? <small>Automatic master Instagram</small> : <button type="button" className="electric-review-remove"
                 disabled={busy || !!removingAccountId || !onDraftUpdated}
                 onClick={() => void removeAccount(a)}
                 aria-label={`Remove ${a.display_name} from this draft`}>
                 {removingAccountId === a.id ? "Removing…" : "✕ Remove"}
-              </button>
+              </button>}
             </div>
             <details open>
               <summary>Platform preview and posting options</summary>

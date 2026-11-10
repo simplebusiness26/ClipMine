@@ -21,7 +21,7 @@ const mf = new Miniflare(
       "security",
       "db",
       "token-vault",
-      "social-oauth",
+      "social-oauth", "brands",
       "publishers",
       "outbox",
     ].map((name) => ({ type: "ESModule", path: `services/edge/${name}.mjs` })),

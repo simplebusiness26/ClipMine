@@ -1,3 +1,4 @@
+import { deliveryDestinations } from "./brands.mjs";
 import { id, now, hash, randomToken, fail, json } from "./security.mjs";
 import { execute, one, all } from "./db.mjs";
 import { seal, unseal } from "./token-vault.mjs";
@@ -35,7 +36,10 @@ export async function queuePost(env, user, niche, post, data) {
     niche.id,
   );
   if (!media) fail(400, "Upload media to this niche before publishing.");
-  const ids = JSON.parse(post.destinations_json);
+  const { selected, automatic } = await deliveryDestinations(env, niche, post);
+  if (automatic !== (data.automatic_destination ?? null))
+    fail(409, "Master Instagram changed. Refresh the draft and review destinations again.");
+  const ids = automatic ? [...selected, automatic] : selected;
   if (!ids.length) fail(400, "Select at least one destination account.");
   const options = data.accounts || {};
   if (!options || typeof options !== "object" || Array.isArray(options))
@@ -53,7 +57,7 @@ export async function queuePost(env, user, niche, post, data) {
     );
     if (!a)
       fail(409, "Every selected account must be connected for publishing.");
-    if (niche.master_name && a.routing_group !== "master")
+    if (!post.brand_id && niche.master_name && a.routing_group !== "master")
       fail(400, "Only master accounts can publish in this niche.");
     const provider = providerInfo(env).find((p) => p.id === a.platform);
     if (!provider?.publishing_enabled)
@@ -67,7 +71,7 @@ export async function queuePost(env, user, niche, post, data) {
         "The TikTok media URL/domain must be verified in the developer portal.",
       );
     const selected = resolveOptions(post, a, options);
-    if (niche.master_name && a.platform === "instagram" && selected.instagram_collaborator !== undefined)
+    if (!post.brand_id && niche.master_name && a.platform === "instagram" && selected.instagram_collaborator !== undefined)
       fail(400, "Instagram Collab invites are unavailable in master-only niches.");
     if (a.platform === "instagram") {
       instagramDestinations++;
@@ -95,9 +99,10 @@ export async function queuePost(env, user, niche, post, data) {
   // Claim and insert once in one transaction. UNIQUE(post,account) is the final duplicate guard.
   const statements = [
     env.DB.prepare(
-      "UPDATE posts SET delivery_status=?,publish_mode='direct',options_json=?,approved_at=?,scheduled_at=?,updated_at=? WHERE id=? AND updated_at=? AND delivery_status IN ('draft','cancelled') AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
+      "UPDATE posts SET delivery_status=?,publish_mode='direct',destinations_json=?,options_json=?,approved_at=?,scheduled_at=?,updated_at=? WHERE id=? AND updated_at=? AND delivery_status IN ('draft','cancelled') AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
     ).bind(
       date ? "scheduled" : "queued",
+      JSON.stringify(ids),
       JSON.stringify(options),
       approved,
       date?.toISOString() || null,
@@ -281,9 +286,11 @@ export async function runOutbox(env, limit = 5, fetcher = fetch) {
             { uncertain: true },
           );
       }
-      const routing = await one(env, "SELECT master_name FROM niches WHERE id=?", post.niche_id);
-      if (routing?.master_name && account.routing_group !== "master")
-        fail(400, "The approved account is no longer a master destination.");
+      if (!post.brand_id) {
+        const routing = await one(env, "SELECT master_name FROM niches WHERE id=?", post.niche_id);
+        if (routing?.master_name && account.routing_group !== "master")
+          fail(400, "The approved account is no longer a master destination.");
+      }
       const options = resolveOptions(
         post,
         account,
@@ -325,12 +332,17 @@ export async function runOutbox(env, limit = 5, fetcher = fetch) {
         },
         fetcher,
       });
+      // A provider-rejected Instagram container in the pre-publish phase can
+      // be recreated on manual retry. A confirmation-phase failure remains
+      // subject to the existing uncertain submission rules.
+      const resetContainer = account.platform === "instagram" &&
+        state.phase === "container" && result.status === "failed";
       await execute(
         env,
         "UPDATE publications SET status=?,provider_post_id=COALESCE(?,provider_post_id),state_json=?,lease_until=NULL,next_attempt_at=?,error=?,error_code=NULL,updated_at=? WHERE id=?",
         result.status,
         result.providerId || null,
-        await seal(
+        resetContainer ? "{}" : await seal(
           env,
           { ...result.state, inflight: false },
           `publication:${pub.id}`,
@@ -438,15 +450,18 @@ export async function retryPublication(env, user, niche, pubId, data) {
       409,
       "Check the social platform and explicitly confirm this post was not published before retrying.",
     );
-  await execute(
+  const updated = await one(
     env,
-    "UPDATE publications SET status='pending',state_json=?,submission_started=?,lease_until=NULL,next_attempt_at=?,error=NULL,error_code=NULL,updated_at=? WHERE id=?",
+    "UPDATE publications SET status='pending',state_json=?,submission_started=?,lease_until=NULL,next_attempt_at=?,error=NULL,error_code=NULL,updated_at=? WHERE id=? AND status=? AND updated_at=? RETURNING id",
     pub.status === "needs_review" ? "{}" : pub.state_json,
     pub.status === "needs_review" ? 0 : pub.submission_started,
     now(),
     now(),
     pub.id,
+    pub.status,
+    pub.updated_at,
   );
+  if (!updated) fail(409, "This delivery changed. Refresh before retrying.");
   await execute(
     env,
     "INSERT INTO audit_events VALUES (?,?,?,?,?,?)",

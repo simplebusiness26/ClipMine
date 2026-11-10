@@ -146,6 +146,18 @@ export async function beginOAuth(request, env, user, niche, p) {
   const info = providerInfo(env).find((x) => x.id === p);
   if (!info) fail(400, "Choose a supported platform.");
   if (!info.oauth_ready) fail(503, info.reason);
+  const paramsFromRequest = new URL(request.url).searchParams;
+  const accountId = p === "instagram" ? paramsFromRequest.get("account") : null;
+  const brandId = paramsFromRequest.get("brand");
+  if (brandId !== null && !(await one(
+    env, "SELECT id FROM brands WHERE id=? AND niche_id=?", brandId, niche.id,
+  ))) fail(404, "This brand is no longer listed in this niche.");
+  if (accountId !== null && !(await one(
+    env,
+    "SELECT id FROM accounts WHERE id=? AND niche_id=? AND platform='instagram' AND status!='archived'",
+    accountId,
+    niche.id,
+  ))) fail(404, "This Instagram account is no longer listed in this niche.");
   const token = sessionToken(request),
     state = randomToken(),
     browser = randomToken(),
@@ -213,7 +225,7 @@ export async function beginOAuth(request, env, user, niche, p) {
     p,
     await hash(token),
     await hash(browser),
-    await seal(env, { verifier }, `oauth:${state}`),
+    await seal(env, { verifier, accountId, brandId }, `oauth:${state}`),
     new Date(Date.now() + 600000).toISOString(),
   );
   const oauthCookie = browserCookie(
@@ -230,7 +242,53 @@ export async function beginOAuth(request, env, user, niche, p) {
     ? redirect(auth.href, oauthCookie)
     : json({ url: auth.href }, 200, { "Set-Cookie": oauthCookie });
 }
-export async function saveConnection(env, niche, choice) {
+export async function saveConnection(env, niche, choice, accountId = null, brandId = null) {
+  if (choice.platform === "instagram" && accountId) {
+    const providerId = String(choice.provider_id);
+    const encrypted = await seal(env, choice.tokens, accountContext({
+      id: accountId,
+      niche_id: niche,
+      platform: "instagram",
+      provider_id: providerId,
+    }));
+    // Keep the row ID and its routing and publication references. The
+    // conditional update protects against concurrent reconnects or a stale link.
+    const updated = await one(
+      env,
+      `UPDATE accounts SET provider_id=?,display_name=?,status='connected',
+         encrypted_tokens=?,connection_kind=?,expires_at=?,token_lock_until=NULL
+       WHERE id=? AND niche_id=? AND platform='instagram' AND status!='archived'
+         AND (provider_id=? OR (connection_kind='manual' AND provider_id LIKE 'manual:%'))
+         AND NOT EXISTS (
+           SELECT 1 FROM accounts AS existing
+           WHERE existing.niche_id=? AND existing.platform='instagram'
+             AND existing.provider_id=? AND existing.id<>?
+         )
+       RETURNING id`,
+      providerId,
+      choice.name,
+      encrypted,
+      choice.connection_kind || "oauth",
+      choice.tokens.expires_at || null,
+      accountId,
+      niche,
+      providerId,
+      niche,
+      providerId,
+      accountId,
+    );
+    if (updated) return updated.id;
+    const existing = await one(
+      env,
+      "SELECT id FROM accounts WHERE niche_id=? AND platform='instagram' AND provider_id=? AND id<>?",
+      niche,
+      providerId,
+      accountId,
+    );
+    if (existing)
+      fail(409, "That Instagram profile already has a record in this niche. Move the existing account to the intended brand in Accounts. The pending row is retained for review.");
+    fail(409, "This connection could not be applied. Reopen Accounts and authorise the Instagram profile associated with the selected row.");
+  }
   const existing = await one(
     env,
     "SELECT * FROM accounts WHERE niche_id=? AND platform=? AND provider_id=?",
@@ -245,9 +303,9 @@ export async function saveConnection(env, niche, choice) {
     provider_id: String(choice.provider_id),
   };
   const encrypted = await seal(env, choice.tokens, accountContext(record));
-  await execute(
+  const saved = await one(
     env,
-    "INSERT INTO accounts(id,niche_id,platform,display_name,provider_id,status,encrypted_tokens,connection_kind,expires_at,created_at) VALUES (?,?,?,?,?,'connected',?,?,?,?) ON CONFLICT(niche_id,platform,provider_id) DO UPDATE SET display_name=excluded.display_name,status='connected',encrypted_tokens=excluded.encrypted_tokens,connection_kind=excluded.connection_kind,expires_at=excluded.expires_at,token_lock_until=NULL",
+    "INSERT INTO accounts(id,niche_id,platform,display_name,provider_id,status,encrypted_tokens,connection_kind,expires_at,created_at,brand_id) VALUES (?,?,?,?,?,'connected',?,?,?,?,?) ON CONFLICT(niche_id,platform,provider_id) DO UPDATE SET display_name=excluded.display_name,status='connected',encrypted_tokens=excluded.encrypted_tokens,connection_kind=excluded.connection_kind,expires_at=excluded.expires_at,token_lock_until=NULL WHERE excluded.brand_id IS NULL OR accounts.brand_id IS excluded.brand_id RETURNING id",
     record.id,
     niche,
     choice.platform,
@@ -257,9 +315,54 @@ export async function saveConnection(env, niche, choice) {
     choice.connection_kind || "oauth",
     choice.tokens.expires_at || null,
     now(),
+    brandId,
   );
-  return record.id;
+  if (!saved)
+    fail(409, "This profile already belongs to this niche. Move the existing account to the intended brand in Accounts.");
+  return saved.id;
 }
+async function existingInstagram(env, nicheId, accountId, choice) {
+  if (!accountId || choice.platform !== "instagram") return null;
+  return one(env, `SELECT id,display_name FROM accounts
+    WHERE niche_id=? AND platform='instagram' AND provider_id=?
+      AND id<>? AND status!='archived' AND encrypted_tokens IS NOT NULL`,
+    nicheId, String(choice.provider_id), accountId);
+}
+
+async function reconcileInstagram(env, nicheId, accountId, providerId, existingId) {
+  // Archive only an empty manual placeholder. The verified account keeps its
+  // identity, credentials, publication history and any references from drafts.
+  const rows = await all(env, `
+    WITH pair AS MATERIALIZED (
+      SELECT pending.id AS pending_id, pending.brand_id, verified.id AS verified_id
+      FROM accounts pending JOIN accounts verified ON verified.niche_id=pending.niche_id
+      WHERE pending.id=? AND verified.id=? AND pending.niche_id=?
+        AND pending.platform='instagram' AND verified.platform='instagram'
+        AND pending.connection_kind='manual' AND pending.status='disconnected'
+        AND pending.provider_id LIKE 'manual:%' AND pending.encrypted_tokens IS NULL
+        AND verified.provider_id=? AND verified.status!='archived' AND verified.encrypted_tokens IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM publications WHERE account_id=pending.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM posts p WHERE p.niche_id=pending.niche_id AND (
+            EXISTS(SELECT 1 FROM json_each(p.destinations_json) WHERE value=pending.id) OR
+            EXISTS(SELECT 1 FROM json_each(p.overrides_json) WHERE key=pending.id)
+          )
+        )
+        AND (pending.brand_id IS NULL OR pending.brand_id IS verified.brand_id OR NOT EXISTS (
+          SELECT 1 FROM publications WHERE account_id=verified.id
+            AND status IN ('pending','processing','retry','needs_review')
+        ))
+    )
+    UPDATE accounts SET
+      status=CASE WHEN id=(SELECT pending_id FROM pair) THEN 'archived' ELSE status END,
+      brand_id=CASE WHEN id=(SELECT verified_id FROM pair)
+        THEN COALESCE((SELECT brand_id FROM pair),brand_id) ELSE brand_id END
+    WHERE id IN (SELECT pending_id FROM pair UNION ALL SELECT verified_id FROM pair)
+    RETURNING id`, accountId, existingId, nicheId, String(providerId));
+  if (rows.length !== 2)
+    fail(409, "These accounts have references or active publishing work. Both records were kept. Review the existing account and move it when its queue is clear.");
+}
+
 export async function finishOAuth(request, env, p, fetcher = fetch) {
   const url = new URL(request.url),
     state = url.searchParams.get("state") || "",
@@ -446,7 +549,9 @@ export async function finishOAuth(request, env, p, fetcher = fetch) {
         409,
         "No eligible account was returned. Check the channel/Page/professional account and permissions.",
       );
-    if (p === "facebook" || choices.length > 1) {
+    const hasExisting = context.accountId && choices.length === 1
+      ? await existingInstagram(env, row.niche_id, context.accountId, choices[0]) : null;
+    if (p === "facebook" || choices.length > 1 || hasExisting) {
       const ticket = randomToken();
       await execute(
         env,
@@ -454,12 +559,12 @@ export async function finishOAuth(request, env, p, fetcher = fetch) {
         await hash(ticket),
         row.user_id,
         row.niche_id,
-        await seal(env, choices, `selection:${row.user_id}:${row.niche_id}`),
+        await seal(env, choices.map((choice) => ({ ...choice, accountId: context.accountId, brandId: context.brandId })), `selection:${row.user_id}:${row.niche_id}`),
         new Date(Date.now() + 600000).toISOString(),
       );
       destination.searchParams.set("connect_ticket", ticket);
     } else {
-      await saveConnection(env, row.niche_id, choices[0]);
+      await saveConnection(env, row.niche_id, choices[0], context.accountId, context.brandId);
       destination.searchParams.set("connection", "connected");
     }
   } catch (error) {
@@ -483,7 +588,7 @@ export async function finishOAuth(request, env, p, fetcher = fetch) {
   }
   return redirect(destination.href, clear);
 }
-export async function selectConnections(env, user, niche, ticket, selected) {
+export async function selectConnections(env, user, niche, ticket, selected, confirmExisting) {
   if (!/^[a-f0-9]{64}$/.test(ticket)) fail(400, "Invalid selection ticket");
   const row = await one(
     env,
@@ -499,27 +604,42 @@ export async function selectConnections(env, user, niche, ticket, selected) {
     row.encrypted_choices,
     `selection:${user.id}:${niche}`,
   );
+  const accountId = choices[0]?.accountId;
   if (selected === undefined)
-    return choices.map((x) => ({
-      id: x.provider_id,
-      name: x.name,
-      platform: x.platform,
+    return Promise.all(choices.map(async (choice) => {
+      const existing = await existingInstagram(env, niche, accountId, choice);
+      return {
+        id: choice.provider_id,
+        name: choice.name,
+        platform: choice.platform,
+        ...(accountId ? { single: true } : {}),
+        ...(existing ? { existing: existing.display_name } : {}),
+      };
     }));
   if (
     !Array.isArray(selected) ||
     !selected.length ||
+    (accountId && selected.length !== 1) ||
     selected.some((x) => !choices.some((c) => c.provider_id === x))
   )
-    fail(400, "Choose at least one authorised account.");
+    fail(400, accountId ? "Choose one authorised Instagram account." : "Choose at least one authorised account.");
+  const chosen = choices.filter((choice) => selected.includes(choice.provider_id));
+  const existing = accountId ? await existingInstagram(env, niche, accountId, chosen[0]) : null;
+  if (existing && confirmExisting !== true)
+    fail(409, "Confirm that you want to use the verified Instagram account already in this niche.");
   const consumed = await one(
     env,
     "DELETE FROM oauth_selections WHERE ticket_hash=? RETURNING ticket_hash",
     await hash(ticket),
   );
   if (!consumed) fail(409, "Selection already used.");
-  for (const choice of choices.filter((x) => selected.includes(x.provider_id)))
-    await saveConnection(env, niche, choice);
-  return { connected: selected.length };
+  if (existing) {
+    await reconcileInstagram(env, niche, accountId, chosen[0].provider_id, existing.id);
+    return { connected: 1, reconciled: true };
+  }
+  for (const choice of chosen)
+    await saveConnection(env, niche, choice, accountId, choice.brandId);
+  return { connected: chosen.length };
 }
 export async function accessToken(env, account, fetcher = fetch) {
   if (account.status !== "connected" || !account.encrypted_tokens)

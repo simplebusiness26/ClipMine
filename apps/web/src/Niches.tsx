@@ -12,6 +12,7 @@ import {
   mediaPath,
   uploadMedia,
   type Niche,
+  type Brand,
   type Media,
   type Post,
   type Provider,
@@ -24,7 +25,6 @@ import {
 import "./niches.css";
 import "./niches-electric.css";
 import "./electric-launch.css";
-// Only the separately deployed preview opts into this skin; production stays unchanged.
 const electricSkin = import.meta.env.VITE_NICHES_SKIN === "electric";
 const tabs = [
   "Overview",
@@ -368,7 +368,7 @@ export default function Niches() {
                   <select aria-label="Choose niche" value={active?.id || ""}
                     onChange={(event) => {
                       const n = niches.find((item) => item.id === event.target.value);
-                      if (n) open(n);
+                      if (n) open(n, tab === "Calendar" ? "Calendar" : n.brand_count ? "Accounts" : "Overview");
                       else { setActive(null); setTab("Overview"); }
                     }}>
                     <option value="">All niches</option>
@@ -682,12 +682,6 @@ export default function Niches() {
                 Brand colour
                 <input name="colour" type="color" defaultValue="#c6f66b" />
               </label>
-              <details>
-                <summary>Optional master account</summary>
-                <label>Master brand name<input name="master_name" maxLength={80} placeholder="PodClipCast" /></label>
-                <label>Source groups, separated by commas<input name="source_groups" maxLength={800} placeholder="War Clip Cast, Football Clip Cast" /></label>
-                <p className="n-muted">Posts from these groups go only to the master brand’s connected accounts.</p>
-              </details>
               {error && (
                 <p className="n-error" role="alert">
                   {error}
@@ -760,17 +754,21 @@ function Workspace({
     [composeStage, setComposeStage] = useState<"prepare" | "review">("prepare"),
     [selectedMedia, setSelectedMedia] = useState(""),
     [sourceGroup, setSourceGroup] = useState(""),
+    [brands, setBrands] = useState<Brand[]>([]),
+    [brandId, setBrandId] = useState(""),
     [destinations, setDestinations] = useState<string[]>([]),
     [analytics, setAnalytics] = useState<{ source: string }>({
       source: "Loading metrics availability…",
     });
   const sourceGroups: string[] = JSON.parse(niche.source_groups_json || "[]");
-  const destinationsFor = (list: SocialAccount[]) => niche.master_name
+  const destinationsFor = (list: SocialAccount[], selectedBrand = brandId) => selectedBrand
+    ? list.filter((account) => account.brand_id === selectedBrand)
+    : niche.master_name
     ? list.filter((account) => account.routing_group === "master")
     : list;
   async function load() {
     try {
-      const [m, p, a, pr, ac, i, r, an, capabilities] = await Promise.all([
+      const [m, p, a, pr, ac, i, r, an, capabilities, nicheBrands] = await Promise.all([
         call<Media[]>(base + "/media"),
         call<Post[]>(base + "/posts"),
         call<SocialAccount[]>(base + "/accounts"),
@@ -780,8 +778,10 @@ function Workspace({
         call<Revenue[]>(base + "/revenue"),
         call<{ source: string }>(base + "/analytics"),
         call<{ storage_available: boolean }>("/api/config"),
+        call<Brand[]>(base + "/brands"),
       ]);
       setStorageAvailable(capabilities.storage_available);
+      setBrands(nicheBrands);
       setMedia(m);
       setPosts(p);
       setAccounts(a);
@@ -790,10 +790,13 @@ function Workspace({
       setIdeas(i);
       setRevenue(r);
       setAnalytics(an);
-      if (!draft)
+      if (!draft) {
+        const selectedBrand = brandId || nicheBrands.find((brand) => !brand.parent_id)?.id || "";
+        setBrandId(selectedBrand);
         setDestinations(
-          destinationsFor(a).filter((x) => niche.master_name ? x.status === "connected" : x.status !== "archived").map((x) => x.id),
+          destinationsFor(a, selectedBrand).filter((x) => selectedBrand || niche.master_name ? x.status === "connected" : x.status !== "archived").map((x) => x.id),
         );
+      }
     } catch (e) {
       setError((e as Error).message);
     }
@@ -825,6 +828,7 @@ function Workspace({
     setComposeStage(stage);
     setSelectedMedia(post.media_id || "");
     setSourceGroup(post.source_group || "");
+    setBrandId(post.brand_id || "");
     setDestinations(
       post.destinations.filter((id) => accounts.some((a) => a.id === id)),
     );
@@ -848,6 +852,7 @@ function Workspace({
           media_id: post.media_id,
           destinations: [account.id],
           source_group: post.source_group,
+          brand_id: post.brand_id,
           // Carry over only the target account and its platform metadata.
           // Archived accounts can no longer be valid keys in a new draft.
           overrides: Object.fromEntries(
@@ -929,7 +934,8 @@ function Workspace({
             media_id: uploaded.id,
             title: asset.title,
             caption: asset.caption,
-            destinations: destinationsFor(accounts).filter(a => niche.master_name ? a.status === "connected" : a.status !== "archived").map(a => a.id),
+            brand_id: brandId || null,
+            destinations: destinationsFor(accounts).filter(a => brandId || niche.master_name ? a.status === "connected" : a.status !== "archived").map(a => a.id),
           });
           imported++;
         }
@@ -965,7 +971,8 @@ function Workspace({
           caption: data.caption,
           media_id: selectedMedia || null,
           destinations,
-          source_group: niche.master_name ? sourceGroup : "",
+          source_group: !brandId && niche.master_name ? sourceGroup : "",
+          brand_id: brandId || null,
           overrides,
         },
       );
@@ -1055,7 +1062,7 @@ function Workspace({
           Upload content
         </button>
       </div>
-      {niche.master_name && (tab === "Overview" || tab === "Accounts") && (
+      {!brands.length && niche.master_name && (tab === "Overview" || tab === "Accounts") && (
         <section className="n-panel" aria-label="Master and source accounts">
           <span className="n-kicker">MASTER PUBLISHING</span>
           <h2>{niche.master_name}</h2>
@@ -1557,7 +1564,19 @@ function Workspace({
             <span className="n-kicker">01 / PREPARE</span>
             <h2>{electricSkin ? "Build your next drop." : "One post. Your whole niche."}</h2>
             <form key={draft?.id || "new"} onSubmit={save}>
-              {niche.master_name && (
+              {brands.length > 0 && (
+                <label>Brand
+                  <select value={brandId} onChange={(event) => {
+                    const next = event.currentTarget.value;
+                    setBrandId(next);
+                    setDestinations(destinationsFor(accounts, next).filter((account) => account.status === "connected").map((account) => account.id));
+                  }}>
+                    {!brandId && <option value="">Existing niche draft</option>}
+                    {brands.map((brand) => <option value={brand.id} key={brand.id}>{brand.name}{!brand.parent_id ? " · Master" : ""}</option>)}
+                  </select>
+                </label>
+              )}
+              {!brandId && niche.master_name && (
                 <label>
                   Source group · publishes only to {niche.master_name}
                   <select value={sourceGroup} onChange={(event) => setSourceGroup(event.currentTarget.value)}>
@@ -1664,7 +1683,9 @@ function Workspace({
                 </details>
               ))}
               {accounts
-                .filter((a) => destinations.includes(a.id))
+                .filter((a) => destinations.includes(a.id) ||
+                  (a.platform === "instagram" && brands.some((brand) =>
+                    brand.id === brandId && !!brand.parent_id && brand.parent_id === a.brand_id)))
                 .map((a) => (
                   <details key={a.id}>
                     <summary>
@@ -1710,7 +1731,7 @@ function Workspace({
             {draft ? (
               <PublishingReview
                 nicheId={niche.id}
-                masterName={niche.master_name}
+                masterName={draft.brand_id ? undefined : niche.master_name}
                 draft={draft}
                 accounts={accounts}
                 providers={providers}
@@ -1752,6 +1773,9 @@ function Workspace({
             setComposeStage("prepare");
             setSelectedMedia("");
             setSourceGroup("");
+            const master = brands.find((brand) => !brand.parent_id)?.id || "";
+            setBrandId(master);
+            setDestinations(destinationsFor(accounts, master).filter((account) => account.status === "connected").map((account) => account.id));
             setTab("Publish");
           }}
         />
@@ -1861,6 +1885,8 @@ function Workspace({
           nicheId={niche.id}
           posts={posts}
           accounts={accounts}
+          brands={brands}
+          media={media}
           onChanged={changed}
         />
       )}
@@ -1869,6 +1895,16 @@ function Workspace({
           nicheId={niche.id}
           accounts={accounts}
           providers={providers}
+          brands={brands}
+          onCreatePost={(nextBrand) => {
+            setDraft(null);
+            setComposeStage("prepare");
+            setSelectedMedia("");
+            setBrandId(nextBrand);
+            setSourceGroup("");
+            setDestinations(destinationsFor(accounts, nextBrand).filter((account) => account.status === "connected").map((account) => account.id));
+            setTab("Publish");
+          }}
           onChanged={changed}
         />
       )}

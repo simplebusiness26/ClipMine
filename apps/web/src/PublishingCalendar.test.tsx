@@ -40,6 +40,9 @@ describe("PublishingCalendar", () => {
     expect(html).toContain("Published");
     expect(html).toContain("Problems / past due");
     expect(html).toContain("View status / errors");
+    expect(html).toContain("All platforms");
+    expect(html).toContain("Pending / processing");
+    expect(html).toContain("<small>2</small>");
     expect(html).toContain("youtube · Cartoons");
     expect((html.match(/class="n-calendar-cell(?: |")/g) || []).length).toBeGreaterThanOrEqual(28);
   });

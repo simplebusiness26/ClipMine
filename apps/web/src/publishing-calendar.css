@@ -12,6 +12,7 @@
 .n-calendar-top { align-items: flex-start; margin-bottom: 14px; flex-wrap: wrap; }
 .n-calendar-top h2 { margin: 3px 0; font-size: clamp(22px, 3vw, 30px); }
 .n-calendar-top p { font-size: 12px; color: #798377; margin: 4px 0 0; }
+.n-calendar-tools { display: flex; flex-wrap: wrap; gap: 8px; }
 .n-calendar-filter {
   display: flex;
   flex-direction: column;
@@ -218,8 +219,10 @@
   .n-calendar-weekdays span { font-size: 10px; padding: 7px 0; }
   .n-calendar-direction h3 { min-width: 116px; font-size: 16px; }
   .n-calendar-direction { gap: 5px; }
-  .n-calendar-direction button { width: 31px; min-height: 33px; }
-  .n-calendar-today { min-height: 33px; }
+  .n-calendar-direction button { width: 36px; min-height: 44px; }
+  .n-calendar-today { min-height: 44px; padding-inline: 8px; }
+  .n-calendar-nav { gap: 6px; }
+  .n-calendar-direction h3 { min-width: 0; }
   .n-calendar-count { font-size: 10px; padding: 5px 7px; }
   .n-calendar-count b { font-size: 14px; }
   .n-calendar-detail-head h3 { font-size: 15px; }
