@@ -162,14 +162,14 @@ export default function PublishingCalendar({
         <div className="n-calendar-tools">
           <label className="n-calendar-filter">
             View
-            <select value={view} onChange={(event) => setView(event.target.value === "week" ? "week" : "month")}>
+            <select aria-label="Calendar view" value={view} onChange={(event) => setView(event.target.value === "week" ? "week" : "month")}>
               <option value="month">Month</option>
               <option value="week">Week</option>
             </select>
           </label>
           <label className="n-calendar-filter">
             Show
-            <select value={filter} onChange={(event) => setFilter(event.target.value as Filter)}>
+            <select aria-label="Publishing status" value={filter} onChange={(event) => setFilter(event.target.value as Filter)}>
               <option value="all">All dated posts</option>
               <option value="scheduled">Scheduled</option>
               <option value="pending">Pending / processing</option>
@@ -179,14 +179,14 @@ export default function PublishingCalendar({
           </label>
           <label className="n-calendar-filter">
             Platform
-            <select value={platform} onChange={(event) => setPlatform(event.target.value)}>
+            <select aria-label="Platform" value={platform} onChange={(event) => setPlatform(event.target.value)}>
               <option value="">All platforms</option>
               {platforms.map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
           </label>
           {brands.length > 0 && <label className="n-calendar-filter">
             Brand
-            <select value={brand} onChange={(event) => setBrand(event.target.value)}>
+            <select aria-label="Brand" value={brand} onChange={(event) => setBrand(event.target.value)}>
               <option value="">All brands</option>
               {brands.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>

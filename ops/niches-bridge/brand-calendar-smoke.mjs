@@ -52,7 +52,7 @@ try {
   const agenda = page.locator(".n-calendar-details");
   await agenda.getByText("Fixture review video").waitFor();
   assert.ok(await page.locator(".n-calendar-cell").count() >= 28);
-  await page.getByLabel("View", { exact: true }).selectOption("week");
+  await page.getByLabel("Calendar view", { exact: true }).selectOption("week");
   assert.equal(await page.locator(".n-calendar-cell").count(), 7);
   await page.getByRole("button", { name: "Next week" }).click();
   await agenda.getByText(/No dated posts/).waitFor();
@@ -63,10 +63,10 @@ try {
   await agenda.getByText("Provider response uncertain", { exact: false }).waitFor();
   await page.getByLabel("Platform", { exact: true }).selectOption("");
   await page.getByLabel("Brand", { exact: true }).selectOption(master.id);
-  await page.getByLabel("Show", { exact: true }).selectOption("pending");
+  await page.getByLabel("Publishing status", { exact: true }).selectOption("pending");
   await agenda.getByText("Fixture pending video").waitFor();
   assert.equal(await agenda.getByText("Fixture published video").count(), 0);
-  await page.getByLabel("View", { exact: true }).selectOption("month");
+  await page.getByLabel("Calendar view", { exact: true }).selectOption("month");
   for (const width of [320, 360, 390, 430, 1440]) {
     await page.setViewportSize({ width, height: 800 });
     await overflow();
