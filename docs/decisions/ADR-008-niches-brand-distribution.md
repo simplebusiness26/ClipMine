@@ -1,0 +1,7 @@
+# ADR-008: Niches brand hierarchy and Instagram distribution
+
+Niches has an optional master brand and individual brands under it. Brand IDs and parent IDs are separate from legacy account routing strings. Migration 0004 assigns existing routed account rows to equivalent brands and defaults automatic distribution to off. It does not rewrite posts, publication rows, or credentials. Earlier drafts without brand IDs keep their previous routing behaviour.
+
+New brand drafts store the source brand and explicitly selected accounts. The review endpoint calculates one automatic master Instagram destination when enabled and exactly one eligible account exists. Approval validates that the same automatic destination was reviewed and stores the complete destination list with the existing transaction that creates each delivery. The scheduler uses the approved list. All platforms continue using account-specific authorization and delivery status. Facebook, YouTube and TikTok are not automatically added.
+
+Row-specific Instagram OAuth binds the intended account to encrypted, single-use OAuth state. The verified provider ID identifies a reconnect regardless of username. An existing verified account can be moved after explicit confirmation when its work queue allows it, and an unused manual placeholder is archived only after checking its references. No verified token or publication history is transferred between rows.

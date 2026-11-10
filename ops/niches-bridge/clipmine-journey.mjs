@@ -80,7 +80,7 @@ try {
         "security",
         "db",
         "token-vault",
-        "social-oauth",
+        "social-oauth", "brands",
         "publishers",
         "outbox",
       ].map((name) => ({

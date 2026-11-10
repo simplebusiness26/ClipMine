@@ -40,6 +40,9 @@ describe("PublishingCalendar", () => {
     expect(html).toContain("Published");
     expect(html).toContain("Problems / past due");
     expect(html).toContain("View status / errors");
+    expect(html).toContain("All platforms");
+    expect(html).toContain("Pending / processing");
+    expect(html).toContain("<small>2</small>");
     expect(html).toContain("youtube · Cartoons");
     expect((html.match(/class="n-calendar-cell(?: |")/g) || []).length).toBeGreaterThanOrEqual(28);
   });
@@ -54,6 +57,17 @@ describe("PublishingCalendar", () => {
     }));
     expect(html).toContain("Past due · check publishing status");
     expect(html).not.toContain("Provider confirmed failure");
+  });
+
+  it("shows ready export reminders separately from published deliveries", () => {
+    const html = renderToStaticMarkup(createElement(PublishingCalendar, {
+      nicheId: "test-niche",
+      posts: [{ ...post("export_ready", "reminder", new Date().toISOString()), publish_mode: "export" }],
+      accounts: [],
+      onChanged: () => {},
+    }));
+    expect(html).toContain('class="n-calendar-count published"><b>0</b>');
+    expect(html).toContain('class="n-calendar-count reminder"><b>1</b>');
   });
 
   it("never places undated drafts onto the calendar", () => {

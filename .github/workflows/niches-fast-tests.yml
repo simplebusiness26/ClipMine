@@ -33,3 +33,29 @@ jobs:
       - run: npm run test:edge
       - run: node --test ops/niches-bridge/config.test.mjs
       - run: npm run lint:web && npm run test:web && npm run build:web
+
+  electric-mobile:
+    name: Electric Niches brands and calendar
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: npm run build:web
+        env:
+          VITE_NICHES_SKIN: electric
+      - name: Test the local Electric portal at phone and desktop widths
+        run: |
+          node ops/niches-bridge/local-test-server.mjs > /tmp/niches-test-server.log 2>&1 &
+          trap 'kill $! 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl --silent --fail http://127.0.0.1:8787/api/health > /dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail http://127.0.0.1:8787/api/health || { cat /tmp/niches-test-server.log; exit 1; }
+          node ops/niches-bridge/brand-calendar-smoke.mjs

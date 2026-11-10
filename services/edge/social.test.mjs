@@ -32,7 +32,7 @@ const modules = [
   "security",
   "db",
   "token-vault",
-  "social-oauth",
+  "social-oauth", "brands",
   "publishers",
   "outbox",
 ].map((name) => ({ type: "ESModule", path: `services/edge/${name}.mjs` }));
@@ -186,9 +186,9 @@ test("multiple same-platform accounts can be planned without pretending they are
   });
   assert.equal(draft.destinations.length, 6);
 });
-async function oauthStart(platform = "youtube") {
+async function oauthStart(platform = "youtube", accountId) {
   const r = await beginOAuth(
-    new Request("http://localhost/start", { headers: { Cookie: cookie } }),
+    new Request(accountId ? `http://localhost/start?account=${accountId}` : "http://localhost/start", { headers: { Cookie: cookie } }),
     env,
     user,
     niche,
@@ -343,7 +343,10 @@ test("Facebook OAuth initiation returns a real Meta URL and scoped callback cook
 });
 
 test("Instagram Login opens Instagram directly and connects the authorised IG account", async () => {
-  const start = await oauthStart("instagram");
+  const pending = await json(`/api/niches/${niche.id}/accounts`, "POST", {
+    platform: "instagram", display_name: "Planned cartoons", handle: "oldhandle",
+  });
+  const start = await oauthStart("instagram", pending.id);
   const url = new URL(start.url);
   assert.equal(url.hostname, "www.instagram.com");
   assert.equal(url.pathname, "/oauth/authorize");
@@ -377,7 +380,41 @@ test("Instagram Login opens Instagram directly and connects the authorised IG ac
   const connected = await db.prepare(
     "SELECT * FROM accounts WHERE provider_id='ig-test' AND platform='instagram'"
   ).first();
+  assert.equal(connected.id, pending.id);
+  assert.equal(connected.status, "connected");
   assert.equal(connected.connection_kind, "instagram_login");
+  const reconnect = await oauthStart("instagram", pending.id);
+  const callback = new Request(
+    `http://localhost/api/oauth/instagram/callback?state=${reconnect.state}&code=fixture`,
+    { headers: { Cookie: reconnect.browser } },
+  );
+  const reconnected = await finishOAuth(callback, env, "instagram", mock);
+  assert.equal(new URL(reconnected.headers.get("location")).searchParams.get("connection"), "connected");
+  await assert.rejects(finishOAuth(callback, env, "instagram", mock), /expired|already used/);
+  const duplicate = await json(`/api/niches/${niche.id}/accounts`, "POST", {
+    platform: "instagram", display_name: "Existing profile", handle: "alias",
+  });
+  await assert.rejects(saveConnection(env, niche.id, {
+    platform: "instagram", provider_id: connected.provider_id, name: "alias",
+    tokens: { access_token: "fixture" },
+  }, duplicate.id), /already has a record/);
+  assert.equal((await db.prepare("SELECT status FROM accounts WHERE id=?").bind(duplicate.id).first()).status, "disconnected");
+  const pairStart = await oauthStart("instagram", duplicate.id);
+  const pairCallback = await finishOAuth(new Request(
+    `http://localhost/api/oauth/instagram/callback?state=${pairStart.state}&code=fixture`,
+    { headers: { Cookie: pairStart.browser } },
+  ), env, "instagram", mock);
+  const pairTicket = new URL(pairCallback.headers.get("location")).searchParams.get("connect_ticket");
+  const pairPath = `/api/niches/${niche.id}/connections/${pairTicket}`;
+  const [verifiedChoice] = await json(pairPath);
+  assert.equal(verifiedChoice.existing, connected.display_name);
+  assert.equal((await request(pairPath, "POST", { selected: [verifiedChoice.id] })).status, 409);
+  assert.equal((await json(pairPath, "POST", { selected: [verifiedChoice.id], confirm_existing: true })).reconciled, true);
+  const retained = await db.prepare("SELECT * FROM accounts WHERE id=?").bind(connected.id).first();
+  assert.equal(retained.status, "connected");
+  assert.equal((await unseal(env, retained.encrypted_tokens, accountContext(retained))).access_token, "long-ig-token");
+  assert.equal((await db.prepare("SELECT status FROM accounts WHERE id=?").bind(duplicate.id).first()).status, "archived");
+
   const grant = await unseal(env, connected.encrypted_tokens, accountContext(connected));
   assert.equal(grant.access_token, "long-ig-token");
   assert.ok(visited.every((v) => !v.includes("graph.facebook.com")));
@@ -925,4 +962,92 @@ test("Facebook and TikTok remain processing until the provider reports completio
     ).status,
     "processing",
   );
+});
+
+test("brand Instagram distribution previews, schedules and isolates one job per approved destination", async () => {
+  const base = `/api/niches/${niche.id}`;
+  const master = await json(base + "/brands", "POST", { name: "Podclipcast" });
+  const child = await json(base + "/brands", "POST", { name: "War Clipcast" });
+  const sibling = await json(base + "/brands", "POST", { name: "Football Clipcast" });
+  assert.equal(child.parent_id, master.id);
+  assert.equal(sibling.parent_id, master.id);
+  await json(base + "/brands/" + sibling.id, "PATCH", { name: "Football Clips" });
+  assert.equal((await json(base + "/brands")).find((brand) => brand.id === sibling.id).name, "Football Clips");
+  assert.equal((await request(base + "/brands", "GET", undefined, otherCookie)).status, 404);
+  const connect = (brand, suffix, platform = "instagram") => saveConnection(env, niche.id, {
+    platform, provider_id: "brand-" + suffix, name: suffix,
+    connection_kind: platform === "instagram" ? "instagram_login" : "oauth",
+    tokens: { access_token: "fixture", expires_at: new Date(Date.now() + 86400000).toISOString() },
+  }, null, brand.id);
+  const [masterId, childId, siblingId, youtubeId] = await Promise.all([
+    connect(master, "master"), connect(child, "child"),
+    connect(sibling, "sibling"), connect(master, "master-youtube", "youtube"),
+  ]);
+  const placeholders = await json(base + "/accounts", "POST", {
+    platform: "instagram", handle: "war-alias", display_name: "War planning",
+  });
+  await json(base + "/accounts/" + placeholders.id + "/brand", "PATCH", { brand_id: child.id });
+  assert.equal((await json(base + "/accounts")).find((a) => a.id === placeholders.id).brand_id, child.id);
+  const media = (await fixturePost([])).media_id;
+  const draftFor = (brand, destinations) => json(base + "/posts", "POST", {
+    brand_id: brand.id, destinations, media_id: media, title: "Brand clip", caption: "Fixture",
+    overrides: { [masterId]: { caption: "Master account copy" } },
+  });
+  const post = await draftFor(child, [childId]);
+  const raw = (draft) => db.prepare("SELECT * FROM posts WHERE id=?").bind(draft.id).first();
+  const url = base + "/posts/" + post.id + "/destinations";
+  assert.deepEqual(await json(url), { selected: [childId], automatic: null });
+  await json(base + "/brands/" + master.id, "PATCH", { auto_instagram: true });
+  assert.deepEqual(await json(url), { selected: [childId], automatic: masterId });
+  const directMaster = await draftFor(master, [masterId]);
+  assert.deepEqual(await json(base + "/posts/" + directMaster.id + "/destinations"),
+    { selected: [masterId], automatic: null });
+  const youtube = await draftFor(master, [youtubeId]);
+  assert.equal((await json(base + "/posts/" + youtube.id + "/destinations")).automatic, null);
+  const options = { confirmed: true, scheduled_at: new Date(Date.now() + 300000).toISOString() };
+  await assert.rejects(queuePost(env, user, niche, await raw(post), options), /review destinations/);
+  await queuePost(env, user, niche, await raw(post), { ...options, automatic_destination: masterId });
+  await assert.rejects(queuePost(env, user, niche, await raw(post), options), /already been approved/);
+  await queuePost(env, user, niche, await raw(directMaster), options);
+  const results = await json(base + "/posts/" + post.id + "/publications");
+  assert.deepEqual(new Set(results.map((row) => row.account_id)), new Set([childId, masterId]));
+  assert.ok(results.every((row) => row.status === "pending"));
+  assert.ok(!results.some((row) => [siblingId, youtubeId].includes(row.account_id)));
+  assert.equal((await json(base + "/posts/" + directMaster.id + "/publications")).length, 1);
+  assert.equal((await request(base + "/accounts/" + childId + "/brand", "PATCH", { brand_id: sibling.id })).status, 409);
+  assert.equal(JSON.parse((await raw(post)).overrides_json)[masterId].caption, "Master account copy");
+  // The production Podcasts niche still carries the legacy master_name after
+  // migration. The worker must run both approved brand jobs anyway.
+  await db.prepare("UPDATE niches SET master_name='Podclipcast' WHERE id=?").bind(niche.id).run();
+  const delivered = [];
+  let masterFails = true;
+  const provider = async (url, request) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/media")) {
+      const account = path.split("/")[1];
+      assert.equal(JSON.parse(request.body).caption, account === "brand-master" ? "Master account copy" : "Fixture");
+      return response({ id: account + "-container" });
+    }
+    if (path.endsWith("/media_publish")) {
+      delivered.push(path.split("/")[1]);
+      return response({ id: path.split("/")[1] + "-published" });
+    }
+    return response({ status_code: masterFails && path === "/brand-master-container" ? "ERROR" : "FINISHED" });
+  };
+  async function tick() {
+    await db.prepare("UPDATE publications SET next_attempt_at='2000-01-01' WHERE post_id=? AND status IN ('pending','processing','retry')").bind(post.id).run();
+    await runOutbox(env, 2, provider);
+  }
+  for (let i = 0; i < 3; i++) await tick();
+  let jobs = await json(base + "/posts/" + post.id + "/publications");
+  assert.equal(jobs.find((job) => job.account_id === childId).status, "published");
+  const failed = jobs.find((job) => job.account_id === masterId);
+  assert.equal(failed.status, "failed");
+  assert.deepEqual(delivered, ["brand-child"]);
+  masterFails = false;
+  await retryPublication(env, user, niche, failed.id, {});
+  for (let i = 0; i < 3; i++) await tick();
+  jobs = await json(base + "/posts/" + post.id + "/publications");
+  assert.ok(jobs.every((job) => job.status === "published"));
+  assert.deepEqual(delivered, ["brand-child", "brand-master"]);
 });

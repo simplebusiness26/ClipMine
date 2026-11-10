@@ -545,3 +545,28 @@ html:has(.n-electric) { color-scheme: dark; background: #05091a; }
 .n-electric .n-calendar-expanded { border-color: #41507d; }
 .n-electric .n-calendar-expanded > p { color: #c5cdec; }
 .n-electric .n-calendar .n-post-row { border-color: #3a4971; }
+
+.n-brand-list { display: grid; gap: 8px; }
+.n-brand-tree-row { border: 1px solid #374670; border-radius: 10px; min-width: 0; }
+.n-brand-master { border-color: #a77dff; background: #211742; }
+.n-brand-child { margin-inline-start: 14px; background: #121d3c; }
+.n-brand-tree-row > summary {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  min-height: 44px; padding: 8px 12px; cursor: pointer;
+}
+.n-brand-tree-row > summary::before { content: "▸"; color: #a4b8ff; }
+.n-brand-tree-row[open] > summary::before { content: "▾"; }
+.n-brand-tree-row > summary small { margin-inline-start: auto; }
+.n-brand-body { padding: 0 12px 12px; }
+.n-brand-tree-row .n-post-row { flex-wrap: wrap; overflow-wrap: anywhere; }
+.n-brand-tree-row .n-actions { flex-wrap: wrap; }
+.n-brand-tree-row .n-actions select { min-width: 0; max-width: 100%; }
+.n-brand-create { margin-top: 12px; }
+.n-brand-manage { margin-top: 8px; }
+.n-brand-manage summary { cursor: pointer; padding: 8px 0; }
+
+.n-account-platform-icon {
+  display: inline-grid; place-items: center; width: 22px; height: 22px;
+  border-radius: 6px; background: #25315d; color: #b6c7ff; font-size: 12px;
+}
+.n-provider-settings > summary { cursor: pointer; padding: 10px 0; }
