@@ -819,10 +819,32 @@ test("scheduled jobs stay queued until due and uncertain submissions never retry
   };
   await runOutbox(env, 10, networkFailure);
   assert.equal(sends, 0);
-  await db
-    .prepare("UPDATE publications SET next_attempt_at=NULL WHERE post_id=?")
-    .bind(draft.id)
-    .run();
+  const publication = () => db.prepare("SELECT * FROM publications WHERE post_id=?").bind(draft.id).first();
+  const original = await publication();
+  const path = `/api/niches/${niche.id}/posts/${draft.id}/publish-now`;
+  assert.equal((await request(path, "POST", { confirmed: false })).status, 400);
+  const denied = await request(path, "POST", { confirmed: true }, otherCookie);
+  assert.ok([403, 404].includes(denied.status));
+  await db.prepare("UPDATE publications SET attempt=1 WHERE id=?").bind(original.id).run();
+  assert.equal((await request(path, "POST", { confirmed: true })).status, 409);
+  assert.equal((await publication()).next_attempt_at, original.next_attempt_at);
+  await db.prepare("UPDATE publications SET attempt=0 WHERE id=?").bind(original.id).run();
+  const responses = await Promise.all([
+    request(path, "POST", { confirmed: true }),
+    request(path, "POST", { confirmed: true }),
+  ]);
+  assert.deepEqual(responses.map((result) => result.status).sort(), [202, 409]);
+  const moved = await publication();
+  assert.equal(moved.id, original.id);
+  assert.equal(moved.account_id, original.account_id);
+  assert.equal(moved.status, "pending");
+  assert.ok(moved.next_attempt_at < original.next_attempt_at);
+  const queued = await db.prepare("SELECT * FROM posts WHERE id=?").bind(draft.id).first();
+  assert.equal(queued.delivery_status, "queued");
+  assert.equal(queued.scheduled_at, null);
+  assert.equal((await db.prepare(
+    "SELECT count(*) AS total FROM audit_events WHERE resource_id=? AND action='post.publish_now'",
+  ).bind(draft.id).first()).total, 1);
   await runOutbox(env, 10, networkFailure);
   assert.equal(sends, 1);
   let pub = await db
