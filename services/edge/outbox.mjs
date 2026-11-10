@@ -149,6 +149,41 @@ export async function queuePost(env, user, niche, post, data) {
       : "Publication queued. Each account’s result will appear in publish history.",
   };
 }
+export async function publishScheduledNow(env, user, niche, post, data) {
+  if (data.confirmed !== true)
+    fail(400, "Confirm that this scheduled post should publish now.");
+  const due = now();
+  const eligible = `id=? AND niche_id=? AND publish_mode='direct'
+    AND delivery_status='scheduled' AND scheduled_at>?
+    AND EXISTS (SELECT 1 FROM publications WHERE post_id=posts.id)
+    AND NOT EXISTS (
+      SELECT 1 FROM publications WHERE post_id=posts.id
+        AND (status<>'pending' OR submission_started<>0 OR attempt<>0
+          OR lease_until IS NOT NULL OR provider_post_id IS NOT NULL)
+    )`;
+  const args = [post.id, niche.id, due];
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO audit_events SELECT ?,?,?,?,?,?
+        WHERE EXISTS (SELECT 1 FROM posts WHERE ${eligible})`,
+    ).bind(id(), user.id, niche.id, "post.publish_now", post.id, due, ...args),
+    env.DB.prepare(
+      `UPDATE posts SET delivery_status='queued',scheduled_at=NULL,updated_at=?
+        WHERE ${eligible}`,
+    ).bind(due, ...args),
+    env.DB.prepare(
+      `UPDATE publications SET next_attempt_at=?,updated_at=?
+        WHERE post_id=? AND status='pending' AND attempt=0
+          AND submission_started=0 AND lease_until IS NULL
+          AND EXISTS (SELECT 1 FROM posts WHERE id=publications.post_id
+            AND niche_id=? AND delivery_status='queued' AND updated_at=?)`,
+    ).bind(due, due, post.id, niche.id, due),
+  ]);
+  if (!results[1].meta.changes)
+    fail(409, "This post is no longer waiting to publish. Refresh its delivery status.");
+  return { status: "queued" };
+}
+
 async function mediaGrant(env, media, pub) {
   const token = randomToken();
   await execute(
@@ -222,12 +257,14 @@ export async function refreshPostStatus(env, postId) {
     postId,
   );
 }
-export async function runOutbox(env, limit = 5, fetcher = fetch) {
+export async function runOutbox(env, limit = 5, fetcher = fetch, postId = null) {
   const jobs = await all(
     env,
-    "SELECT p.* FROM publications p JOIN posts s ON s.id=p.post_id WHERE s.publish_mode='direct' AND p.status IN ('pending','processing','retry') AND (p.next_attempt_at IS NULL OR p.next_attempt_at<=?) AND (p.lease_until IS NULL OR p.lease_until<?) ORDER BY p.updated_at LIMIT ?",
+    "SELECT p.* FROM publications p JOIN posts s ON s.id=p.post_id WHERE s.publish_mode='direct' AND p.status IN ('pending','processing','retry') AND (p.next_attempt_at IS NULL OR p.next_attempt_at<=?) AND (p.lease_until IS NULL OR p.lease_until<?) AND (? IS NULL OR p.post_id=?) ORDER BY p.updated_at LIMIT ?",
     now(),
     now(),
+    postId,
+    postId,
     limit,
   );
   for (const pub of jobs) {
