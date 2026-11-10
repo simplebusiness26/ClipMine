@@ -38,6 +38,8 @@ Official OAuth implementations cover Google/YouTube, TikTok and Meta Facebook Lo
 
 Direct publishing has an explicit review/approval boundary, per-account records, scheduled execution, leases, encrypted resumable state, duplicate approval protection and bounded retries. Ambiguous writes require checking the platform before retrying. Only provider-confirmed completion becomes published. Adapters cover YouTube resumable video, Instagram image/Reels containers, Facebook photos/Reels and TikTok direct video. The minute cron runs bounded stages; no paid queue is provisioned. Large videos remain limited to the configured 25 MB upload cap.
 
+For a future direct publication, open its date in Calendar and select **Publish now**. Confirming moves the existing deliveries forward for all approved accounts. Niches preserves the delivery IDs and uses the same provider confirmation and retry process. If any delivery has started, use its account status instead.
+
 The automated provider tests use simulated provider responses. No platform has passed an actual owner-authorised production publishing test. Custom YouTube thumbnail uploading, provider analytics/revenue imports, TikTok photo posts and long-running video throughput remain roadmap work.
 
 ## Live prerequisites
