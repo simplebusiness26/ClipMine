@@ -155,8 +155,8 @@ async function quota(env, user, size) {
     "SELECT COALESCE(SUM(size),0) AS bytes,COUNT(*) AS files FROM media WHERE niche_id IN (SELECT id FROM niches WHERE user_id=?)",
     user,
   );
-  if (usage.bytes + size > 250 * 1024 * 1024 || usage.files >= 100)
-    fail(413, "This beta account has reached its 250 MB or 100 file limit.");
+  if (usage.bytes + size > 300 * 1024 * 1024 || usage.files >= 150)
+    fail(413, "This beta account has reached its 300 MB or 150 file limit.");
   // Leave headroom for the account-wide 1 GB free Workers KV allowance.
   // This is a conservative beta guard, not an atomic storage quota.
   if (env.MEDIA_BACKEND === "kv") {
