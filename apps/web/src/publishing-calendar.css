@@ -230,3 +230,8 @@
 @media (prefers-reduced-motion: no-preference) {
   .n-calendar-cell, .n-calendar-detail-primary button { transition: background-color .15s ease; }
 }
+
+.n-calendar-event.reminder { background: #dcf3f6; color: #216674; }
+.n-calendar-legend .reminder, .n-calendar-mobile-dots .reminder { background: #26899a; }
+.n-calendar-detail.reminder { border-left-color: #26899a; }
+.n-electric .n-calendar-event.reminder { background: #1b4256; color: #94e8f7; }

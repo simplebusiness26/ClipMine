@@ -4,7 +4,7 @@ import type { Post, SocialAccount, Brand, Media } from "./niches-api";
 import "./publishing-calendar.css";
 
 type Filter = "all" | "scheduled" | "pending" | "issues" | "published";
-type Tone = "scheduled" | "published" | "issues" | "working" | "cancelled";
+type Tone = "scheduled" | "published" | "issues" | "working" | "cancelled" | "reminder";
 
 function localKey(value: Date): string {
   return [
@@ -32,7 +32,8 @@ function isOverdue(post: Post, now: number): boolean {
 
 function tone(post: Post, now: number): Tone {
   if (["partial", "failed", "needs_review", "blocked"].includes(post.status) || isOverdue(post, now)) return "issues";
-  if (post.status === "published" || post.status === "export_ready") return "published";
+  if (post.status === "published") return "published";
+  if (post.status === "export_ready") return "reminder";
   if (post.status === "scheduled") return "scheduled";
   if (["queued", "processing", "pending", "retry"].includes(post.status)) return "working";
   return "cancelled";
@@ -117,6 +118,7 @@ export default function PublishingCalendar({
   const monthEntries = platformEntries.filter((entry) => entry.key.startsWith(monthPrefix));
   const counts = {
     scheduled: monthEntries.filter((entry) => tone(entry.post, now) === "scheduled").length,
+    reminders: monthEntries.filter((entry) => tone(entry.post, now) === "reminder").length,
     published: monthEntries.filter((entry) => tone(entry.post, now) === "published").length,
     issues: monthEntries.filter((entry) => tone(entry.post, now) === "issues").length,
   };
@@ -198,6 +200,7 @@ export default function PublishingCalendar({
         <span className="n-calendar-count scheduled"><b>{counts.scheduled}</b> Scheduled</span>
         <span className="n-calendar-count published"><b>{counts.published}</b> Published</span>
         <span className="n-calendar-count issues"><b>{counts.issues}</b> Problems / past due</span>
+        {counts.reminders > 0 && <span className="n-calendar-count reminder"><b>{counts.reminders}</b> Export reminders ready</span>}
       </div>
 
       <div className="n-calendar-nav">
@@ -261,6 +264,7 @@ export default function PublishingCalendar({
         <span><i className="working" /> Processing</span>
         <span><i className="issues" /> Failed / review / past due</span>
         <span><i className="cancelled" /> Cancelled</span>
+        <span><i className="reminder" /> Export reminder ready</span>
       </div>
 
       <div className="n-calendar-details" aria-live="polite">
