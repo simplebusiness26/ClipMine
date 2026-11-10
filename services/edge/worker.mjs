@@ -9,6 +9,7 @@ import {
 } from "./social-oauth.mjs";
 import {
   queuePost,
+  publishScheduledNow,
   runOutbox,
   providerMedia,
   retryPublication,
@@ -1053,7 +1054,7 @@ async function api(request, env, context) {
     );
   }
   const postMatch = sub.match(
-    /^posts\/([a-zA-Z0-9-]+)(?:\/(approve|cancel|export))?$/,
+    /^posts\/([a-zA-Z0-9-]+)(?:\/(approve|cancel|export|publish-now))?$/,
   );
   if (
     (sub === "posts" && method === "POST") ||
@@ -1197,6 +1198,11 @@ async function api(request, env, context) {
       niche.id,
     );
     if (!post) fail(404, "Post not found");
+    if (postMatch[2] === "publish-now" && method === "POST") {
+      const result = await publishScheduledNow(env, user, niche, post, await body(request));
+      context?.waitUntil(runOutbox(env, 3, fetch, post.id));
+      return json(result, 202);
+    }
     if (postMatch[2] === "export" && method === "GET") {
       const media = await one(
         env,
