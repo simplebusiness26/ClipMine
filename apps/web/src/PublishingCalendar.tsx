@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import PostHistory from "./PostHistory";
-import type { Post, SocialAccount, Brand, Media } from "./niches-api";
+import { call, type Post, type SocialAccount, type Brand, type Media } from "./niches-api";
 import "./publishing-calendar.css";
 
 type Filter = "all" | "scheduled" | "pending" | "issues" | "published";
@@ -85,8 +85,26 @@ export default function PublishingCalendar({
   const platforms = [...new Set(accounts.map((account) => account.platform))].sort();
   const platformAccounts = new Set(accounts.filter((account) => account.platform === platform).map((account) => account.id));
   const [expandedPost, setExpandedPost] = useState<string | null>(null);
+  const [publishingPost, setPublishingPost] = useState<string | null>(null);
+  const [publishNotice, setPublishNotice] = useState<{ text: string; error: boolean } | null>(null);
   const now = Date.now();
   const todayKey = localKey(new Date(now));
+
+  async function publishNow(post: Post) {
+    const title = post.title || "Untitled post";
+    if (!window.confirm(`Publish “${title}” now to all of its approved destinations?`)) return;
+    setPublishingPost(post.id);
+    setPublishNotice(null);
+    try {
+      await call(`/api/niches/${nicheId}/posts/${post.id}/publish-now`, "POST", { confirmed: true });
+      setPublishNotice({ text: `“${title}” is queued for immediate delivery. Check its publishing status for confirmation.`, error: false });
+      onChanged();
+    } catch (error) {
+      setPublishNotice({ text: error instanceof Error ? error.message : "Could not queue this post.", error: true });
+    } finally {
+      setPublishingPost(null);
+    }
+  }
 
   const entries = useMemo(() => posts.flatMap((post) => {
     const when = postDate(post);
@@ -272,6 +290,7 @@ export default function PublishingCalendar({
           <h3>{readableDay(chosenDay)}</h3>
           <span>{chosenInMonth ? selected.length + " posts" : "Outside viewed month"}</span>
         </div>
+        {publishNotice && <p role={publishNotice.error ? "alert" : "status"}>{publishNotice.text}</p>}
         {selected.length === 0 ? (
           <p className="n-calendar-empty">No {filter === "all" ? "dated posts" : filter + " posts"} for this day. Drafts without dates remain in Drafts.</p>
         ) : (
@@ -296,9 +315,16 @@ export default function PublishingCalendar({
                       })}
                     </div>
                   </div>
-                  <button type="button" onClick={() => setExpandedPost(open ? null : post.id)} aria-expanded={open}>
-                    {open ? "Hide details" : "View status / errors"}
-                  </button>
+                  <div>
+                    {post.status === "scheduled" && post.publish_mode === "direct" && when.getTime() > now && (
+                      <button type="button" disabled={publishingPost !== null} onClick={() => void publishNow(post)}>
+                        {publishingPost === post.id ? "Queueing…" : "Publish now"}
+                      </button>
+                    )}
+                    <button type="button" onClick={() => setExpandedPost(open ? null : post.id)} aria-expanded={open}>
+                      {open ? "Hide details" : "View status / errors"}
+                    </button>
+                  </div>
                 </div>
                 {open && (
                   <div className="n-calendar-expanded">
