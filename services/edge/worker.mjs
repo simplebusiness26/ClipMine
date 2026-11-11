@@ -1,4 +1,5 @@
 import { brandFor, listBrands, saveBrand, deliveryDestinations } from "./brands.mjs";
+import { POST_KINDS, mediaIdsFor } from "./content-format.mjs";
 import { withMedia } from "./kv-media.mjs";
 import { resetEmailReady, sendResetEmail } from "./reset-email.mjs";
 import {
@@ -120,6 +121,7 @@ function postRow(row) {
     status: row.publish_mode === "direct" ? row.delivery_status : row.status,
     destinations: JSON.parse(row.destinations_json),
     overrides: JSON.parse(row.overrides_json),
+    media_ids: mediaIdsFor(row),
   };
 }
 async function readBounded(stream, max) {
@@ -863,7 +865,8 @@ async function api(request, env, context) {
     // still need its source. Explicitly cancel/unwind the post first.
     const protectedPost = await one(
       env,
-      "SELECT id FROM posts WHERE media_id=? AND (status IN ('scheduled','export_ready') OR EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)) LIMIT 1",
+      "SELECT id FROM posts WHERE (media_id=? OR EXISTS(SELECT 1 FROM json_each(posts.media_ids_json) WHERE value=?)) AND (status IN ('scheduled','export_ready') OR EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)) LIMIT 1",
+      media.id,
       media.id,
     );
     if (protectedPost)
@@ -872,7 +875,7 @@ async function api(request, env, context) {
     // D1 transaction fails, retrying deletion can complete the cleanup safely.
     await env.MEDIA.delete(media.object_key);
     await env.DB.batch([
-      env.DB.prepare("UPDATE posts SET media_id=NULL WHERE media_id=?").bind(media.id),
+      env.DB.prepare("UPDATE posts SET media_id=NULL,media_ids_json='[]' WHERE media_id=? OR EXISTS(SELECT 1 FROM json_each(posts.media_ids_json) WHERE value=?)").bind(media.id,media.id),
       env.DB.prepare("DELETE FROM media WHERE id=? AND niche_id=?").bind(media.id, niche.id),
     ]);
     await audit(env, user.id, niche.id, "media.deleted", media.id);
@@ -1089,17 +1092,21 @@ async function api(request, env, context) {
       existing.status !== "cancelled"
     )
       fail(409, "Cancel this post before editing it.");
+    const postKind = data.post_kind ?? existing?.post_kind ?? "auto";
+    if (!POST_KINDS.includes(postKind)) fail(400, "Choose a supported content format.");
     const mediaId = data.media_id || null;
-    if (
-      mediaId &&
-      !(await one(
-        env,
-        "SELECT id FROM media WHERE id=? AND niche_id=?",
-        mediaId,
-        niche.id,
-      ))
-    )
-      fail(404, "Media not found in this niche");
+    const mediaIds = postKind === "carousel"
+      ? (data.media_ids ?? (existing?.post_kind === "carousel" ? mediaIdsFor(existing) : []))
+      : mediaId ? [mediaId] : [];
+    if (postKind === "carousel" &&
+        (!Array.isArray(mediaIds) || mediaIds.length < 2 || mediaIds.length > 10 ||
+         new Set(mediaIds).size !== mediaIds.length || mediaIds[0] !== mediaId))
+      fail(400, "Choose 2–10 distinct carousel slides in order, with the first as cover.");
+    if (mediaIds.some((item) => typeof item !== "string" || !/^[a-zA-Z0-9-]+$/.test(item)))
+      fail(400, "Invalid selected media.");
+    for (const item of mediaIds)
+      if (!(await one(env, "SELECT id FROM media WHERE id=? AND niche_id=?", item, niche.id)))
+        fail(404, "Selected media not found in this niche.");
     const brandId = data.brand_id === null ? null : data.brand_id ?? existing?.brand_id ?? null;
     if (brandId) await brandFor(env, niche.id, brandId);
     const accounts = await all(
@@ -1152,8 +1159,10 @@ async function api(request, env, context) {
     if (existing) {
       const result = await execute(
         env,
-        "UPDATE posts SET media_id=?,title=?,caption=?,destinations_json=?,overrides_json=?,source_group=?,brand_id=?,status='draft',delivery_status='draft',scheduled_at=NULL,approved_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
+        "UPDATE posts SET media_id=?,post_kind=?,media_ids_json=?,title=?,caption=?,destinations_json=?,overrides_json=?,source_group=?,brand_id=?,status='draft',delivery_status='draft',scheduled_at=NULL,approved_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
         mediaId,
+        postKind,
+        JSON.stringify(postKind === "carousel" ? mediaIds : []),
         title,
         caption,
         JSON.stringify([...new Set(destinations)]),
@@ -1171,10 +1180,12 @@ async function api(request, env, context) {
     } else
       await execute(
         env,
-        "INSERT INTO posts(id,niche_id,media_id,title,caption,destinations_json,overrides_json,source_group,brand_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO posts(id,niche_id,media_id,post_kind,media_ids_json,title,caption,destinations_json,overrides_json,source_group,brand_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         post,
         niche.id,
         mediaId,
+        postKind,
+        JSON.stringify(postKind === "carousel" ? mediaIds : []),
         title,
         caption,
         JSON.stringify([...new Set(destinations)]),
