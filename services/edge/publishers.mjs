@@ -56,7 +56,9 @@ export function validatePost(account, media, post, options, creator) {
       fail(400, "Choose YouTube visibility and the audience setting.");
   }
   if (p === "instagram") {
-    instagramCollaborator(account, media, options);
+    if (["carousel", "story"].includes(post.post_kind) && options.instagram_collaborator !== undefined)
+      fail(400, "Instagram collaborator invites are only available for Reels in Niches.");
+    if (!["carousel", "story"].includes(post.post_kind)) instagramCollaborator(account, media, options);
     if (caption.length > 2200)
       fail(400, "Instagram captions must be at most 2,200 characters.");
     if (!["video/mp4", "video/quicktime", "image/jpeg"].includes(media.mime))
@@ -129,6 +131,7 @@ export async function advancePublisher({
   account,
   token,
   media,
+  mediaList = [media],
   post,
   options,
   state,
@@ -269,18 +272,60 @@ export async function advancePublisher({
     const instagramGraph = account.connection_kind === "instagram_login"
       ? "https://graph.instagram.com"
       : graph(env);
+    // Each carousel child is created and polled independently. No provider write
+    // may be retried automatically after an uncertain response.
+    if (post.post_kind === "carousel") {
+      if (!state.phase || state.phase === "carousel-child") {
+        const index = state.index || 0;
+        const slide = mediaList[index];
+        if (!slide || !mediaURL) fail(409, "Carousel slide or grant is missing.");
+        const values = slide.mime.startsWith("video/")
+          ? { media_type: "VIDEO", video_url: mediaURL, is_carousel_item: true }
+          : { image_url: mediaURL, is_carousel_item: true };
+        const result = await providerJSON(
+          `${instagramGraph}/${account.provider_id}/media`,
+          { method:"POST", headers: {...headers, "Content-Type":"application/json"}, body:JSON.stringify(values) },
+          fetcher,
+        );
+        if (!result.id) fail(502, "Instagram omitted a carousel slide container.");
+        return { state: {phase:"carousel-check", index, children:[...(state.children || []), result.id]}, status:"processing" };
+      }
+      if (state.phase === "carousel-check") {
+        const childId = state.children?.[state.index];
+        if (!childId) fail(409, "Carousel progress is missing a child.");
+        const result = await providerJSON(
+          `${instagramGraph}/${childId}?fields=status_code`, {headers}, fetcher,
+        );
+        if (["ERROR","EXPIRED"].includes(result.status_code))
+          return {state, status:"failed", error:"Instagram could not process a carousel slide."};
+        if (["FINISHED","PUBLISHED"].includes(result.status_code)) {
+          const next = state.index + 1;
+          return { state: {...state, phase:next === mediaList.length ? "carousel-parent" : "carousel-child", index:next}, status:"processing" };
+        }
+        return {state, status:"processing"};
+      }
+      if (state.phase === "carousel-parent") {
+        const result = await providerJSON(
+          `${instagramGraph}/${account.provider_id}/media`,
+          {method:"POST", headers:{...headers,"Content-Type":"application/json"},
+           body:JSON.stringify({media_type:"CAROUSEL", children:state.children, caption:meta.caption})},
+          fetcher,
+        );
+        if (!result.id) fail(502, "Instagram omitted the carousel container.");
+        return {state:{phase:"container", container_id:result.id, children:state.children}, status:"processing"};
+      }
+    }
     if (!state.phase) {
-      const values = media.mime.startsWith("video/")
-        ? {
-            media_type: "REELS",
-            video_url: mediaURL,
-            caption: meta.caption,
-            ...(options.cover_url ? {} : {}),
-          }
-        : { image_url: mediaURL, caption: meta.caption };
-      const collaborator = instagramCollaborator(account, media, options);
+      const values = post.post_kind === "story"
+        ? (media.mime.startsWith("video/")
+            ? { media_type:"STORIES", video_url:mediaURL }
+            : { media_type:"STORIES", image_url:mediaURL })
+        : media.mime.startsWith("video/")
+          ? { media_type:"REELS", video_url:mediaURL, caption:meta.caption }
+          : { image_url:mediaURL, caption:meta.caption };
+      const collaborator = post.post_kind === "story" ? null : instagramCollaborator(account, media, options);
       if (collaborator) values.collaborators = [collaborator];
-      if (options.cover_ms !== undefined && media.mime.startsWith("video/"))
+      if (options.cover_ms !== undefined && media.mime.startsWith("video/") && post.post_kind !== "story")
         values.thumb_offset = options.cover_ms;
       const result = await providerJSON(
         `${instagramGraph}/${account.provider_id}/media`,
