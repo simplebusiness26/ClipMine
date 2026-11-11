@@ -33,6 +33,7 @@ const modules = [
   "db",
   "token-vault",
   "social-oauth", "brands",
+  "content-format",
   "publishers",
   "outbox",
 ].map((name) => ({ type: "ESModule", path: `services/edge/${name}.mjs` }));
