@@ -47,7 +47,10 @@ export interface Provider {
   status: string;
   reason: string;
 }
+export type PostKind = "auto" | "reel" | "image" | "carousel" | "story";
 export interface Post {
+  post_kind?: PostKind;
+  media_ids?: string[];
   publish_mode?: string;
   source_group?: string;
   brand_id?: string | null;
