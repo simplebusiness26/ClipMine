@@ -871,6 +871,12 @@ async function api(request, env, context) {
     );
     if (protectedPost)
       fail(409, "This file is used by an approved or published post. Review and cancel that post before deleting its media.");
+    const carouselDraft = await one(env,
+      "SELECT id FROM posts WHERE post_kind='carousel' AND (media_id=? OR EXISTS(SELECT 1 FROM json_each(posts.media_ids_json) WHERE value=?)) LIMIT 1",
+      media.id, media.id,
+    );
+    if (carouselDraft)
+      fail(409, "This slide belongs to a carousel draft. Remove it from the draft before deleting it.");
     // Delete private bytes before dropping the database index. If a subsequent
     // D1 transaction fails, retrying deletion can complete the cleanup safely.
     await env.MEDIA.delete(media.object_key);
@@ -1215,24 +1221,21 @@ async function api(request, env, context) {
       return json(result, 202);
     }
     if (postMatch[2] === "export" && method === "GET") {
-      const media = await one(
-        env,
-        "SELECT id,filename FROM media WHERE id=? AND niche_id=?",
-        post.media_id,
-        niche.id,
-      );
+      const assets = [];
+      for (const mediaId of mediaIdsFor(post)) {
+        const item = await one(env, "SELECT id,filename FROM media WHERE id=? AND niche_id=?", mediaId, niche.id);
+        if (item) assets.push({...item, download:`/api/niches/${niche.id}/media/${item.id}?download=1`});
+      }
+      const media = assets[0] || null;
       return json(
         {
           brand: niche.name,
           title: post.title,
           caption: post.caption,
           platforms: JSON.parse(post.overrides_json),
-          media: media
-            ? {
-                ...media,
-                download: `/api/niches/${niche.id}/media/${media.id}?download=1`,
-              }
-            : null,
+          post_kind: post.post_kind || "auto",
+          media,
+          media_items: assets,
           direct_publishing: false,
         },
         200,
