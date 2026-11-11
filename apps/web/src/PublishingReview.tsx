@@ -40,7 +40,7 @@ export default function PublishingReview({
     [creators, setCreators] = useState<Record<string, Creator>>({}),
     [mode, setMode] = useState<"now" | "schedule">("now"),
     [reviewed, setReviewed] = useState<{ key: string; plan: DeliveryPlan } | null>(null);
-  const planKey = [draft.id, draft.brand_id, ...draft.destinations].join(":");
+  const planKey = [draft.id, draft.brand_id, draft.post_kind, ...(draft.media_ids || []), ...draft.destinations].join(":");
   const plan = reviewed?.key === planKey ? reviewed.plan : null;
   const selected = accounts.filter((a) => draft.destinations.includes(a.id) || plan?.automatic === a.id);
   useEffect(() => {
@@ -89,6 +89,8 @@ export default function PublishingReview({
         "PATCH",
         {
           media_id: draft.media_id,
+          post_kind: draft.post_kind || "auto",
+          media_ids: draft.media_ids || [],
           title: draft.title,
           caption: draft.caption,
           overrides: draft.overrides,
@@ -152,6 +154,10 @@ export default function PublishingReview({
   return (
     <form onSubmit={submit}>
       <h3>{draft.title || "Untitled draft"}</h3>
+      <p className="n-muted">Format: {draft.post_kind === "image" ? "Photo / meme" :
+        draft.post_kind === "carousel" ? `Carousel · ${draft.media_ids?.length || 0} slides` :
+        draft.post_kind === "story" ? "Instagram Story" :
+        draft.post_kind === "reel" ? "Reel" : "Automatic / legacy"}</p>
       <p className="n-caption-preview">
         {draft.caption || "No master caption"}
       </p>
@@ -204,12 +210,14 @@ export default function PublishingReview({
             </p>
             {a.platform === "instagram" && (
               <p className="n-status-note">
-                Instagram publishes this Reel or post to the connected account.
+                Instagram publishes this {draft.post_kind === "story" ? "24-hour Story" :
+                  draft.post_kind === "carousel" ? "swipeable carousel" :
+                  draft.post_kind === "image" ? "feed image" : "Reel or post"} to the connected account.
                 There is no Private visibility option in this publishing flow.
                 Only confirm when you are ready for the post to go live.
               </p>
             )}
-            {a.platform === "instagram" && a.status === "connected" && !masterName && (
+            {a.platform === "instagram" && a.status === "connected" && !masterName && !["image","carousel","story"].includes(draft.post_kind || "auto") && (
               a.connection_kind === "instagram_login" ? (
                 <p className="n-muted">Collab invites require an Instagram connection through Meta. Direct Instagram Login can still publish ordinary Reels.</p>
               ) : (
@@ -365,7 +373,7 @@ export default function PublishingReview({
                 </p>
               </>
             )}
-            {["tiktok", "instagram"].includes(a.platform) && (
+            {["tiktok", "instagram"].includes(a.platform) && !["image", "carousel", "story"].includes(draft.post_kind || "auto") && (
               <label>
                 Video cover frame (milliseconds, optional)
                 <input type="number" min="0" step="1" name={`${a.id}_cover`} />

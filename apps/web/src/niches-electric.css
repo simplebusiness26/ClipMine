@@ -570,3 +570,15 @@ html:has(.n-electric) { color-scheme: dark; background: #05091a; }
   border-radius: 6px; background: #25315d; color: #b6c7ff; font-size: 12px;
 }
 .n-provider-settings > summary { cursor: pointer; padding: 10px 0; }
+
+/* Mobile-first ordered carousel composer: no nested retro cards. */
+.n-carousel-picker { display:grid; gap:10px; padding:14px 0; border-top:1px solid #344067; border-bottom:1px solid #344067; }
+.n-carousel-slide { display:flex; justify-content:space-between; align-items:center; gap:10px; min-width:0; padding:8px 0; border-bottom:1px solid #273154; }
+.n-carousel-slide span { overflow-wrap:anywhere; flex:1; min-width:0; font-size:.9rem; }
+.n-carousel-slide > div { display:flex; gap:5px; flex-shrink:0; }
+.n-carousel-slide button { min-width:32px; min-height:36px; padding:5px 8px; border-radius:6px; border:1px solid #485681; color:inherit; background:transparent; }
+.n-carousel-slide button:disabled { opacity:.35; cursor:not-allowed; }
+@media(max-width:500px) {
+ .n-carousel-slide { align-items:flex-start; flex-direction:column; }
+ .n-carousel-slide > div { align-self:flex-end; }
+}

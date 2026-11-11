@@ -1,4 +1,5 @@
 import { deliveryDestinations } from "./brands.mjs";
+import { mediaIdsFor, validateMediaKind } from "./content-format.mjs";
 import { id, now, hash, randomToken, fail, json } from "./security.mjs";
 import { execute, one, all } from "./db.mjs";
 import { seal, unseal } from "./token-vault.mjs";
@@ -36,6 +37,14 @@ export async function queuePost(env, user, niche, post, data) {
     niche.id,
   );
   if (!media) fail(400, "Upload media to this niche before publishing.");
+  const assets = [];
+  for (const mediaId of mediaIdsFor(post)) {
+    const asset = mediaId === media.id ? media : await one(
+      env, "SELECT * FROM media WHERE id=? AND niche_id=?", mediaId, niche.id,
+    );
+    if (!asset) fail(400, "A carousel slide is no longer available in this niche.");
+    assets.push(asset);
+  }
   const { selected, automatic } = await deliveryDestinations(env, niche, post);
   if (automatic !== (data.automatic_destination ?? null))
     fail(409, "Master Instagram changed. Refresh the draft and review destinations again.");
@@ -78,6 +87,7 @@ export async function queuePost(env, user, niche, post, data) {
       hasInstagramCollab ||= selected.instagram_collaborator !== undefined;
     }
 
+    validateMediaKind(post.post_kind || "auto", assets, a.platform);
     validatePost(
       a,
       media,
@@ -149,6 +159,41 @@ export async function queuePost(env, user, niche, post, data) {
       : "Publication queued. Each account’s result will appear in publish history.",
   };
 }
+export async function publishScheduledNow(env, user, niche, post, data) {
+  if (data.confirmed !== true)
+    fail(400, "Confirm that this scheduled post should publish now.");
+  const due = now();
+  const eligible = `id=? AND niche_id=? AND publish_mode='direct'
+    AND delivery_status='scheduled' AND scheduled_at>?
+    AND EXISTS (SELECT 1 FROM publications WHERE post_id=posts.id)
+    AND NOT EXISTS (
+      SELECT 1 FROM publications WHERE post_id=posts.id
+        AND (status<>'pending' OR submission_started<>0 OR attempt<>0
+          OR lease_until IS NOT NULL OR provider_post_id IS NOT NULL)
+    )`;
+  const args = [post.id, niche.id, due];
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO audit_events SELECT ?,?,?,?,?,?
+        WHERE EXISTS (SELECT 1 FROM posts WHERE ${eligible})`,
+    ).bind(id(), user.id, niche.id, "post.publish_now", post.id, due, ...args),
+    env.DB.prepare(
+      `UPDATE posts SET delivery_status='queued',scheduled_at=NULL,updated_at=?
+        WHERE ${eligible}`,
+    ).bind(due, ...args),
+    env.DB.prepare(
+      `UPDATE publications SET next_attempt_at=?,updated_at=?
+        WHERE post_id=? AND status='pending' AND attempt=0
+          AND submission_started=0 AND lease_until IS NULL
+          AND EXISTS (SELECT 1 FROM posts WHERE id=publications.post_id
+            AND niche_id=? AND delivery_status='queued' AND updated_at=?)`,
+    ).bind(due, due, post.id, niche.id, due),
+  ]);
+  if (!results[1].meta.changes)
+    fail(409, "This post is no longer waiting to publish. Refresh its delivery status.");
+  return { status: "queued" };
+}
+
 async function mediaGrant(env, media, pub) {
   const token = randomToken();
   await execute(
@@ -222,12 +267,14 @@ export async function refreshPostStatus(env, postId) {
     postId,
   );
 }
-export async function runOutbox(env, limit = 5, fetcher = fetch) {
+export async function runOutbox(env, limit = 5, fetcher = fetch, postId = null) {
   const jobs = await all(
     env,
-    "SELECT p.* FROM publications p JOIN posts s ON s.id=p.post_id WHERE s.publish_mode='direct' AND p.status IN ('pending','processing','retry') AND (p.next_attempt_at IS NULL OR p.next_attempt_at<=?) AND (p.lease_until IS NULL OR p.lease_until<?) ORDER BY p.updated_at LIMIT ?",
+    "SELECT p.* FROM publications p JOIN posts s ON s.id=p.post_id WHERE s.publish_mode='direct' AND p.status IN ('pending','processing','retry') AND (p.next_attempt_at IS NULL OR p.next_attempt_at<=?) AND (p.lease_until IS NULL OR p.lease_until<?) AND (? IS NULL OR p.post_id=?) ORDER BY p.updated_at LIMIT ?",
     now(),
     now(),
+    postId,
+    postId,
     limit,
   );
   for (const pub of jobs) {
@@ -246,17 +293,16 @@ export async function runOutbox(env, limit = 5, fetcher = fetch) {
           "SELECT * FROM accounts WHERE id=?",
           pub.account_id,
         ),
-        post = await one(env, "SELECT * FROM posts WHERE id=?", pub.post_id),
-        media = await one(
-          env,
-          "SELECT * FROM media WHERE id=? AND niche_id=?",
-          post.media_id,
-          post.niche_id,
-        );
+        post = await one(env, "SELECT * FROM posts WHERE id=?", pub.post_id);
+      const assets = [];
+      for (const mediaId of mediaIdsFor(post))
+        assets.push(await one(env, "SELECT * FROM media WHERE id=? AND niche_id=?", mediaId, post.niche_id));
+      const media = assets[0];
       if (
         !account ||
         account.niche_id !== post.niche_id ||
         !media ||
+        assets.some((asset) => !asset) ||
         !env.MEDIA
       )
         fail(409, "The media or account is no longer available in this niche.");
@@ -303,7 +349,7 @@ export async function runOutbox(env, limit = 5, fetcher = fetch) {
             : null;
       const phase = state.phase || "init",
         writes =
-          phase !== "poll" && phase !== "container" && phase !== "confirm";
+          phase !== "poll" && phase !== "container" && phase !== "confirm" && phase !== "carousel-check";
       if (writes) {
         state = { ...state, inflight: true };
         await execute(
@@ -318,12 +364,13 @@ export async function runOutbox(env, limit = 5, fetcher = fetch) {
         account,
         token,
         media,
+        mediaList: assets,
         post,
         options,
         state,
         creator,
-        mediaURL: ["init", "upload"].includes(phase)
-          ? await mediaGrant(env, media, pub)
+        mediaURL: ["init", "upload", "carousel-child"].includes(phase)
+          ? await mediaGrant(env, phase === "carousel-child" ? assets[state.index] : media, pub)
           : null,
         object: async (range) => {
           const object = await env.MEDIA.get(media.object_key, { range });
@@ -354,7 +401,7 @@ export async function runOutbox(env, limit = 5, fetcher = fetch) {
       );
     } catch (error) {
       const safeRead =
-        ["poll", "container", "confirm"].includes(state.phase) &&
+        ["poll", "container", "confirm", "carousel-check"].includes(state.phase) &&
         !state.inflight;
       const uncertain =
           !safeRead &&

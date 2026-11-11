@@ -37,6 +37,7 @@ before(async () => {
         "db",
         "token-vault",
         "social-oauth", "brands",
+        "content-format",
         "publishers",
         "outbox",
       ].map((name) => ({
