@@ -1604,9 +1604,18 @@ function Workspace({
                 <select aria-label="Content format" value={contentKind} onChange={(event) => {
                   const next = event.currentTarget.value as PostKind;
                   setContentKind(next);
-                  if (next === "carousel") setSelectedMediaIds((ids) => ids.length ? ids : selectedMedia ? [selectedMedia] : []);
-                  if (next === "carousel" || next === "story") setDestinations((ids) =>
-                    ids.filter((id) => accounts.find((a) => a.id === id)?.platform === "instagram"));
+                  const current = media.find((item) => item.id === selectedMedia);
+                  if (next === "carousel")
+                    setSelectedMediaIds((ids) => ids.length ? ids :
+                      current && ["image/jpeg", "video/mp4", "video/quicktime"].includes(current.mime) ? [current.id] : []);
+                  if (next === "reel" && current && !current.mime.startsWith("video/")) setSelectedMedia("");
+                  if (next === "image" && current && !current.mime.startsWith("image/")) setSelectedMedia("");
+                  if (next === "story" && current && !["image/jpeg", "video/mp4", "video/quicktime"].includes(current.mime))
+                    setSelectedMedia("");
+                  const allowedPlatforms = ["carousel", "story"].includes(next) ? ["instagram"] :
+                    next === "image" ? ["instagram", "facebook"] : ["instagram","facebook","tiktok","youtube"];
+                  setDestinations((ids) =>
+                    ids.filter((id) => allowedPlatforms.includes(accounts.find((a) => a.id === id)?.platform || "")));
                 }}>
                   <option value="auto">Automatic · existing publishing behaviour</option>
                   <option value="reel">Reel · vertical video</option>
@@ -1698,7 +1707,8 @@ function Workspace({
                   <label className="n-checkbox" key={a.id}>
                     <input
                       type="checkbox"
-                      disabled={a.status === "archived" || (instagramOnlyFormat && a.platform !== "instagram")}
+                      disabled={a.status === "archived" || (instagramOnlyFormat && a.platform !== "instagram") ||
+                        (contentKind === "image" && !["instagram", "facebook"].includes(a.platform))}
                       checked={destinations.includes(a.id)}
                       onChange={(e) =>
                         setDestinations((d) =>
