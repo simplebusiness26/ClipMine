@@ -280,6 +280,7 @@ try {
     const savedRow = page.locator(".n-post-row").filter({
       hasText: "My first original post",
     });
+    await savedRow.first().waitFor({state:"visible",timeout:15000});
     const destinations = savedRow.locator(".n-post-destination");
     if ((await destinations.count()) !== 5)
       throw new Error("Every saved post must label all five target accounts");
