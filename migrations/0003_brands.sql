@@ -1,4 +1,3 @@
--- Brand hierarchy is scoped to a niche; existing account and post IDs remain unchanged.
 CREATE TABLE brands (
  id TEXT PRIMARY KEY,
  niche_id TEXT NOT NULL REFERENCES niches(id),
@@ -12,7 +11,6 @@ CREATE TABLE brands (
 );
 CREATE INDEX brands_niche_status ON brands(niche_id,status,parent_brand_id);
 CREATE INDEX brands_archived ON brands(archived_at);
--- Every existing niche is given one initial master brand. No account tokens are changed.
 INSERT INTO brands(id,niche_id,name,parent_brand_id,is_master,status,created_at) SELECT 'legacy-' || id,id,name,NULL,1,'active',created_at FROM niches;
 ALTER TABLE accounts ADD COLUMN brand_id TEXT REFERENCES brands(id);
 ALTER TABLE posts ADD COLUMN brand_id TEXT REFERENCES brands(id);
