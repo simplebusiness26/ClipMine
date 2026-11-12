@@ -26,6 +26,7 @@ export interface SocialAccount {
   status: string;
   provider_id?: string;
   connection_kind?: string;
+  brand_id?: string | null;
 }
 export interface Provider {
   oauth_ready?: boolean;
