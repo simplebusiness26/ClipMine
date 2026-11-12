@@ -229,6 +229,10 @@ test("master release retains real brand hierarchy, social authorisations and sch
   const after=(await checked(`/api/niches/${workspace}/brands`,{cookie:first})).data;
   assert.equal(after.find(b=>b.id===child.id).parent_id,null);
   assert.equal(after.find(b=>b.id===master.id).is_master,1);
+  const reattached=(await checked(`/api/niches/${workspace}/brands/${child.id}`,{
+    method:"PATCH",cookie:first,data:{parent_id:master.id},
+  })).data;
+  assert.equal(reattached.parent_id,master.id);
 });
 
 test("validate uploads and keep object bytes private across users and niches", async () => {
