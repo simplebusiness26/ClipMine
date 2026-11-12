@@ -1,6 +1,7 @@
 import PostHistory from "./PostHistory";
 import { parseBatchArchive } from "./batch-zip";
 import SocialAccounts from "./SocialAccounts";
+import BrandManagement from "./BrandManagement";
 import PublishingReview from "./PublishingReview";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import ClipMine from "./App";
@@ -28,13 +29,14 @@ const tabs = [
   "Calendar",
   "Analytics",
   "Accounts",
+  "Brands",
   "Ideas",
   "Revenue",
   "Settings",
   "ClipMine",
 ] as const;
 type Tab = (typeof tabs)[number];
-const symbols = ["◈", "▦", "+", "▤", "↗", "▦", "↗", "◎", "✧", "£", "⚙", "▷"];
+const symbols = ["◈", "▦", "+", "▤", "↗", "▦", "↗", "◎", "▣", "✧", "£", "⚙", "▷"];
 const date = (value: string) =>
   new Date(value).toLocaleString(undefined, {
     dateStyle: "medium",
@@ -1538,6 +1540,9 @@ function Workspace({
           providers={providers}
           onChanged={changed}
         />
+      )}
+      {tab === "Brands" && (
+        <BrandManagement nicheId={niche.id} accounts={accounts} onChanged={changed} />
       )}
       {tab === "Analytics" && (
         <>
