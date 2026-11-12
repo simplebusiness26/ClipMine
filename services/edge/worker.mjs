@@ -525,6 +525,12 @@ async function api(request, env, context) {
       fail(400, "Choose a supported platform.");
     const label = textValue(data.display_name, 100, true),
       handle = textValue(data.handle, 100, true).replace(/^@/, "");
+    const brand = await one(env,
+      data.brand_id
+        ? "SELECT id FROM brands WHERE id=? AND niche_id=? AND status='active'"
+        : "SELECT id FROM brands WHERE niche_id=? AND ? IS NULL AND status='active' ORDER BY is_master DESC,created_at LIMIT 1",
+      data.brand_id || niche.id, data.brand_id ? niche.id : null);
+    if (!brand) fail(400, "Choose an active brand in this niche.");
     const existing = await one(
       env,
       "SELECT id FROM accounts WHERE niche_id=? AND platform=? AND provider_id=?",
@@ -546,19 +552,21 @@ async function api(request, env, context) {
     const account = id();
     await execute(
       env,
-      "INSERT INTO accounts(id,niche_id,platform,display_name,provider_id,status,connection_kind,created_at) VALUES (?,?,?,?,?,'disconnected','manual',?)",
+      "INSERT INTO accounts(id,niche_id,platform,display_name,provider_id,status,connection_kind,created_at,brand_id) VALUES (?,?,?,?,?,'disconnected','manual',?,?)",
       account,
       niche.id,
       data.platform,
       label,
       "manual:" + handle.toLowerCase(),
       now(),
+      brand.id,
     );
     await audit(env, user.id, niche.id, "account.added", account);
     return json(
       {
         id: account,
         status: "disconnected",
+        brand_id: brand.id,
         message:
           "Account added for planning. Authorise it before direct publishing.",
       },
