@@ -195,6 +195,7 @@ export async function beginOAuth(request, env, user, niche, p) {
     Object.assign(params, {
       client_key: c.id,
       scope: "user.info.basic,video.publish,video.upload",
+      disable_auto_auth: "1",
     });
   else if (p === "instagram" && env.INSTAGRAM_CONFIG_ID)
     Object.assign(params, {

@@ -4,7 +4,7 @@ Updated: 4 November 2026
 
 ## 1. Who provides Niches
 
-The service is operated under the name **Niches** (“we”, “us”). Contact for support, complaints and these terms: **Craigs.cartoons98@gmail.com**.
+The service is operated under the name **Niches** (“we”, “us”). Contact for support, complaints and these terms: **<Craigs.cartoons98@gmail.com>**.
 
 ## 2. The service
 

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { advancePublisher, validatePost } from "./publishers.mjs";
 import { refreshPostStatus } from "./outbox.mjs";
+import { beginOAuth } from "./social-oauth.mjs";
 
 const account = { platform: "tiktok" };
 const media = { mime: "video/mp4", duration_seconds: 17, size: 4096 };
@@ -16,6 +17,21 @@ const reply = (data) => new Response(JSON.stringify({ data, error: { code: "ok" 
 const input = (options = inboxOptions, state = {}) => ({
   env: {}, account, media, post, options, state, creator: null,
   token: "fixture-token", mediaURL: "https://example.test/owned-video",
+});
+
+test("TikTok reconnect shows the account and permission confirmation screen", async () => {
+  const env = {
+    APP_URL: "https://example.test", TIKTOK_CLIENT_KEY: "fixture-client",
+    TIKTOK_CLIENT_SECRET: "fixture-secret", NICHES_TOKEN_KEY: "ab".repeat(32),
+    DB: { prepare: () => ({ bind: () => ({ run: async () => ({}) }) }) },
+  };
+  const response = await beginOAuth(new Request("https://example.test/connect", {
+    headers: { Cookie: "niches_session=fixture-session", Accept: "text/html" },
+  }), env, { id: "fixture-owner" }, { id: "fixture-niche" }, "tiktok");
+  const location = new URL(response.headers.get("location"));
+  assert.equal(location.origin, "https://www.tiktok.com");
+  assert.equal(location.searchParams.get("disable_auto_auth"), "1");
+  assert.equal(location.searchParams.get("scope"), "user.info.basic,video.publish,video.upload");
 });
 
 test("TikTok inbox upload requires its own explicit transfer consent", () => {
