@@ -27,6 +27,8 @@ export interface Brand {
   name: string;
   parent_id: string | null;
   auto_instagram: number;
+  is_master?: number;
+  archived_at?: string | null;
 }
 export interface SocialAccount {
   id: string;

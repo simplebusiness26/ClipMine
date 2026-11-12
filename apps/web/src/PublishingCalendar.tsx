@@ -16,7 +16,7 @@ function localKey(value: Date): string {
 
 function postDate(post: Post): Date | null {
   // Drafts without a chosen date cannot be placed on a calendar.
-  const fallback = ["published", "partial", "failed", "needs_review", "cancelled", "export_ready", "queued", "pending", "processing", "retry"].includes(post.status);
+  const fallback = ["published", "inbox_delivered", "partial", "failed", "needs_review", "cancelled", "export_ready", "queued", "pending", "processing", "retry"].includes(post.status);
   const source = post.scheduled_at || (fallback ? post.updated_at : null);
   if (!source) return null;
   const parsed = new Date(source);
@@ -33,7 +33,7 @@ function isOverdue(post: Post, now: number): boolean {
 function tone(post: Post, now: number): Tone {
   if (["partial", "failed", "needs_review", "blocked"].includes(post.status) || isOverdue(post, now)) return "issues";
   if (post.status === "published") return "published";
-  if (post.status === "export_ready") return "reminder";
+  if (["export_ready", "inbox_delivered"].includes(post.status)) return "reminder";
   if (post.status === "scheduled") return "scheduled";
   if (["queued", "processing", "pending", "retry"].includes(post.status)) return "working";
   return "cancelled";
@@ -43,6 +43,7 @@ function stateLabel(post: Post, now: number): string {
   if (isOverdue(post, now)) return "Past due · check publishing status";
   if (post.status === "needs_review") return "Needs review · check platform";
   if (post.status === "export_ready") return "Export reminder ready";
+  if (post.status === "inbox_delivered") return "Delivered to TikTok inbox";
   if (post.status === "partial") return "Partially published · check deliveries";
   return post.status.replaceAll("_", " ");
 }
@@ -136,7 +137,8 @@ export default function PublishingCalendar({
   const monthEntries = platformEntries.filter((entry) => entry.key.startsWith(monthPrefix));
   const counts = {
     scheduled: monthEntries.filter((entry) => tone(entry.post, now) === "scheduled").length,
-    reminders: monthEntries.filter((entry) => tone(entry.post, now) === "reminder").length,
+    reminders: monthEntries.filter((entry) => entry.post.status === "export_ready").length,
+    inbox: monthEntries.filter((entry) => entry.post.status === "inbox_delivered").length,
     published: monthEntries.filter((entry) => tone(entry.post, now) === "published").length,
     issues: monthEntries.filter((entry) => tone(entry.post, now) === "issues").length,
   };
@@ -219,6 +221,7 @@ export default function PublishingCalendar({
         <span className="n-calendar-count published"><b>{counts.published}</b> Published</span>
         <span className="n-calendar-count issues"><b>{counts.issues}</b> Problems / past due</span>
         {counts.reminders > 0 && <span className="n-calendar-count reminder"><b>{counts.reminders}</b> Export reminders ready</span>}
+        {counts.inbox > 0 && <span className="n-calendar-count reminder"><b>{counts.inbox}</b> TikTok drafts delivered</span>}
       </div>
 
       <div className="n-calendar-nav">
