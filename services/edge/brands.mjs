@@ -20,9 +20,22 @@ export async function saveBrand(env, nicheId, data, brandId) {
     if (data.auto_instagram !== undefined &&
         (!brand.is_master || typeof data.auto_instagram !== "boolean"))
       fail(400, "Set automatic Instagram distribution on the master brand.");
+    let parent = brand.parent_id;
+    if(data.parent_id !== undefined) {
+      parent = data.parent_id || null;
+      if(brand.is_master && parent)
+        fail(400, "A master brand cannot belong to another brand.");
+      if(parent === brand.id) fail(400, "A brand cannot parent itself.");
+      if(parent) {
+        const parentBrand=await one(env,
+          "SELECT id FROM brands WHERE id=? AND niche_id=? AND is_master=1 AND archived_at IS NULL",
+          parent,nicheId);
+        if(!parentBrand) fail(400, "Choose an active master brand in this niche.");
+      }
+    }
     const result = await execute(env,
-      "UPDATE OR IGNORE brands SET name=?,auto_instagram=? WHERE id=? AND niche_id=?",
-      name, Number(data.auto_instagram ?? brand.auto_instagram), brand.id, nicheId);
+      "UPDATE OR IGNORE brands SET name=?,auto_instagram=?,parent_id=? WHERE id=? AND niche_id=? AND archived_at IS NULL",
+      name, Number(data.auto_instagram ?? brand.auto_instagram), parent, brand.id, nicheId);
     if (!result.meta.changes) fail(409, "That brand name is already in use.");
     return brandFor(env, nicheId, brand.id);
   }
