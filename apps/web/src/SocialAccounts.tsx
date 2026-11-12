@@ -557,7 +557,7 @@ export default function SocialAccounts({
             <div><strong>{b.name}</strong><small> · Archived {new Date(b.archived_at).toLocaleDateString()}</small></div>
             <button disabled={busy} onClick={()=>void restoreMaster(b.id)}>Restore</button>
           </div>)}
-        </section>
+        </section>}
       </section>
       <details className="n-provider-settings" open={!brands.length}>
         <summary>Platform connections and setup</summary>
