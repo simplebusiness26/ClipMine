@@ -1,5 +1,3 @@
--- Preserve the existing brand schema, account IDs, social credentials and publishing queue.
--- Multiple standalone brands are now allowed; only one active master per niche.
 ALTER TABLE brands ADD COLUMN is_master INTEGER NOT NULL DEFAULT 0 CHECK(is_master IN (0,1));
 ALTER TABLE brands ADD COLUMN archived_at TEXT;
 UPDATE brands SET is_master=1 WHERE parent_id IS NULL;
