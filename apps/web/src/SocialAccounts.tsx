@@ -1,5 +1,11 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { call, type SocialAccount, type Provider, type Brand } from "./niches-api";
+type ReleasePreview = {
+  master: {id:string;name:string};
+  child_brands: {id:string;name:string}[];
+  direct_accounts:number; direct_posts:number; scheduled_posts:number;
+};
+type ArchivedMaster = {id:string;name:string;archived_at:string};
 function MetaConnectLink({
   url,
   label,
@@ -48,7 +54,12 @@ export default function SocialAccounts({
     [choices, setChoices] = useState<
       { id: string; name: string; platform: string; existing?: string; single?: boolean }[] | null
     >(null),
-    [selected, setSelected] = useState<string[]>([]);
+    [selected, setSelected] = useState<string[]>([]),
+    [releasePreview, setReleasePreview] = useState<ReleasePreview | null>(null),
+    [archived, setArchived] = useState<ArchivedMaster[]>([]),
+    [confirmName, setConfirmName] = useState(""),
+    [confirmRelease, setConfirmRelease] = useState(""),
+    [releaseStatus, setReleaseStatus] = useState("");
   // The setup modal offers a planning account, not an OAuth connection.
   // Reveal the actual form after closing the modal so mobile users can see it.
   useEffect(() => {
@@ -59,6 +70,48 @@ export default function SocialAccounts({
   }, [showAdd, setup]);
   const ticket = new URLSearchParams(location.search).get("connect_ticket");
   const base = `/api/niches/${nicheId}`;
+  const loadArchived = async () => setArchived(await call<ArchivedMaster[]>(base + "/brands/archived"));
+  useEffect(() => {
+    setReleasePreview(null);
+    void loadArchived().catch(() => {});
+  }, [nicheId]);
+  async function showReleasePreview(brand: Brand) {
+    setError("");
+    setBusy(true);
+    try {
+      const data = await call<ReleasePreview>(`${base}/brands/${brand.id}/release-preview`);
+      setReleasePreview(data);
+      setConfirmName("");
+      setConfirmRelease("");
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+  async function confirmMasterRelease() {
+    if (!releasePreview || confirmName !== releasePreview.master.name || confirmRelease !== "RELEASE") return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await call<{ released_child_brands: number; transferred_accounts: number }>(
+        `${base}/brands/${releasePreview.master.id}/release`, "POST",
+        { confirm: "RELEASE", name: releasePreview.master.name });
+      setReleaseStatus(`Master archived. ${result.released_child_brands} child brands released and ${result.transferred_accounts} direct social accounts preserved.`);
+      setReleasePreview(null);
+      await loadArchived();
+      onChanged();
+    } catch(e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+  async function restoreMaster(id: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await call(`${base}/brands/${id}/restore`, "POST", {});
+      setReleaseStatus("Master restored. Released brands remain independent until you move them back.");
+      await loadArchived();
+      onChanged();
+    } catch(e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
   // The provider returns via a full-page redirect; without this explicit
   // acknowledgement the user appears to land back on an unchanged Accounts tab.
   useEffect(() => {
@@ -258,7 +311,8 @@ export default function SocialAccounts({
       <details className={brand.parent_id ? "n-brand-tree-row n-brand-child" : "n-brand-tree-row n-brand-master"} key={brand.id}>
         <summary>
           <strong>{brand.name}</strong>
-          {!brand.parent_id && <span className="n-badge">Master brand</span>}
+          {!!brand.is_master && <span className="n-badge">Master brand</span>}
+          {!brand.parent_id && !brand.is_master && <span className="n-badge">Independent</span>}
           <small>{connected} connected {connected === 1 ? "platform" : "platforms"}</small>
         </summary>
         <div className="n-brand-body">
@@ -266,7 +320,7 @@ export default function SocialAccounts({
             <button type="button" onClick={() => onCreatePost(brand.id)}>Create post</button>
             <button type="button" onClick={() => { setAddBrandId(brand.id); setShowAdd(true); }}>Add planned account</button>
           </div>
-          {!brand.parent_id && (
+          {!!brand.is_master && (
             <label className="n-checkbox">
               <input type="checkbox" checked={!!brand.auto_instagram} disabled={busy}
                 onChange={(event) => void change(`/brands/${brand.id}`, "PATCH", { auto_instagram: event.currentTarget.checked })} />
@@ -274,6 +328,20 @@ export default function SocialAccounts({
             </label>
           )}
           {members.map(renderAccount)}
+          {!brand.is_master && <label>
+            Parent master
+            <select aria-label={`Parent for ${brand.name}`} disabled={busy}
+              value={brand.parent_id || ""}
+              onChange={event=>void change(`/brands/${brand.id}`, "PATCH", {parent_id:event.currentTarget.value || null})}>
+              <option value="">Independent brand</option>
+              {brands.filter(b=>!!b.is_master).map(b=>
+                <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          </label>}
+          {!!brand.is_master && <button type="button" disabled={busy}
+            onClick={() => void showReleasePreview(brand)}>
+            Release sub-brands &amp; archive master
+          </button>}
           <details className="n-brand-manage">
             <summary>Connect or manage</summary>
             <div className="n-actions">
@@ -327,6 +395,33 @@ export default function SocialAccounts({
             {error}
           </p>
         )}
+        {releaseStatus && <p className="n-status-note" role="status">{releaseStatus}</p>}
+        {releasePreview && <section className="n-panel" role="dialog" aria-modal="true"
+          aria-label="Review master brand release" style={{border:"2px solid #ae8240",borderRadius:12}}>
+          <h3>Release {releasePreview.master.name}?</h3>
+          <p>This archives the master for 30 days. All child brands become independent.
+            Its own accounts and posts move to an independent brand without disconnecting social accounts.</p>
+          <ul>
+            <li>{releasePreview.child_brands.length} sub-brands released</li>
+            <li>{releasePreview.direct_accounts} directly connected accounts preserved</li>
+            <li>{releasePreview.direct_posts} directly owned posts preserved</li>
+            <li>{releasePreview.scheduled_posts} scheduled/queued posts retain the same destinations and times</li>
+          </ul>
+          <p>This stops master-to-child automatic Instagram distribution, but does not cancel scheduled deliveries.</p>
+          <label>Type the master brand name
+            <input value={confirmName} onChange={e=>setConfirmName(e.target.value)}
+              placeholder={releasePreview.master.name} />
+          </label>
+          <label>Type RELEASE
+            <input value={confirmRelease} onChange={e=>setConfirmRelease(e.target.value)} placeholder="RELEASE" />
+          </label>
+          <div className="n-actions">
+            <button type="button" disabled={busy} onClick={()=>setReleasePreview(null)}>Cancel</button>
+            <button type="button" className="n-primary"
+              disabled={busy || confirmName!==releasePreview.master.name || confirmRelease!=="RELEASE"}
+              onClick={()=>void confirmMasterRelease()}>Release &amp; archive master</button>
+          </div>
+        </section>}
         {connectionFeedback && (
           <p className={connectionFeedback.failed ? "n-error" : "n-status-note"} role="alert">
             {connectionFeedback.message}
@@ -447,11 +542,32 @@ export default function SocialAccounts({
         <form className="n-brand-create" onSubmit={async (event) => {
           event.preventDefault();
           const form = event.currentTarget;
-          if (await change("/brands", "POST", { name: new FormData(form).get("name") })) form.reset();
+          const fields = new FormData(form);
+          const kind = fields.get("kind");
+          if (await change("/brands", "POST", {
+            name: fields.get("name"),
+            is_master: kind === "master",
+            independent: kind === "independent",
+          })) form.reset();
         }}>
-          <label>{brands.length ? "New brand name" : "Master brand name"}<input name="name" maxLength={80} required /></label>
-          <button type="submit" disabled={busy}>{brands.length ? "Add brand" : "Create master brand"}</button>
+          <label>New brand name<input name="name" maxLength={80} required /></label>
+          <label>Brand type
+            <select name="kind" defaultValue={brands.some(b=>b.is_master)?"sub":"master"}>
+              {!brands.some(b=>b.is_master) && <option value="master">Master brand</option>}
+              {brands.some(b=>b.is_master) && <option value="sub">Sub-brand</option>}
+              <option value="independent">Independent brand</option>
+            </select>
+          </label>
+          <button type="submit" disabled={busy}>Create brand</button>
         </form>
+        {archived.length>0 && <section className="n-panel" aria-label="Archived master brands">
+          <h3>Recently archived masters</h3>
+          <p>Restore within 30 days. Released children stay independent until reassigned.</p>
+          {archived.map(b=><div key={b.id} className="n-post-row">
+            <div><strong>{b.name}</strong><small> · Archived {new Date(b.archived_at).toLocaleDateString()}</small></div>
+            <button disabled={busy} onClick={()=>void restoreMaster(b.id)}>Restore</button>
+          </div>)}
+        </section>}
       </section>
       <details className="n-provider-settings" open={!brands.length}>
         <summary>Platform connections and setup</summary>

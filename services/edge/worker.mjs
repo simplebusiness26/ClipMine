@@ -1,4 +1,4 @@
-import { brandFor, listBrands, saveBrand, deliveryDestinations } from "./brands.mjs";
+import { brandFor, listBrands, saveBrand, deliveryDestinations, masterReleasePreview, archivedMasters, releaseMaster, restoreMaster } from "./brands.mjs";
 import { withMedia } from "./kv-media.mjs";
 import { resetEmailReady, sendResetEmail } from "./reset-email.mjs";
 import {
@@ -523,6 +523,19 @@ async function api(request, env, context) {
   if (sub === "brands") {
     if (method === "GET") return json(await listBrands(env, niche.id));
     if (method === "POST") return json(await saveBrand(env, niche.id, await body(request)), 201);
+  }
+  if (sub === "brands/archived" && method === "GET")
+    return json(await archivedMasters(env, niche.id));
+  const brandReleaseRoute = sub.match(/^brands\/([a-zA-Z0-9-]+)\/(release-preview|release|restore)$/);
+  if (brandReleaseRoute) {
+    const brandId=brandReleaseRoute[1], action=brandReleaseRoute[2];
+    if (action === "release-preview" && method === "GET")
+      return json(await masterReleasePreview(env, niche.id, brandId));
+    if (action === "release" && method === "POST")
+      return json(await releaseMaster(env, user.id, niche.id, brandId, await body(request)));
+    if (action === "restore" && method === "POST")
+      return json(await restoreMaster(env, user.id, niche.id, brandId));
+    fail(405, "Method not allowed.");
   }
   const brandRoute = sub.match(/^brands\/([a-zA-Z0-9-]+)$/);
   if (brandRoute && method === "PATCH")
