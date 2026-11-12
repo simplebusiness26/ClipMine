@@ -140,7 +140,7 @@ export default function BrandManagement({
                   {" · "}{brand.account_count} accounts · {brand.post_count} posts
                 </p>
               </div>
-              {brand.is_master && (
+              {!!brand.is_master && (
                 <button type="button" disabled={busy} onClick={() => void showPreview(brand)}>
                   Release &amp; archive
                 </button>
