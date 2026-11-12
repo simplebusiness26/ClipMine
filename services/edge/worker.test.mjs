@@ -39,6 +39,7 @@ before(async () => {
         "social-oauth",
         "publishers",
         "outbox",
+        "brands",
       ].map((name) => ({
         type: "ESModule",
         path: `services/edge/${name}.mjs`,
