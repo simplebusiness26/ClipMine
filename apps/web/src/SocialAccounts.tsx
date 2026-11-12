@@ -328,6 +328,16 @@ export default function SocialAccounts({
             </label>
           )}
           {members.map(renderAccount)}
+          {!brand.is_master && <label>
+            Parent master
+            <select aria-label={`Parent for ${brand.name}`} disabled={busy}
+              value={brand.parent_id || ""}
+              onChange={event=>void change(`/brands/${brand.id}`, "PATCH", {parent_id:event.currentTarget.value || null})}>
+              <option value="">Independent brand</option>
+              {brands.filter(b=>!!b.is_master).map(b=>
+                <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          </label>}
           {!!brand.is_master && <button type="button" disabled={busy}
             onClick={() => void showReleasePreview(brand)}>
             Release sub-brands &amp; archive master
