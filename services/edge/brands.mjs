@@ -28,7 +28,8 @@ export async function saveBrand(env, nicheId, data, brandId) {
   }
   const master = await one(env, "SELECT id FROM brands WHERE niche_id=? AND is_master=1 AND archived_at IS NULL", nicheId);
   const newId = id();
-  const isMaster = data.is_master === true;
+  const isMaster = data.is_master === true ||
+    (data.is_master === undefined && !master && data.independent !== true);
   if (isMaster && master) fail(409, "This niche already has an active master.");
   const parent = isMaster || data.independent === true ? null : (master?.id ?? null);
   const result = await execute(env,
