@@ -24,6 +24,7 @@ const mf = new Miniflare(
       "social-oauth",
       "publishers",
       "outbox",
+        "brands",
     ].map((name) => ({ type: "ESModule", path: `services/edge/${name}.mjs` })),
     compatibilityDate: "2026-09-01",
     d1Databases: ["DB"],

@@ -8,7 +8,7 @@ test("KV-only Worker accepts private uploads and supports authenticated ranges",
     convertV4MiniflareOptions({
       modules: [
         "worker", "kv-media", "reset-email", "security", "db", "token-vault",
-        "social-oauth", "publishers", "outbox",
+        "social-oauth", "publishers", "outbox", "brands",
       ].map((name) => ({ type: "ESModule", path: "services/edge/" + name + ".mjs" })),
       compatibilityDate: "2026-09-01",
       d1Databases: ["DB"],

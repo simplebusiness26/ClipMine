@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD034 -->
 # Niches Privacy Policy
 
 Updated: 4 November 2026

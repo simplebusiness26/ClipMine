@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD034 -->
 # Craig's Cartoons reusable renderer
 
 This preserves the original Python/Pillow cartoon cast and FFmpeg export path.

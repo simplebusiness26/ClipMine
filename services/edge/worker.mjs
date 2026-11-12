@@ -1,4 +1,5 @@
 import { withMedia } from "./kv-media.mjs";
+import { brandRoute } from "./brands.mjs";
 import { resetEmailReady, sendResetEmail } from "./reset-email.mjs";
 import {
   providerInfo,
@@ -451,17 +452,14 @@ async function api(request, env, context) {
       const colour = /^#[a-f0-9]{6}$/i.test(data.colour || "")
         ? data.colour
         : "#c6f66b";
-      await execute(
-        env,
-        "INSERT INTO niches(id,user_id,name,description,colour,initials,created_at) VALUES (?,?,?,?,?,?,?)",
-        niche,
-        user.id,
-        name,
-        textValue(data.description || "", 500),
-        colour,
-        name.slice(0, 2).toUpperCase(),
-        now(),
-      );
+      const created = now();
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO niches(id,user_id,name,description,colour,initials,created_at) VALUES (?,?,?,?,?,?,?)")
+          .bind(niche, user.id, name, textValue(data.description || "", 500),
+            colour, name.slice(0, 2).toUpperCase(), created),
+        env.DB.prepare("INSERT INTO brands(id,niche_id,name,parent_brand_id,is_master,status,created_at) VALUES (?,?,?,NULL,1,'active',?)")
+          .bind("legacy-" + niche, niche, name, created),
+      ]);
       await audit(env, user.id, niche, "niche.created", niche);
       return json(await nicheFor(env, user.id, niche), 201);
     }
@@ -510,6 +508,9 @@ async function api(request, env, context) {
       return json(await nicheFor(env, user.id, niche.id));
     }
   }
+  if (sub === "brands" || sub.startsWith("brands/") ||
+      /^accounts\/[a-zA-Z0-9-]+\/brand$/.test(sub))
+    return brandRoute(request, env, user, niche, sub, body);
   if (sub === "accounts" && method === "GET")
     return json(
       await all(
@@ -524,6 +525,12 @@ async function api(request, env, context) {
       fail(400, "Choose a supported platform.");
     const label = textValue(data.display_name, 100, true),
       handle = textValue(data.handle, 100, true).replace(/^@/, "");
+    const brand = await one(env,
+      data.brand_id
+        ? "SELECT id FROM brands WHERE id=? AND niche_id=? AND status='active'"
+        : "SELECT id FROM brands WHERE niche_id=? AND ? IS NULL AND status='active' ORDER BY is_master DESC,created_at LIMIT 1",
+      data.brand_id || niche.id, data.brand_id ? niche.id : null);
+    if (!brand) fail(400, "Choose an active brand in this niche.");
     const existing = await one(
       env,
       "SELECT id FROM accounts WHERE niche_id=? AND platform=? AND provider_id=?",
@@ -545,19 +552,21 @@ async function api(request, env, context) {
     const account = id();
     await execute(
       env,
-      "INSERT INTO accounts(id,niche_id,platform,display_name,provider_id,status,connection_kind,created_at) VALUES (?,?,?,?,?,'disconnected','manual',?)",
+      "INSERT INTO accounts(id,niche_id,platform,display_name,provider_id,status,connection_kind,created_at,brand_id) VALUES (?,?,?,?,?,'disconnected','manual',?,?)",
       account,
       niche.id,
       data.platform,
       label,
       "manual:" + handle.toLowerCase(),
       now(),
+      brand.id,
     );
     await audit(env, user.id, niche.id, "account.added", account);
     return json(
       {
         id: account,
         status: "disconnected",
+        brand_id: brand.id,
         message:
           "Account added for planning. Authorise it before direct publishing.",
       },
@@ -1065,6 +1074,24 @@ async function api(request, env, context) {
         caption: textValue(value.caption || "", 10000),
       };
     }
+    // Posts inherit the brand of a common destination. A mixed-brand post
+    // remains owned by a master unless its owner is explicitly selected.
+    let brandId = existing?.brand_id || null;
+    if (data.brand_id) {
+      const owner = await one(env, "SELECT id FROM brands WHERE id=? AND niche_id=? AND status='active'", data.brand_id, niche.id);
+      if (!owner) fail(400, "Choose an active brand for this post.");
+      brandId = owner.id;
+    } else if (!existing) {
+      const match = await one(env,
+        "SELECT COUNT(DISTINCT brand_id) AS total,MIN(brand_id) AS brand_id FROM accounts WHERE niche_id=? AND id IN (SELECT value FROM json_each(?))",
+        niche.id, JSON.stringify(destinations));
+      if (match.total === 1) brandId = match.brand_id;
+      else {
+        const root = await one(env,
+          "SELECT id FROM brands WHERE niche_id=? AND status='active' ORDER BY is_master DESC,created_at LIMIT 1", niche.id);
+        brandId = root?.id || null;
+      }
+    }
     const title = textValue(data.title || "", 120),
       caption = textValue(data.caption || "", 10000),
       post = existing?.id || id(),
@@ -1072,12 +1099,13 @@ async function api(request, env, context) {
     if (existing) {
       const result = await execute(
         env,
-        "UPDATE posts SET media_id=?,title=?,caption=?,destinations_json=?,overrides_json=?,status='draft',delivery_status='draft',scheduled_at=NULL,approved_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
+        "UPDATE posts SET media_id=?,title=?,caption=?,destinations_json=?,overrides_json=?,brand_id=?,status='draft',delivery_status='draft',scheduled_at=NULL,approved_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
         mediaId,
         title,
         caption,
         JSON.stringify([...new Set(destinations)]),
         JSON.stringify(overrides),
+        brandId,
         stamp,
         post,
       );
@@ -1089,7 +1117,7 @@ async function api(request, env, context) {
     } else
       await execute(
         env,
-        "INSERT INTO posts(id,niche_id,media_id,title,caption,destinations_json,overrides_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO posts(id,niche_id,media_id,title,caption,destinations_json,overrides_json,created_at,updated_at,brand_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
         post,
         niche.id,
         mediaId,
@@ -1099,6 +1127,7 @@ async function api(request, env, context) {
         JSON.stringify(overrides),
         stamp,
         stamp,
+        brandId,
       );
     await audit(env, user.id, niche.id, "draft.saved", post);
     return json(
