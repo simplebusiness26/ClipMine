@@ -1074,6 +1074,24 @@ async function api(request, env, context) {
         caption: textValue(value.caption || "", 10000),
       };
     }
+    // Posts inherit the brand of a common destination. A mixed-brand post
+    // remains owned by a master unless its owner is explicitly selected.
+    let brandId = existing?.brand_id || null;
+    if (data.brand_id) {
+      const owner = await one(env, "SELECT id FROM brands WHERE id=? AND niche_id=? AND status='active'", data.brand_id, niche.id);
+      if (!owner) fail(400, "Choose an active brand for this post.");
+      brandId = owner.id;
+    } else if (!existing) {
+      const match = await one(env,
+        "SELECT COUNT(DISTINCT brand_id) AS total,MIN(brand_id) AS brand_id FROM accounts WHERE niche_id=? AND id IN (SELECT value FROM json_each(?))",
+        niche.id, JSON.stringify(destinations));
+      if (match.total === 1) brandId = match.brand_id;
+      else {
+        const root = await one(env,
+          "SELECT id FROM brands WHERE niche_id=? AND status='active' ORDER BY is_master DESC,created_at LIMIT 1", niche.id);
+        brandId = root?.id || null;
+      }
+    }
     const title = textValue(data.title || "", 120),
       caption = textValue(data.caption || "", 10000),
       post = existing?.id || id(),
@@ -1081,12 +1099,13 @@ async function api(request, env, context) {
     if (existing) {
       const result = await execute(
         env,
-        "UPDATE posts SET media_id=?,title=?,caption=?,destinations_json=?,overrides_json=?,status='draft',delivery_status='draft',scheduled_at=NULL,approved_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
+        "UPDATE posts SET media_id=?,title=?,caption=?,destinations_json=?,overrides_json=?,brand_id=?,status='draft',delivery_status='draft',scheduled_at=NULL,approved_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
         mediaId,
         title,
         caption,
         JSON.stringify([...new Set(destinations)]),
         JSON.stringify(overrides),
+        brandId,
         stamp,
         post,
       );
@@ -1098,7 +1117,7 @@ async function api(request, env, context) {
     } else
       await execute(
         env,
-        "INSERT INTO posts(id,niche_id,media_id,title,caption,destinations_json,overrides_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO posts(id,niche_id,media_id,title,caption,destinations_json,overrides_json,created_at,updated_at,brand_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
         post,
         niche.id,
         mediaId,
@@ -1108,6 +1127,7 @@ async function api(request, env, context) {
         JSON.stringify(overrides),
         stamp,
         stamp,
+        brandId,
       );
     await audit(env, user.id, niche.id, "draft.saved", post);
     return json(
