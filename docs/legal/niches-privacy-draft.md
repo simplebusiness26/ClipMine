@@ -1,6 +1,6 @@
 # Niches Privacy Policy
 
-Updated: 4 November 2026
+Updated: 12 November 2026
 
 ## 1. Controller and contact
 
@@ -32,7 +32,7 @@ user.info.basic allows Niches to identify the TikTok account connected by its ow
 
 video.publish is intended for creator-approved Direct Post, including posts Niches sends when an approved schedule becomes due. The creator must select the destination, review the content and available settings, and expressly approve transmission. Provider processing may continue after Niches sends the request.
 
-video.upload permits sending content to TikTok as a draft for you to finish editing and publish within TikTok. This option is not currently available in Niches.
+video.upload permits sending content to TikTok as a draft for you to finish editing and publish within TikTok. When you choose inbox upload, Niches sends the video to TikTok and reports delivery. You finish editing, choose captions and audience, and publish inside TikTok.
 
 TikTok API use depends on account authorisation and TikTok approval. This policy does not mean the integration is approved or available. We do not use TikTok data for unrelated advertising or sell it.
 
