@@ -154,6 +154,81 @@ test("create independent niches and enforce ownership on all workspace routes", 
     404,
   );
 });
+test("master release preserves child brands, OAuth tokens, scheduled posts and tenant isolation", async () => {
+  const workspace = (await checked("/api/niches", {
+    method: "POST", cookie: first, data: { name: "Release fixture" },
+  }, 201)).data.id;
+  const initial = (await checked(`/api/niches/${workspace}/brands`, { cookie: first })).data;
+  assert.equal(initial.length, 1);
+  const master = initial[0];
+  assert.equal(master.is_master, 1);
+  const child = (await checked(`/api/niches/${workspace}/brands`, {
+    method: "POST", cookie: first,
+    data: { name: "War Clipcast", parent_brand_id: master.id },
+  }, 201)).data;
+  const direct = (await checked(`/api/niches/${workspace}/accounts`, {
+    method: "POST", cookie: first,
+    data: { platform: "instagram", display_name: "Master IG", handle: "master.example", brand_id: master.id },
+  }, 201)).data.id;
+  const childAccount = (await checked(`/api/niches/${workspace}/accounts`, {
+    method: "POST", cookie: first,
+    data: { platform: "youtube", display_name: "Child YouTube", handle: "child.example", brand_id: child.id },
+  }, 201)).data.id;
+  await db.prepare("UPDATE accounts SET status='connected',encrypted_tokens='encrypted-fixture' WHERE id=?").bind(direct).run();
+  const scheduled = crypto.randomUUID();
+  const stamp = new Date().toISOString();
+  await db.prepare(
+    "INSERT INTO posts(id,niche_id,media_id,title,caption,destinations_json,overrides_json,status,created_at,updated_at,delivery_status,publish_mode,brand_id,scheduled_at) VALUES (?,?,NULL,?,? ,?,'{}','scheduled',?,?,'scheduled','direct',?,?)",
+  ).bind(scheduled, workspace, "Scheduled master post", "Keep schedule", JSON.stringify([direct]), stamp, stamp, master.id, "2027-01-01T18:00:00.000Z").run();
+  await checked(`/api/niches/${workspace}/brands/${master.id}/release-preview`, {
+    cookie: second,
+  }, 404);
+  const preview = (await checked(`/api/niches/${workspace}/brands/${master.id}/release-preview`, {
+    cookie: first,
+  })).data;
+  assert.equal(preview.child_brands.length, 1);
+  assert.equal(preview.direct_accounts, 1);
+  assert.equal(preview.scheduled_posts, 1);
+  await checked(`/api/niches/${workspace}/brands/${master.id}/release`, {
+    method: "POST", cookie: first, data: { confirm: "wrong", name: master.name },
+  }, 400);
+  const released = (await checked(`/api/niches/${workspace}/brands/${master.id}/release`, {
+    method: "POST", cookie: first, data: { confirm: "RELEASE", name: master.name },
+  })).data;
+  assert.equal(released.released_child_brands, 1);
+  assert.equal(released.transferred_accounts, 1);
+  assert.equal(released.preserved_scheduled_posts, 1);
+  const rows = (await checked(`/api/niches/${workspace}/brands`, { cookie: first })).data;
+  const standalone = rows.find((b) => b.name === "Release fixture Accounts");
+  assert.ok(standalone);
+  assert.equal(rows.find((b) => b.id === master.id).status, "archived");
+  assert.equal(rows.find((b) => b.id === child.id).parent_brand_id, null);
+  const directRow = await db.prepare("SELECT brand_id,status,encrypted_tokens FROM accounts WHERE id=?").bind(direct).first();
+  const childRow = await db.prepare("SELECT brand_id FROM accounts WHERE id=?").bind(childAccount).first();
+  assert.equal(directRow.brand_id, standalone.id);
+  assert.equal(directRow.status, "connected");
+  assert.equal(directRow.encrypted_tokens, "encrypted-fixture");
+  assert.equal(childRow.brand_id, child.id);
+  const postRow = await db.prepare("SELECT brand_id,delivery_status,scheduled_at,destinations_json FROM posts WHERE id=?").bind(scheduled).first();
+  assert.equal(postRow.brand_id, standalone.id);
+  assert.equal(postRow.delivery_status, "scheduled");
+  assert.equal(postRow.scheduled_at, "2027-01-01T18:00:00.000Z");
+  assert.deepEqual(JSON.parse(postRow.destinations_json), [direct]);
+  await checked(`/api/niches/${workspace}/brands/${master.id}/release`, {
+    method: "POST", cookie: first, data: { confirm: "RELEASE", name: master.name },
+  }, 409);
+  await checked(`/api/niches/${workspace}/brands/${master.id}/restore`, {
+    method: "POST", cookie: first, data: {},
+  });
+  await checked(`/api/niches/${workspace}/brands/${child.id}`, {
+    method: "PATCH", cookie: first, data: { parent_brand_id: master.id },
+  });
+  const moved = (await checked(`/api/niches/${workspace}/accounts/${direct}/brand`, {
+    method: "POST", cookie: first, data: { brand_id: child.id },
+  })).data;
+  assert.equal(moved.brand_id, child.id);
+});
+
 test("validate uploads and keep object bytes private across users and niches", async () => {
   await checked(
     `/api/niches/${niche}/media`,
