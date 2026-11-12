@@ -1,4 +1,5 @@
 import { withMedia } from "./kv-media.mjs";
+import { brandRoute } from "./brands.mjs";
 import { resetEmailReady, sendResetEmail } from "./reset-email.mjs";
 import {
   providerInfo,
@@ -451,17 +452,14 @@ async function api(request, env, context) {
       const colour = /^#[a-f0-9]{6}$/i.test(data.colour || "")
         ? data.colour
         : "#c6f66b";
-      await execute(
-        env,
-        "INSERT INTO niches(id,user_id,name,description,colour,initials,created_at) VALUES (?,?,?,?,?,?,?)",
-        niche,
-        user.id,
-        name,
-        textValue(data.description || "", 500),
-        colour,
-        name.slice(0, 2).toUpperCase(),
-        now(),
-      );
+      const created = now();
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO niches(id,user_id,name,description,colour,initials,created_at) VALUES (?,?,?,?,?,?,?)")
+          .bind(niche, user.id, name, textValue(data.description || "", 500),
+            colour, name.slice(0, 2).toUpperCase(), created),
+        env.DB.prepare("INSERT INTO brands(id,niche_id,name,parent_brand_id,is_master,status,created_at) VALUES (?,?,?,NULL,1,'active',?)")
+          .bind("legacy-" + niche, niche, name, created),
+      ]);
       await audit(env, user.id, niche, "niche.created", niche);
       return json(await nicheFor(env, user.id, niche), 201);
     }
@@ -510,6 +508,9 @@ async function api(request, env, context) {
       return json(await nicheFor(env, user.id, niche.id));
     }
   }
+  if (sub === "brands" || sub.startsWith("brands/") ||
+      /^accounts\/[a-zA-Z0-9-]+\/brand$/.test(sub))
+    return brandRoute(request, env, user, niche, sub, body);
   if (sub === "accounts" && method === "GET")
     return json(
       await all(
