@@ -83,7 +83,9 @@ export async function queuePost(env, user, niche, post, data) {
       media,
       post,
       selected,
-      a.platform === "tiktok" ? await creatorInfo(env, a) : null,
+      a.platform === "tiktok" && selected.tiktok_delivery !== "inbox"
+        ? await creatorInfo(env, a)
+        : null,
     );
   }
   if (hasInstagramCollab && instagramDestinations > 1)
@@ -238,12 +240,14 @@ export async function refreshPostStatus(env, postId) {
   if (!rows.length) return;
   const states = rows.map((r) => r.status),
     done = states.every((x) =>
-      ["published", "failed", "needs_review", "cancelled"].includes(x),
+      ["published", "inbox_delivered", "failed", "needs_review", "cancelled"].includes(x),
     );
   const status = states.every((x) => x === "published")
     ? "published"
+    : states.every((x) => x === "inbox_delivered")
+      ? "inbox_delivered"
     : done
-      ? states.includes("published")
+      ? states.includes("published") || states.includes("inbox_delivered")
         ? "partial"
         : states.includes("needs_review")
           ? "needs_review"
@@ -335,7 +339,7 @@ export async function runOutbox(env, limit = 5, fetcher = fetch, postId = null) 
       );
       const token = await accessToken(env, account, fetcher),
         creator =
-          account.platform === "tiktok" && !state.phase
+          account.platform === "tiktok" && !state.phase && options.tiktok_delivery !== "inbox"
             ? await creatorInfo(env, account, fetcher)
             : null;
       const phase = state.phase || "init",

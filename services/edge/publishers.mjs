@@ -65,6 +65,9 @@ export function validatePost(account, media, post, options, creator) {
   if (p === "facebook" && caption.length > 60000)
     fail(400, "Facebook caption is too long.");
   if (p === "tiktok") {
+    const delivery = options.tiktok_delivery || "direct";
+    if (!["direct", "inbox"].includes(delivery))
+      fail(400, "Choose Direct Post or TikTok inbox upload.");
     if (!media.mime.startsWith("video/"))
       fail(
         400,
@@ -72,6 +75,13 @@ export function validatePost(account, media, post, options, creator) {
       );
     if (caption.length > 2200)
       fail(400, "TikTok captions must be at most 2,200 characters.");
+    if (delivery === "inbox") {
+      if (!media.duration_seconds || media.duration_seconds <= 0)
+        fail(400, "This video is missing its duration.");
+      if (options.tiktok_upload_consent !== true)
+        fail(400, "Confirm sending this video to your TikTok inbox.");
+      return { title, caption };
+    }
     if (!creator?.privacy_level_options?.includes(options.privacy))
       fail(400, "Choose a currently available TikTok visibility setting.");
     if (
@@ -444,13 +454,16 @@ export async function advancePublisher({
   if (p === "tiktok") {
     if (!state.phase) {
       validatePost(account, media, post, options, creator);
+      const inbox = options.tiktok_delivery === "inbox";
       const result = await providerJSON(
-        "https://open.tiktokapis.com/v2/post/publish/video/init/",
+        inbox
+          ? "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/"
+          : "https://open.tiktokapis.com/v2/post/publish/video/init/",
         {
           method: "POST",
           headers: { ...headers, "Content-Type": "application/json" },
           body: JSON.stringify({
-            post_info: {
+            ...(!inbox ? { post_info: {
               title: meta.caption,
               privacy_level: options.privacy,
               disable_comment:
@@ -463,7 +476,7 @@ export async function advancePublisher({
               ...(options.cover_ms !== undefined
                 ? { video_cover_timestamp_ms: options.cover_ms }
                 : {}),
-            },
+            } } : {}),
             source_info: { source: "PULL_FROM_URL", video_url: mediaURL },
           }),
         },
@@ -472,7 +485,7 @@ export async function advancePublisher({
       if (!result.data?.publish_id)
         fail(502, "TikTok did not return a publishing identifier.");
       return {
-        state: { phase: "poll", publish_id: result.data.publish_id },
+        state: { phase: "poll", publish_id: result.data.publish_id, ...(inbox ? { inbox: true } : {}) },
         providerId: result.data.publish_id,
         status: "processing",
       };
@@ -492,6 +505,8 @@ export async function advancePublisher({
         status: "failed",
         error: "TikTok rejected or could not process this post.",
       };
+    if (state.inbox && result.data?.status === "SEND_TO_USER_INBOX")
+      return { state, status: "inbox_delivered" };
     return {
       state,
       status:

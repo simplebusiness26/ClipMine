@@ -33,7 +33,7 @@ function isOverdue(post: Post, now: number): boolean {
 function tone(post: Post, now: number): Tone {
   if (["partial", "failed", "needs_review", "blocked"].includes(post.status) || isOverdue(post, now)) return "issues";
   if (post.status === "published") return "published";
-  if (post.status === "export_ready") return "reminder";
+  if (["export_ready", "inbox_delivered"].includes(post.status)) return "reminder";
   if (post.status === "scheduled") return "scheduled";
   if (["queued", "processing", "pending", "retry"].includes(post.status)) return "working";
   return "cancelled";
@@ -43,6 +43,7 @@ function stateLabel(post: Post, now: number): string {
   if (isOverdue(post, now)) return "Past due · check publishing status";
   if (post.status === "needs_review") return "Needs review · check platform";
   if (post.status === "export_ready") return "Export reminder ready";
+  if (post.status === "inbox_delivered") return "Delivered to TikTok inbox";
   if (post.status === "partial") return "Partially published · check deliveries";
   return post.status.replaceAll("_", " ");
 }

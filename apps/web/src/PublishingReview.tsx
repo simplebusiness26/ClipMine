@@ -38,6 +38,7 @@ export default function PublishingReview({
     [busy, setBusy] = useState(false),
     [removingAccountId, setRemovingAccountId] = useState<string | null>(null),
     [creators, setCreators] = useState<Record<string, Creator>>({}),
+    [tiktokModes, setTiktokModes] = useState<Record<string, "direct" | "inbox">>({}),
     [mode, setMode] = useState<"now" | "schedule">("now"),
     [reviewed, setReviewed] = useState<{ key: string; plan: DeliveryPlan } | null>(null);
   const planKey = [draft.id, draft.brand_id, ...draft.destinations].join(":");
@@ -63,7 +64,7 @@ export default function PublishingReview({
   useEffect(() => {
     let alive = true;
     for (const a of selected.filter(
-      (a) => a.platform === "tiktok" && a.status === "connected",
+      (a) => a.platform === "tiktok" && a.status === "connected" && tiktokModes[a.id] !== "inbox",
     ))
       void call<Creator>(`/api/niches/${nicheId}/accounts/${a.id}/creator`)
         .then((c) => {
@@ -75,7 +76,7 @@ export default function PublishingReview({
     return () => {
       alive = false;
     };
-  }, [draft.id, draft.destinations.join(","), nicheId]);
+  }, [draft.id, draft.destinations.join(","), nicheId, tiktokModes]);
   async function removeAccount(account: SocialAccount) {
     if (busy || removingAccountId) return;
     // Only an editable draft can be changed. The server refuses any draft
@@ -119,6 +120,10 @@ export default function PublishingReview({
         allow_duet: data.get(`${a.id}_duet`) === "on",
         allow_stitch: data.get(`${a.id}_stitch`) === "on",
         tiktok_consent: data.get(`${a.id}_consent`) === "on",
+        ...(a.platform === "tiktok" ? {
+          tiktok_delivery: tiktokModes[a.id] || "direct",
+          tiktok_upload_consent: data.get(`${a.id}_upload_consent`) === "on",
+        } : {}),
         commercial_content: data.get(`${a.id}_commercial`) === "on",
         brand_organic: data.get(`${a.id}_organic`) === "on",
         brand_content: data.get(`${a.id}_brand`) === "on",
@@ -233,6 +238,18 @@ export default function PublishingReview({
               </p>
             )}
             {a.platform === "tiktok" && (
+              <label>
+                TikTok delivery
+                <select
+                  value={tiktokModes[a.id] || "direct"}
+                  onChange={(event) => setTiktokModes((old) => ({ ...old, [a.id]: event.target.value as "direct" | "inbox" }))}
+                >
+                  <option value="direct">Direct Post</option>
+                  <option value="inbox">Send to TikTok inbox</option>
+                </select>
+              </label>
+            )}
+            {a.platform === "tiktok" && tiktokModes[a.id] !== "inbox" && (
               <p className="n-status-note">
                 TikTok requires verified media URL ownership and publishing access.
                 Unaudited apps are limited to private accounts and Only you posts.
@@ -269,7 +286,16 @@ export default function PublishingReview({
                 </label>
               </>
             )}
-            {a.platform === "tiktok" && (
+            {a.platform === "tiktok" && tiktokModes[a.id] === "inbox" && (
+              <>
+                <p className="n-status-note">Send the selected video to {a.display_name}’s TikTok inbox. Open its notification in the TikTok app to edit it and choose the caption, audience and posting settings. Niches reports when the upload reaches your inbox.</p>
+                <label className="n-checkbox">
+                  <input type="checkbox" name={`${a.id}_upload_consent`} required={!blocked} />
+                  Send this video to my TikTok inbox so I can finish it in TikTok.
+                </label>
+              </>
+            )}
+            {a.platform === "tiktok" && tiktokModes[a.id] !== "inbox" && (
               <>
                 {creator ? (
                   <>
@@ -365,7 +391,7 @@ export default function PublishingReview({
                 </p>
               </>
             )}
-            {["tiktok", "instagram"].includes(a.platform) && (
+            {(a.platform === "instagram" || (a.platform === "tiktok" && tiktokModes[a.id] !== "inbox")) && (
               <label>
                 Video cover frame (milliseconds, optional)
                 <input type="number" min="0" step="1" name={`${a.id}_cover`} />
@@ -422,14 +448,16 @@ export default function PublishingReview({
         disabled={
           busy ||
           blocked ||
-          selected.some((a) => a.platform === "tiktok" && !creators[a.id])
+          selected.some((a) => a.platform === "tiktok" && tiktokModes[a.id] !== "inbox" && !creators[a.id])
         }
       >
         {busy
           ? "Submitting…"
           : mode === "schedule"
             ? "Schedule publication"
-            : "Publish to selected accounts"}
+            : selected.some((a) => a.platform === "tiktok" && tiktokModes[a.id] === "inbox")
+              ? "Submit selected deliveries"
+              : "Publish to selected accounts"}
       </button>
       <p className="n-muted">
         A queued post is not marked published until its provider confirms the
