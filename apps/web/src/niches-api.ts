@@ -51,6 +51,7 @@ export interface Provider {
 }
 export interface Post {
   campaign_url?: string | null;
+  campaign_deadline_minutes?: number;
   publish_mode?: string;
   source_group?: string;
   brand_id?: string | null;

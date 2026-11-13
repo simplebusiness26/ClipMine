@@ -11,6 +11,8 @@ import {
   queuePost,
   publishScheduledNow,
   runOutbox,
+  refreshPermalinks,
+  campaignReminders,
   providerMedia,
   retryPublication,
   confirmPublishedExternally,
@@ -399,6 +401,17 @@ async function api(request, env, context) {
     await rate(env, `write:${user.id}`, 60);
   if (path === "/api/providers" && method === "GET")
     return json(providerInfo(env));
+  if (path === "/api/accounts" && method === "GET")
+    return json(await all(env,
+      `SELECT a.id,a.niche_id,a.platform,a.display_name,a.provider_id,a.status,a.connection_kind,a.routing_group,a.brand_id,n.name AS niche_name,b.name AS brand_name
+       FROM accounts a JOIN niches n ON n.id=a.niche_id LEFT JOIN brands b ON b.id=a.brand_id
+       WHERE n.user_id=? AND a.status!='archived' ORDER BY a.platform,a.display_name,a.id`, user.id));
+  if (path === "/api/publications" && method === "GET")
+    return json({server_time:now(), publications:await all(env, `SELECT p.id,p.post_id,p.account_id,p.status,p.provider_post_id,p.public_url,p.published_at,p.campaign_submitted_at,p.error,p.error_code,p.updated_at,
+      s.niche_id,s.brand_id,s.title,s.caption,s.media_id,s.campaign_url,s.campaign_deadline_minutes,s.delivery_status,
+      a.platform,a.display_name,n.name AS niche_name,b.name AS brand_name,m.mime AS media_mime
+      FROM publications p JOIN posts s ON s.id=p.post_id JOIN accounts a ON a.id=p.account_id JOIN niches n ON n.id=s.niche_id LEFT JOIN brands b ON b.id=s.brand_id LEFT JOIN media m ON m.id=s.media_id
+      WHERE n.user_id=? AND p.status IN ('published','failed','needs_review') ORDER BY COALESCE(p.published_at,p.updated_at) DESC`, user.id)});
   if (path === "/api/notifications") {
     if (method === "GET")
       return json(
@@ -1042,6 +1055,29 @@ async function api(request, env, context) {
       return json(result, 202);
     }
   }
+  const campaign = sub.match(/^publications\/([a-zA-Z0-9-]+)\/campaign$/);
+  if (campaign && method === "PATCH") {
+    const publication = await one(env, "SELECT p.id,p.status,p.post_id,s.campaign_url FROM publications p JOIN posts s ON s.id=p.post_id WHERE p.id=? AND s.niche_id=?", campaign[1], niche.id);
+    if (!publication) fail(404, "Publication not found");
+    const data = await body(request);
+    if (Object.hasOwn(data, "submitted") && typeof data.submitted !== "boolean") fail(400, "Submission confirmation must be true or false.");
+    if (data.submitted === true && (!(Object.hasOwn(data, "campaign_url") ? String(data.campaign_url || "").trim() : publication.campaign_url) || publication.status !== "published")) fail(409, "A published campaign post is required.");
+    if (Object.hasOwn(data, "campaign_url")) {
+      const value = String(data.campaign_url || "").trim() || null;
+      if (value) {
+        let parsed; try { parsed = new URL(value); } catch { fail(400, "Enter a valid campaign URL."); }
+        if (parsed.protocol !== "https:" || parsed.username || parsed.password || value.length > 2048) fail(400, "Campaign URL must be a valid HTTPS URL.");
+      }
+      const minutes = data.deadline_minutes === undefined ? null : Number(data.deadline_minutes);
+      if (minutes !== null && (!Number.isInteger(minutes) || minutes < 1 || minutes > 10080)) fail(400, "Choose a deadline between 1 and 10080 minutes.");
+      await execute(env, "UPDATE posts SET campaign_url=?,campaign_deadline_minutes=COALESCE(?,campaign_deadline_minutes) WHERE id=? AND niche_id=?", value, minutes, publication.post_id, niche.id);
+      publication.campaign_url = value;
+    }
+    if (Object.hasOwn(data, "submitted")) {
+      await execute(env, "UPDATE publications SET campaign_submitted_at=? WHERE id=?", data.submitted ? now() : null, publication.id);
+    }
+    return json({ok:true});
+  }
   const retry = sub.match(/^publications\/([a-zA-Z0-9-]+)\/retry$/);
   if (retry && method === "POST") {
     const result = await retryPublication(
@@ -1159,6 +1195,8 @@ async function api(request, env, context) {
       };
     }
     const campaignUrl = data.campaign_url === undefined ? existing?.campaign_url ?? null : String(data.campaign_url || "").trim() || null;
+    const campaignDeadline = data.campaign_deadline_minutes === undefined ? existing?.campaign_deadline_minutes ?? 30 : Number(data.campaign_deadline_minutes);
+    if (!Number.isInteger(campaignDeadline) || campaignDeadline < 1 || campaignDeadline > 10080) fail(400, "Choose a deadline between 1 and 10080 minutes.");
     if (campaignUrl) {
       let parsed;
       try { parsed = new URL(campaignUrl); } catch { fail(400, "Enter a valid campaign URL."); }
@@ -1172,7 +1210,7 @@ async function api(request, env, context) {
     if (existing) {
       const result = await execute(
         env,
-        "UPDATE posts SET media_id=?,title=?,caption=?,destinations_json=?,overrides_json=?,source_group=?,brand_id=?,campaign_url=?,status='draft',delivery_status='draft',scheduled_at=NULL,approved_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
+        "UPDATE posts SET media_id=?,title=?,caption=?,destinations_json=?,overrides_json=?,source_group=?,brand_id=?,campaign_url=?,campaign_deadline_minutes=?,status='draft',delivery_status='draft',scheduled_at=NULL,approved_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
         mediaId,
         title,
         caption,
@@ -1181,6 +1219,7 @@ async function api(request, env, context) {
         sourceGroup,
         brandId,
         campaignUrl,
+        campaignDeadline,
         stamp,
         post,
       );
@@ -1192,7 +1231,7 @@ async function api(request, env, context) {
     } else
       await execute(
         env,
-        "INSERT INTO posts(id,niche_id,media_id,title,caption,destinations_json,overrides_json,source_group,brand_id,campaign_url,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO posts(id,niche_id,media_id,title,caption,destinations_json,overrides_json,source_group,brand_id,campaign_url,campaign_deadline_minutes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         post,
         niche.id,
         mediaId,
@@ -1203,6 +1242,7 @@ async function api(request, env, context) {
         sourceGroup,
         brandId,
         campaignUrl,
+        campaignDeadline,
         stamp,
         stamp,
       );
@@ -1330,6 +1370,8 @@ async function api(request, env, context) {
 }
 export async function scheduled(env) {
   await runOutbox(env);
+  await refreshPermalinks(env);
+  await campaignReminders(env);
   const due = await all(
     env,
     "SELECT p.id,p.niche_id,n.user_id FROM posts p JOIN niches n ON n.id=p.niche_id WHERE publish_mode='export' AND status='scheduled' AND scheduled_at<=? LIMIT 25",

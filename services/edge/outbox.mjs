@@ -2,12 +2,57 @@ import { deliveryDestinations } from "./brands.mjs";
 import { id, now, hash, randomToken, fail, json } from "./security.mjs";
 import { execute, one, all } from "./db.mjs";
 import { seal, unseal } from "./token-vault.mjs";
-import { providerInfo, accessToken, providerJSON } from "./social-oauth.mjs";
+import { providerInfo, accessToken, providerJSON, graph } from "./social-oauth.mjs";
 import {
   advancePublisher,
   validatePost,
   resolveOptions,
 } from "./publishers.mjs";
+// Metadata retrieval is read-only: it must never submit or retry a post.
+export async function refreshPermalinks(env, fetcher = fetch) {
+  const rows = await all(env, `SELECT a.*,p.id AS publication_id,p.provider_post_id,p.permalink_attempts,p.public_url,p.published_at
+    FROM publications p JOIN accounts a ON a.id=p.account_id WHERE p.status='published' AND p.provider_post_id IS NOT NULL
+    AND (p.public_url IS NULL OR (a.platform='instagram' AND p.published_at IS NULL))
+    AND a.platform IN ('instagram','youtube') AND (p.permalink_next_attempt_at IS NULL OR p.permalink_next_attempt_at<=?)
+    ORDER BY COALESCE(p.permalink_next_attempt_at,'') LIMIT 10`, now());
+  for (const row of rows) {
+    try {
+      let url = row.public_url, published = row.published_at;
+      if (row.platform === 'youtube' && /^[a-zA-Z0-9_-]+$/.test(row.provider_post_id)) url = `https://www.youtube.com/watch?v=${row.provider_post_id}`;
+      if (row.platform === 'instagram') {
+        if (!/^[0-9]+$/.test(row.provider_post_id)) throw Error('Invalid media identifier');
+        const token = await accessToken(env, row, fetcher);
+        const base = row.connection_kind === 'instagram_login' ? 'https://graph.instagram.com' : graph(env);
+        const data = await providerJSON(`${base}/${row.provider_post_id}?fields=permalink,timestamp`, {headers:{Authorization:`Bearer ${token}`}}, fetcher);
+        if (data.permalink) { const parsed = new URL(data.permalink); if (parsed.protocol !== 'https:' || !['www.instagram.com','instagram.com'].includes(parsed.hostname)) throw Error('Invalid permalink'); url = parsed.toString(); }
+        if (data.timestamp && Number.isFinite(Date.parse(data.timestamp))) published = new Date(data.timestamp).toISOString();
+      }
+      await execute(env, 'UPDATE publications SET public_url=COALESCE(?,public_url),published_at=COALESCE(published_at,?) WHERE id=? AND status=\'published\'', url, published, row.publication_id);
+      if (!url || (row.platform === 'instagram' && !published)) throw Error('Metadata not ready');
+      await execute(env, 'UPDATE publications SET permalink_next_attempt_at=NULL WHERE id=? AND status=\'published\'', row.publication_id);
+    } catch {
+      const attempts = row.permalink_attempts + 1;
+      await execute(env, 'UPDATE publications SET permalink_attempts=?,permalink_next_attempt_at=? WHERE id=? AND status=\'published\'', attempts, new Date(Date.now()+Math.min(3600000,60000*2**Math.min(attempts,6))).toISOString(), row.publication_id);
+      if (attempts >= 5) await execute(env, `INSERT OR IGNORE INTO notifications(id,user_id,niche_id,message,read_at,created_at)
+        SELECT ?,n.user_id,n.id,'Could not retrieve a publication link. Check the connected account.',NULL,? FROM publications p JOIN posts s ON s.id=p.post_id JOIN niches n ON n.id=s.niche_id WHERE p.id=? AND p.public_url IS NULL`, `permalink-${row.publication_id}`, now(), row.publication_id);
+    }
+  }
+}
+export async function campaignReminders(env, timestamp = Date.now()) {
+  const current = new Date(timestamp).toISOString();
+  const rows = await all(env, `SELECT p.id,p.published_at,p.campaign_submitted_at,s.campaign_deadline_minutes,s.niche_id,n.user_id
+    FROM publications p JOIN posts s ON s.id=p.post_id JOIN niches n ON n.id=s.niche_id JOIN accounts a ON a.id=p.account_id
+    WHERE p.status='published' AND a.platform='instagram' AND s.campaign_url IS NOT NULL AND p.published_at IS NOT NULL AND p.campaign_submitted_at IS NULL`);
+  for (const row of rows) {
+    const remaining = Date.parse(row.published_at) + row.campaign_deadline_minutes * 60000 - timestamp;
+    const kind = remaining <= 0 ? 'overdue' : remaining <= 300000 ? 'warning' : null;
+    if (!kind) continue;
+    const message = kind === 'warning' ? 'Campaign submission: less than five minutes remain.' : 'Campaign submission is overdue.';
+    await execute(env, `INSERT OR IGNORE INTO notifications(id,user_id,niche_id,message,read_at,created_at)
+      SELECT ?,?,?,?,NULL,? WHERE EXISTS (SELECT 1 FROM publications p JOIN posts s ON s.id=p.post_id WHERE p.id=? AND p.status='published' AND p.campaign_submitted_at IS NULL AND s.campaign_url IS NOT NULL)`,
+      `campaign-${kind}-${row.id}`, row.user_id, row.niche_id, message, current, row.id);
+  }
+}
 export async function creatorInfo(env, account, fetcher = fetch) {
   const token = await accessToken(env, account, fetcher);
   const result = await providerJSON(

@@ -80,6 +80,11 @@ Hosted Python/FFmpeg rendering and real reset-email delivery still require an ec
 # Campaign URL groundwork
 
 Drafts may include an optional HTTPS campaign URL. It is stored on the post and
-preserved when an edit omits it. This does not yet implement submission tracking,
-permalinks, countdowns, notifications, or editing after publication.
+preserved when an edit omits it. Development work adds per-publication manual
+confirmation, provider timestamp and permalink fields, a Published view and
+server-generated in-app warning records. Instagram metadata retries are read-only;
+they do not resubmit posts. The countdown requires an actual provider timestamp.
+This work is not yet production-ready: Android push and deep links, full filtering,
+cross-niche account reassignment, additional platform permalink retrieval, real
+provider testing, and a Niches APK remain incomplete.
 

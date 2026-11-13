@@ -1,4 +1,5 @@
 import PostHistory from "./PostHistory";
+import Published from "./Published";
 import { parseBatchArchive } from "./batch-zip";
 import SocialAccounts from "./SocialAccounts";
 import PublishingReview from "./PublishingReview";
@@ -33,6 +34,7 @@ const tabs = [
   "Drafts",
   "Publish",
   "Calendar",
+  "Published",
   "Analytics",
   "Accounts",
   "Ideas",
@@ -41,7 +43,22 @@ const tabs = [
   "ClipMine",
 ] as const;
 type Tab = (typeof tabs)[number];
-const symbols = ["◈", "▦", "+", "▤", "↗", "▦", "↗", "◎", "✧", "£", "⚙", "▷"];
+type AccountOverview = SocialAccount & { niche_name: string; brand_name: string | null; niche_id: string };
+function AllAccounts({ niches, open }: { niches: Niche[]; open: (niche: Niche, tab?: Tab) => void }) {
+  const [accounts, setAccounts] = useState<AccountOverview[]>([]), [error, setError] = useState("");
+  useEffect(() => { void call<AccountOverview[]>("/api/accounts").then(setAccounts).catch((e: Error) => setError(e.message)); }, []);
+  return <section className="n-panel">
+    <div className="n-section-head"><div><h1>All accounts</h1><p>Accounts across your niches and brands.</p></div></div>
+    {error && <p role="alert" className="n-error">{error}</p>}
+    {accounts.map((account) => <div className="n-post-row" key={account.id}>
+      <div><strong>{account.display_name}</strong><p>{account.platform} · {account.status.replaceAll("_", " ")}</p><small>{account.niche_name} · {account.brand_name || "No brand assigned"}</small></div>
+      <button type="button" onClick={() => { const niche = niches.find((item) => item.id === account.niche_id); if (niche) open(niche, "Accounts"); }}>Manage</button>
+    </div>)}
+    {!accounts.length && !error && <p>No accounts found.</p>}
+    {niches.length > 0 && <label>Add an account to a niche <select defaultValue="" onChange={(event) => { const niche = niches.find((item) => item.id === event.target.value); if (niche) open(niche, "Accounts"); }}><option value="">Choose a niche</option>{niches.map((niche) => <option key={niche.id} value={niche.id}>{niche.name}</option>)}</select></label>}
+  </section>;
+}
+const symbols = ["◈", "▦", "+", "▤", "↗", "▦", "✓", "↗", "◎", "✧", "£", "⚙", "▷"];
 const date = (value: string) =>
   new Date(value).toLocaleString(undefined, {
     dateStyle: "medium",
@@ -208,6 +225,7 @@ export default function Niches() {
     [notices, setNotices] = useState<Notice[]>([]),
     [showNotices, setShowNotices] = useState(false),
     [mobileMenuOpen, setMobileMenuOpen] = useState(false),
+    [globalView, setGlobalView] = useState<"niches" | "accounts" | "published">("niches"),
     [error, setError] = useState(""),
     [refreshKey, setRefreshKey] = useState(0);
   async function refresh() {
@@ -294,11 +312,13 @@ export default function Niches() {
         <span className="n-sidebar-label">WORKSPACE</span>
         <button
           className={!active ? "n-nav active" : "n-nav"}
-          onClick={() => setActive(null)}
+          onClick={() => { setActive(null); setGlobalView("niches"); }}
         >
           ◈ <span>All niches</span>
           <small>{niches.length}</small>
         </button>
+        <button className={!active && globalView === "accounts" ? "n-nav active" : "n-nav"} onClick={() => { setActive(null); setGlobalView("accounts"); }}>◎ <span>All accounts</span></button>
+        <button className={!active && globalView === "published" ? "n-nav active" : "n-nav"} onClick={() => { setActive(null); setGlobalView("published"); }}>✓ <span>Published</span></button>
         <button
           className="n-nav"
           onClick={() => {
@@ -438,7 +458,9 @@ export default function Niches() {
               )}
             </section>
           )}
-          {!active ? (
+          {!active && globalView === "published" ? <Published /> : !active && globalView === "accounts" ? (
+            <AllAccounts niches={niches} open={open} />
+          ) : !active ? (
             <>
               <div className="n-page-head">
                 <div>
@@ -596,8 +618,10 @@ export default function Niches() {
               <button type="button" aria-label="Close navigation" onClick={() => setMobileMenuOpen(false)}>✕</button>
             </div>
             <button type="button" onClick={() => {
-              setMobileMenuOpen(false); setActive(null); setTab("Overview");
+              setMobileMenuOpen(false); setActive(null); setGlobalView("niches"); setTab("Overview");
             }}>◈ All niches</button>
+            <button type="button" onClick={() => { setMobileMenuOpen(false); setActive(null); setGlobalView("accounts"); }}>◎ All accounts</button>
+            <button type="button" onClick={() => { setMobileMenuOpen(false); setActive(null); setGlobalView("published"); }}>✓ All published</button>
             {tabs.map((target, index) => (
               <button key={target} type="button"
                 aria-current={active && tab === target ? "page" : undefined}
@@ -633,6 +657,7 @@ export default function Niches() {
               aria-current={active && tab === target ? "page" : undefined}
               onClick={() => {
                 if (active) setTab(target);
+                else if (target === "Accounts") setGlobalView("accounts");
                 else if (niches.length) open(niches[0], target);
                 else setCreating(true);
               }}>
@@ -970,6 +995,7 @@ function Workspace({
           title: data.title,
           caption: data.caption,
           campaign_url: data.campaign_url,
+          campaign_deadline_minutes: Number(data.campaign_deadline_minutes || 30),
           media_id: selectedMedia || null,
           destinations,
           source_group: !brandId && niche.master_name ? sourceGroup : "",
@@ -1632,6 +1658,7 @@ function Workspace({
                 Campaign URL (optional)
                 <input name="campaign_url" type="url" maxLength={2048} defaultValue={draft?.campaign_url || ""} placeholder="https://contentrewards.com/..." />
               </label>
+              <label>Campaign deadline (minutes)<input name="campaign_deadline_minutes" type="number" min="1" max="10080" defaultValue={draft?.campaign_deadline_minutes || 30} /></label>
               <div className="n-section-head">
                 <h3>Destinations</h3>
                 <small>Selected from this niche</small>
@@ -1895,6 +1922,7 @@ function Workspace({
           onChanged={changed}
         />
       )}
+      {tab === "Published" && <Published nicheId={niche.id} />}
       {tab === "Accounts" && (
         <SocialAccounts
           nicheId={niche.id}
