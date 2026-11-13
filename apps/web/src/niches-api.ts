@@ -50,6 +50,7 @@ export interface Provider {
   reason: string;
 }
 export interface Post {
+  campaign_url?: string | null;
   publish_mode?: string;
   source_group?: string;
   brand_id?: string | null;

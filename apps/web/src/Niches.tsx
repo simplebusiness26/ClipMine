@@ -969,6 +969,7 @@ function Workspace({
         {
           title: data.title,
           caption: data.caption,
+          campaign_url: data.campaign_url,
           media_id: selectedMedia || null,
           destinations,
           source_group: !brandId && niche.master_name ? sourceGroup : "",
@@ -1626,6 +1627,10 @@ function Workspace({
                   defaultValue={draft?.caption || ""}
                   placeholder="Start with a hook. Give people a reason to stay."
                 />
+              </label>
+              <label>
+                Campaign URL (optional)
+                <input name="campaign_url" type="url" maxLength={2048} defaultValue={draft?.campaign_url || ""} placeholder="https://contentrewards.com/..." />
               </label>
               <div className="n-section-head">
                 <h3>Destinations</h3>

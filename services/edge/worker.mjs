@@ -1158,6 +1158,13 @@ async function api(request, env, context) {
         caption: textValue(value.caption || "", 10000),
       };
     }
+    const campaignUrl = data.campaign_url === undefined ? existing?.campaign_url ?? null : String(data.campaign_url || "").trim() || null;
+    if (campaignUrl) {
+      let parsed;
+      try { parsed = new URL(campaignUrl); } catch { fail(400, "Enter a valid campaign URL."); }
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password || campaignUrl.length > 2048)
+        fail(400, "Campaign URL must be a valid HTTPS URL.");
+    }
     const title = textValue(data.title || "", 120),
       caption = textValue(data.caption || "", 10000),
       post = existing?.id || id(),
@@ -1165,7 +1172,7 @@ async function api(request, env, context) {
     if (existing) {
       const result = await execute(
         env,
-        "UPDATE posts SET media_id=?,title=?,caption=?,destinations_json=?,overrides_json=?,source_group=?,brand_id=?,status='draft',delivery_status='draft',scheduled_at=NULL,approved_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
+        "UPDATE posts SET media_id=?,title=?,caption=?,destinations_json=?,overrides_json=?,source_group=?,brand_id=?,campaign_url=?,status='draft',delivery_status='draft',scheduled_at=NULL,approved_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
         mediaId,
         title,
         caption,
@@ -1173,6 +1180,7 @@ async function api(request, env, context) {
         JSON.stringify(overrides),
         sourceGroup,
         brandId,
+        campaignUrl,
         stamp,
         post,
       );
@@ -1184,7 +1192,7 @@ async function api(request, env, context) {
     } else
       await execute(
         env,
-        "INSERT INTO posts(id,niche_id,media_id,title,caption,destinations_json,overrides_json,source_group,brand_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO posts(id,niche_id,media_id,title,caption,destinations_json,overrides_json,source_group,brand_id,campaign_url,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         post,
         niche.id,
         mediaId,
@@ -1194,6 +1202,7 @@ async function api(request, env, context) {
         JSON.stringify(overrides),
         sourceGroup,
         brandId,
+        campaignUrl,
         stamp,
         stamp,
       );
