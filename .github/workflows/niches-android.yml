@@ -40,7 +40,6 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - uses: android-actions/setup-android@v3
       - name: Build installable development APK
         working-directory: apps/web/android
         run: |
@@ -55,3 +54,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "niches-android-${GITHUB_RUN_ID}" niches.apk --prerelease --title "Niches Android development build" --notes "Installable development wrapper for the live Niches website. Android push notifications are not configured. This build uses a development signing key."
+
