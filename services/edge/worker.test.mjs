@@ -606,7 +606,9 @@ test("master niche routes source drafts only to its master accounts", async () =
   const create = (data, status = 201) => checked(path + "/posts", {
     method: "POST", cookie: hubOwner, data: { title: "Archive clip", ...data },
   }, status);
-  const { data: draft } = await create({ source_group: "War Clip Cast" });
+  const { data: draft } = await create({ source_group: "War Clip Cast", campaign_url: "https://contentrewards.com/c/example" });
+  assert.equal(draft.campaign_url, "https://contentrewards.com/c/example");
+  await create({ campaign_url: "javascript:alert(1)" }, 400);
   assert.equal(draft.source_group, "War Clip Cast");
   assert.deepEqual(draft.destinations, [master.id]);
   await create({ source_group: "War Clip Cast", destinations: [source.id] }, 400);
@@ -615,5 +617,6 @@ test("master niche routes source drafts only to its master accounts", async () =
     method: "PATCH", cookie: hubOwner, data: { title: "Edited", destinations: [master.id] },
   });
   assert.equal(edited.source_group, "War Clip Cast");
+  assert.equal(edited.campaign_url, draft.campaign_url);
   assert.deepEqual(edited.destinations, [master.id]);
 });

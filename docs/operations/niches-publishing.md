@@ -77,3 +77,9 @@ Publishing defaults off. Only after the corresponding authorisation is suitable 
 Migration `0002_publishing.sql` adds columns/tables without deleting media, niches or the legacy drafts table. The existing deployment launcher retains a D1 recovery bookmark before applying migrations. Roll back Worker code using the previous immutable release pin; retain the database and storage. Only restore D1 from its bookmark after evaluating writes since that point. Never operate on `aiseo` or the AISO Worker.
 
 Hosted Python/FFmpeg rendering and real reset-email delivery still require an economical authorised service. The existing real local render-to-private-storage journey is preserved; no Cloudflare runtime pretends to execute FFmpeg. Analytics currently displays available stored figures, not invented provider measurements. Cross-repository deployments remain immutable-pin releases rather than an automatic deploy on every ClipMine push.
+# Campaign URL groundwork
+
+Drafts may include an optional HTTPS campaign URL. It is stored on the post and
+preserved when an edit omits it. This does not yet implement submission tracking,
+permalinks, countdowns, notifications, or editing after publication.
+
