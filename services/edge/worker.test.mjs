@@ -588,6 +588,31 @@ test("media deletion enforces ownership and unlinks harmless drafts while removi
 });
 
 
+test("published media cleanup preserves receipts and protects shared future schedules", async () => {
+  await db.prepare("DELETE FROM rate_limits").run();
+  const owner=(await checked('/api/auth/login',{method:'POST',data:{email:'first@example.test',password:'A replacement long password'}})).cookie;
+  const file=(await checked(`/api/niches/${niche}/media`,{method:'POST',cookie:owner,raw:new Uint8Array([137,80,78,71,13,10,26,10]),headers:{'Content-Type':'image/png','Content-Length':'8','X-Filename':'finished.png'}},201)).data.id;
+  const account=(await checked(`/api/niches/${niche}/accounts`,{method:'POST',cookie:owner,data:{platform:'instagram',display_name:'Cleanup fixture',handle:'cleanup.fixture'}},201)).data.id;
+  const post=(await checked(`/api/niches/${niche}/posts`,{method:'POST',cookie:owner,data:{title:'Published fixture',media_id:file,destinations:[account]}},201)).data.id;
+  await db.prepare("INSERT INTO publications(id,post_id,account_id,status,provider_post_id,updated_at,public_url) VALUES (?,?,?,'published','123',?,'https://www.instagram.com/reel/fixture/')").bind('cleanup-receipt',post,account,new Date().toISOString()).run();
+  await db.prepare("UPDATE posts SET publish_mode='direct',delivery_status='published' WHERE id=?").bind(post).run();
+  await db.prepare("INSERT INTO media_grants VALUES ('cleanup-grant',?,?,?)").bind(file,'cleanup-receipt','2099-01-01').run();
+  const shared=(await checked(`/api/niches/${niche}/posts`,{method:'POST',cookie:owner,data:{title:'Future use',media_id:file,destinations:[account]}},201)).data.id;
+  await db.prepare("UPDATE posts SET publish_mode='direct',delivery_status='scheduled',scheduled_at='2099-01-01' WHERE id=?").bind(shared).run();
+  await checked(`/api/niches/${niche}/media/${file}`,{method:'DELETE',cookie:owner},409);
+  assert.ok(await db.prepare('SELECT id FROM media WHERE id=?').bind(file).first());
+  await db.prepare("UPDATE posts SET delivery_status='cancelled' WHERE id=?").bind(shared).run();
+  const {default: worker}=await import('./worker.mjs');
+  const failed=await worker.fetch(new Request(`http://localhost/api/niches/${niche}/media/${file}`,{method:'DELETE',headers:{origin:'http://localhost',cookie:owner}}),{DB:db,MEDIA:{delete:async()=>{throw Error('Temporary storage failure');}}});
+  assert.equal(failed.status,500);
+  assert.ok(await db.prepare('SELECT id FROM media_deletions WHERE id=?').bind(file).first());
+  await checked(`/api/niches/${niche}/media/${file}`,{method:'DELETE',cookie:owner});
+  assert.equal((await db.prepare('SELECT media_id FROM posts WHERE id=?').bind(post).first()).media_id,null);
+  assert.equal((await db.prepare('SELECT public_url FROM publications WHERE id=?').bind('cleanup-receipt').first()).public_url,'https://www.instagram.com/reel/fixture/');
+  assert.equal(await db.prepare('SELECT id FROM media WHERE id=?').bind(file).first(),null);
+});
+
+
 test("approved exports protect media until explicit cancellation", async () => {
   // Earlier reset tests intentionally revoked the original sessions.
   await db.prepare("DELETE FROM rate_limits").run();

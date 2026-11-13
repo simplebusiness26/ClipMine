@@ -883,25 +883,28 @@ async function api(request, env, context) {
   const mediaMatch = sub.match(/^media\/([a-zA-Z0-9-]+)$/);
   if (mediaMatch && method === "DELETE") {
     const media = await one(env, "SELECT * FROM media WHERE id=? AND niche_id=?", mediaMatch[1], niche.id);
-    if (!media) fail(404, "Media not found");
+    const pending = await one(env, "SELECT * FROM media_deletions WHERE id=? AND niche_id=?", mediaMatch[1], niche.id);
+    if (!media && !pending) fail(404, "Media not found");
     if (!env.MEDIA) fail(503, "Private storage is not connected.");
-    // An approved export, active schedule or attempted provider publication may
-    // still need its source. Explicitly cancel/unwind the post first.
-    const protectedPost = await one(
-      env,
-      "SELECT id FROM posts WHERE media_id=? AND (status IN ('scheduled','export_ready') OR EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)) LIMIT 1",
-      media.id,
-    );
-    if (protectedPost)
-      fail(409, "This file is used by an approved or published post. Review and cancel that post before deleting its media.");
-    // Delete private bytes before dropping the database index. If a subsequent
-    // D1 transaction fails, retrying deletion can complete the cleanup safely.
-    await env.MEDIA.delete(media.object_key);
-    await env.DB.batch([
-      env.DB.prepare("UPDATE posts SET media_id=NULL WHERE media_id=?").bind(media.id),
-      env.DB.prepare("DELETE FROM media WHERE id=? AND niche_id=?").bind(media.id, niche.id),
-    ]);
-    await audit(env, user.id, niche.id, "media.deleted", media.id);
+    if (media) {
+      // Reserve and detach atomically. A finished publication remains in history;
+      // any shared scheduled, active or uncertain destination protects the file.
+      const result = await env.DB.batch([
+        env.DB.prepare(`INSERT OR IGNORE INTO media_deletions SELECT id,niche_id,object_key,? FROM media WHERE id=? AND niche_id=?
+          AND NOT EXISTS(SELECT 1 FROM posts s WHERE s.media_id=media.id AND (
+            (s.publish_mode='export' AND s.status IN ('scheduled','export_ready')) OR
+            (s.publish_mode='direct' AND s.delivery_status IN ('scheduled','queued','processing','retry','needs_review')) OR
+            EXISTS(SELECT 1 FROM publications p WHERE p.post_id=s.id AND p.status NOT IN ('published','failed','cancelled','inbox_delivered'))))`).bind(now(),media.id,niche.id),
+        env.DB.prepare("UPDATE posts SET media_id=NULL,updated_at=? WHERE media_id=? AND EXISTS(SELECT 1 FROM media_deletions WHERE id=?)").bind(now(),media.id,media.id),
+        env.DB.prepare("DELETE FROM media_grants WHERE media_id=? AND EXISTS(SELECT 1 FROM media_deletions WHERE id=?)").bind(media.id,media.id),
+        env.DB.prepare("DELETE FROM media WHERE id=? AND EXISTS(SELECT 1 FROM media_deletions WHERE id=?)").bind(media.id,media.id),
+      ]);
+      if (!result[0].meta.changes) fail(409, "This file is still needed by scheduled, active or uncertain publishing. Finish or cancel that work before deleting the stored file.");
+    }
+    // A durable cleanup entry survives storage failures and can be retried.
+    await env.MEDIA.delete((media || pending).object_key);
+    await execute(env,"DELETE FROM media_deletions WHERE id=? AND niche_id=?",mediaMatch[1],niche.id);
+    await audit(env, user.id, niche.id, "media.deleted", mediaMatch[1]);
     return json({ ok: true });
   }
   if (mediaMatch && method === "GET") {
@@ -1343,12 +1346,13 @@ async function api(request, env, context) {
       const status = scheduled ? "scheduled" : "export_ready";
       const updated = await one(
         env,
-        "UPDATE posts SET status=?,scheduled_at=?,approved_at=?,updated_at=? WHERE id=? AND status IN ('draft','blocked','cancelled') RETURNING id",
+        "UPDATE posts SET status=?,scheduled_at=?,approved_at=?,updated_at=? WHERE id=? AND media_id=? AND status IN ('draft','blocked','cancelled') RETURNING id",
         status,
         scheduled?.toISOString() || null,
         now(),
         now(),
         post.id,
+        post.media_id,
       );
       if (!updated) fail(409, "This post has already been approved.");
       await audit(
@@ -1369,6 +1373,9 @@ async function api(request, env, context) {
   fail(404, "Not found");
 }
 export async function scheduled(env) {
+  if (env.MEDIA) for (const item of await all(env, "SELECT * FROM media_deletions ORDER BY created_at LIMIT 10")) {
+    try { await env.MEDIA.delete(item.object_key); await execute(env,"DELETE FROM media_deletions WHERE id=?",item.id); } catch { /* retry on the next cron tick */ }
+  }
   await runOutbox(env);
   await refreshPermalinks(env);
   await campaignReminders(env);

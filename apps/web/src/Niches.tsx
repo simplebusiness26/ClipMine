@@ -1538,7 +1538,7 @@ function Workspace({
                           disabled={busy}
                           aria-label={`Delete ${m.filename} from your library`}
                           onClick={async () => {
-                            if (!window.confirm(`Permanently delete ${m.filename} from this niche? Drafts using it will lose their attachment.`))
+                            if (!window.confirm(`Delete the stored file ${m.filename}? Published social posts and publication history will remain. Drafts using it will lose their attachment. Files needed for scheduled or active publishing are protected.`))
                               return;
                             setBusy(true);
                             setError("");

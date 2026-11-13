@@ -88,3 +88,7 @@ This work is not yet production-ready: Android push and deep links, full filteri
 cross-niche account reassignment, additional platform permalink retrieval, real
 provider testing, and a Niches APK remain incomplete.
 
+
+## Removing stored media after publication
+
+Library deletion retains posts and publication receipts, including public URLs. Shared files remain protected while any export is approved or any destination is scheduled, active or uncertain. D1 atomically reserves cleanup and unlinks attachments before removing the media index. A durable cleanup entry retries storage removal after failures. This does not delete posts on social platforms.

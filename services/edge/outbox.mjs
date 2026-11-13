@@ -146,7 +146,7 @@ export async function queuePost(env, user, niche, post, data) {
   // Claim and insert once in one transaction. UNIQUE(post,account) is the final duplicate guard.
   const statements = [
     env.DB.prepare(
-      "UPDATE posts SET delivery_status=?,publish_mode='direct',destinations_json=?,options_json=?,approved_at=?,scheduled_at=?,updated_at=? WHERE id=? AND updated_at=? AND delivery_status IN ('draft','cancelled') AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
+      "UPDATE posts SET delivery_status=?,publish_mode='direct',destinations_json=?,options_json=?,approved_at=?,scheduled_at=?,updated_at=? WHERE id=? AND updated_at=? AND media_id=? AND delivery_status IN ('draft','cancelled') AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
     ).bind(
       date ? "scheduled" : "queued",
       JSON.stringify(ids),
@@ -156,6 +156,7 @@ export async function queuePost(env, user, niche, post, data) {
       approved,
       post.id,
       post.updated_at,
+      post.media_id,
     ),
   ];
   for (const accountId of ids)
