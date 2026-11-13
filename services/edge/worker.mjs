@@ -1,5 +1,5 @@
+import { brandFor, listBrands, saveBrand, deliveryDestinations, masterReleasePreview, archivedMasters, releaseMaster, restoreMaster } from "./brands.mjs";
 import { withMedia } from "./kv-media.mjs";
-import { brandRoute } from "./brands.mjs";
 import { resetEmailReady, sendResetEmail } from "./reset-email.mjs";
 import {
   providerInfo,
@@ -9,6 +9,7 @@ import {
 } from "./social-oauth.mjs";
 import {
   queuePost,
+  publishScheduledNow,
   runOutbox,
   providerMedia,
   retryPublication,
@@ -154,8 +155,8 @@ async function quota(env, user, size) {
     "SELECT COALESCE(SUM(size),0) AS bytes,COUNT(*) AS files FROM media WHERE niche_id IN (SELECT id FROM niches WHERE user_id=?)",
     user,
   );
-  if (usage.bytes + size > 250 * 1024 * 1024 || usage.files >= 100)
-    fail(413, "This beta account has reached its 250 MB or 100 file limit.");
+  if (usage.bytes + size > 300 * 1024 * 1024 || usage.files >= 150)
+    fail(413, "This beta account has reached its 300 MB or 150 file limit.");
   // Leave headroom for the account-wide 1 GB free Workers KV allowance.
   // This is a conservative beta guard, not an atomic storage quota.
   if (env.MEDIA_BACKEND === "kv") {
@@ -441,7 +442,7 @@ async function api(request, env, context) {
       return json(
         await all(
           env,
-          `SELECT n.*, (SELECT COUNT(*) FROM media WHERE niche_id=n.id) AS media_count,(SELECT COUNT(*) FROM posts WHERE niche_id=n.id AND (publish_mode='direct' AND delivery_status='draft' OR publish_mode='export' AND status='draft')) AS draft_count,(SELECT COUNT(*) FROM posts WHERE niche_id=n.id AND (publish_mode='direct' AND delivery_status='scheduled' OR publish_mode='export' AND status='scheduled')) AS scheduled_count,(SELECT COUNT(*) FROM accounts WHERE niche_id=n.id AND status!='archived') AS account_count,(SELECT COUNT(*) FROM accounts WHERE niche_id=n.id AND status='connected') AS connected_count,(SELECT json_group_array(json_object('platform',a.platform,'status',a.status)) FROM accounts a WHERE a.niche_id=n.id AND a.status!='archived') AS accounts_json FROM niches n WHERE user_id=? ORDER BY created_at DESC`,
+          `SELECT n.*, (SELECT COUNT(*) FROM brands WHERE niche_id=n.id) AS brand_count,(SELECT COUNT(*) FROM media WHERE niche_id=n.id) AS media_count,(SELECT COUNT(*) FROM posts WHERE niche_id=n.id AND (publish_mode='direct' AND delivery_status='draft' OR publish_mode='export' AND status='draft')) AS draft_count,(SELECT COUNT(*) FROM posts WHERE niche_id=n.id AND (publish_mode='direct' AND delivery_status='scheduled' OR publish_mode='export' AND status='scheduled')) AS scheduled_count,(SELECT COUNT(*) FROM accounts WHERE niche_id=n.id AND status!='archived') AS account_count,(SELECT COUNT(*) FROM accounts WHERE niche_id=n.id AND status='connected') AS connected_count,(SELECT json_group_array(json_object('platform',a.platform,'status',a.status)) FROM accounts a WHERE a.niche_id=n.id AND a.status!='archived') AS accounts_json FROM niches n WHERE user_id=? ORDER BY created_at DESC`,
           user.id,
         ),
       );
@@ -449,17 +450,28 @@ async function api(request, env, context) {
       const data = await body(request),
         name = textValue(data.name, 80, true),
         niche = id();
+      const masterName = textValue(data.master_name || "", 80);
+      const groups = masterName
+        ? [...new Set(textValue(data.source_groups || "", 800).split(",").map((name) => name.trim()).filter(Boolean))]
+        : [];
+      if (groups.length > 20 || groups.some((group) => group.length > 80))
+        fail(400, "Use up to 20 source groups with names of at most 80 characters.");
       const colour = /^#[a-f0-9]{6}$/i.test(data.colour || "")
         ? data.colour
         : "#c6f66b";
-      const created = now();
-      await env.DB.batch([
-        env.DB.prepare("INSERT INTO niches(id,user_id,name,description,colour,initials,created_at) VALUES (?,?,?,?,?,?,?)")
-          .bind(niche, user.id, name, textValue(data.description || "", 500),
-            colour, name.slice(0, 2).toUpperCase(), created),
-        env.DB.prepare("INSERT INTO brands(id,niche_id,name,parent_brand_id,is_master,status,created_at) VALUES (?,?,?,NULL,1,'active',?)")
-          .bind("legacy-" + niche, niche, name, created),
-      ]);
+      await execute(
+        env,
+        "INSERT INTO niches(id,user_id,name,description,colour,initials,created_at,master_name,source_groups_json) VALUES (?,?,?,?,?,?,?,?,?)",
+        niche,
+        user.id,
+        name,
+        textValue(data.description || "", 500),
+        colour,
+        name.slice(0, 2).toUpperCase(),
+        now(),
+        masterName,
+        JSON.stringify(groups),
+      );
       await audit(env, user.id, niche, "niche.created", niche);
       return json(await nicheFor(env, user.id, niche), 201);
     }
@@ -508,14 +520,81 @@ async function api(request, env, context) {
       return json(await nicheFor(env, user.id, niche.id));
     }
   }
-  if (sub === "brands" || sub.startsWith("brands/") ||
-      /^accounts\/[a-zA-Z0-9-]+\/brand$/.test(sub))
-    return brandRoute(request, env, user, niche, sub, body);
+  if (sub === "brands") {
+    if (method === "GET") return json(await listBrands(env, niche.id));
+    if (method === "POST") return json(await saveBrand(env, niche.id, await body(request)), 201);
+  }
+  if (sub === "brands/archived" && method === "GET")
+    return json(await archivedMasters(env, niche.id));
+  const brandReleaseRoute = sub.match(/^brands\/([a-zA-Z0-9-]+)\/(release-preview|release|restore)$/);
+  if (brandReleaseRoute) {
+    const brandId=brandReleaseRoute[1], action=brandReleaseRoute[2];
+    if (action === "release-preview" && method === "GET")
+      return json(await masterReleasePreview(env, niche.id, brandId));
+    if (action === "release" && method === "POST")
+      return json(await releaseMaster(env, user.id, niche.id, brandId, await body(request)));
+    if (action === "restore" && method === "POST")
+      return json(await restoreMaster(env, user.id, niche.id, brandId));
+    fail(405, "Method not allowed.");
+  }
+  const brandRoute = sub.match(/^brands\/([a-zA-Z0-9-]+)$/);
+  if (brandRoute && method === "PATCH")
+    return json(await saveBrand(env, niche.id, await body(request), brandRoute[1]));
+  const brandMove = sub.match(/^accounts\/([a-zA-Z0-9-]+)\/brand$/);
+  if (brandMove && method === "PATCH") {
+    const data = await body(request);
+    const brand = data.brand_id === null ? null : await brandFor(env, niche.id, data.brand_id);
+    const result = await execute(env,
+      `UPDATE accounts SET brand_id=? WHERE id=? AND niche_id=? AND status!='archived'
+       AND (brand_id IS ? OR NOT EXISTS (
+         SELECT 1 FROM publications WHERE account_id=accounts.id
+           AND status IN ('pending','processing','retry','needs_review')
+       ))`,
+      brand?.id ?? null, brandMove[1], niche.id, brand?.id ?? null);
+    if (!result.meta.changes)
+      fail(409, "This account is unavailable or has publishing work in progress.");
+    await audit(env, user.id, niche.id, "account.brand_changed", brandMove[1]);
+    return json({ brand_id: brand?.id ?? null });
+  }
+  if (sub === "source-groups" && method === "POST") {
+    if (!niche.master_name) fail(400, "This niche has no master account.");
+    const data = await body(request);
+    const name = textValue(data.name, 80, true).trim();
+    if (!name || name.includes(",")) fail(400, "Enter one source group name.");
+    const groups = JSON.parse(niche.source_groups_json);
+    if (groups.includes(name)) return json(niche);
+    if (groups.length >= 20) fail(400, "This niche already has 20 source groups.");
+    const result = await execute(
+      env,
+      "UPDATE niches SET source_groups_json=? WHERE id=? AND source_groups_json=?",
+      JSON.stringify([...groups, name]), niche.id, niche.source_groups_json,
+    );
+    if (!result.meta.changes) fail(409, "Source groups changed. Refresh and try again.");
+    return json(await nicheFor(env, user.id, niche.id), 201);
+  }
+  const routing = sub.match(/^accounts\/([a-zA-Z0-9-]+)\/routing$/);
+  if (routing && method === "PATCH") {
+    if (!niche.master_name) fail(400, "This niche has no master account.");
+    const data = await body(request);
+    const group = data.group;
+    if (group !== "" && group !== "master" &&
+      !JSON.parse(niche.source_groups_json).some((name) => group === "source:" + name))
+      fail(400, "Choose a group in this niche.");
+    const result = await execute(
+      env,
+      "UPDATE accounts SET routing_group=? WHERE id=? AND niche_id=? AND status!='archived' AND (routing_group=? OR NOT EXISTS(SELECT 1 FROM publications WHERE account_id=accounts.id AND status IN ('pending','processing','retry','needs_review')))",
+      group, routing[1], niche.id, group,
+    );
+    if (!result.meta.changes)
+      fail(409, "This account is unavailable or has publishing work in progress.");
+
+    return json({ group });
+  }
   if (sub === "accounts" && method === "GET")
     return json(
       await all(
         env,
-        "SELECT id,niche_id,platform,display_name,provider_id,status,connection_kind,expires_at FROM accounts WHERE niche_id=? AND status!='archived'",
+        "SELECT id,niche_id,platform,display_name,provider_id,status,connection_kind,expires_at,routing_group,brand_id FROM accounts WHERE niche_id=? AND status!='archived'",
         niche.id,
       ),
     );
@@ -525,12 +604,6 @@ async function api(request, env, context) {
       fail(400, "Choose a supported platform.");
     const label = textValue(data.display_name, 100, true),
       handle = textValue(data.handle, 100, true).replace(/^@/, "");
-    const brand = await one(env,
-      data.brand_id
-        ? "SELECT id FROM brands WHERE id=? AND niche_id=? AND status='active'"
-        : "SELECT id FROM brands WHERE niche_id=? AND ? IS NULL AND status='active' ORDER BY is_master DESC,created_at LIMIT 1",
-      data.brand_id || niche.id, data.brand_id ? niche.id : null);
-    if (!brand) fail(400, "Choose an active brand in this niche.");
     const existing = await one(
       env,
       "SELECT id FROM accounts WHERE niche_id=? AND platform=? AND provider_id=?",
@@ -549,6 +622,7 @@ async function api(request, env, context) {
       ).total >= 50
     )
       fail(400, "This niche supports up to 50 accounts.");
+    const brand = data.brand_id ? await brandFor(env, niche.id, data.brand_id) : null;
     const account = id();
     await execute(
       env,
@@ -559,14 +633,13 @@ async function api(request, env, context) {
       label,
       "manual:" + handle.toLowerCase(),
       now(),
-      brand.id,
+      brand?.id ?? null,
     );
     await audit(env, user.id, niche.id, "account.added", account);
     return json(
       {
         id: account,
         status: "disconnected",
-        brand_id: brand.id,
         message:
           "Account added for planning. Authorise it before direct publishing.",
       },
@@ -603,6 +676,7 @@ async function api(request, env, context) {
           niche.id,
           selection[1],
           data.selected,
+          data.confirm_existing,
         ),
       );
     }
@@ -936,7 +1010,7 @@ async function api(request, env, context) {
       ).map(postRow),
     );
   const delivery = sub.match(
-    /^posts\/([a-zA-Z0-9-]+)\/(deliver|publications)$/,
+    /^posts\/([a-zA-Z0-9-]+)\/(deliver|publications|destinations)$/,
   );
   if (delivery) {
     const post = await one(
@@ -946,6 +1020,8 @@ async function api(request, env, context) {
       niche.id,
     );
     if (!post) fail(404, "Post not found");
+    if (delivery[2] === "destinations" && method === "GET")
+      return json(await deliveryDestinations(env, niche, post));
     if (delivery[2] === "publications" && method === "GET")
       return json(
         await all(
@@ -991,7 +1067,7 @@ async function api(request, env, context) {
     );
   }
   const postMatch = sub.match(
-    /^posts\/([a-zA-Z0-9-]+)(?:\/(approve|cancel|export))?$/,
+    /^posts\/([a-zA-Z0-9-]+)(?:\/(approve|cancel|export|publish-now))?$/,
   );
   if (
     (sub === "posts" && method === "POST") ||
@@ -1037,17 +1113,25 @@ async function api(request, env, context) {
       ))
     )
       fail(404, "Media not found in this niche");
+    const brandId = data.brand_id === null ? null : data.brand_id ?? existing?.brand_id ?? null;
+    if (brandId) await brandFor(env, niche.id, brandId);
     const accounts = await all(
       env,
-      "SELECT id FROM accounts WHERE niche_id=? AND status!='archived'",
+      "SELECT id,routing_group,brand_id FROM accounts WHERE niche_id=? AND status!='archived'",
       niche.id,
     );
-    const destinations = data.destinations ?? accounts.map((a) => a.id);
+    const eligible = brandId ? accounts.filter((account) => account.brand_id === brandId) : niche.master_name
+      ? accounts.filter((account) => account.routing_group === "master")
+      : accounts;
+    const sourceGroup = data.source_group ?? existing?.source_group ?? "";
+    if (sourceGroup !== "" && (!niche.master_name || !JSON.parse(niche.source_groups_json).includes(sourceGroup)))
+      fail(400, "Choose a source group in this niche.");
+    const destinations = data.destinations ?? eligible.map((a) => a.id);
     if (
       !Array.isArray(destinations) ||
-      destinations.some((a) => !accounts.some((b) => b.id === a))
+      destinations.some((a) => !eligible.some((b) => b.id === a))
     )
-      fail(400, "Every destination must belong to this niche.");
+      fail(400, brandId ? "Every destination must belong to the selected brand." : niche.master_name ? "Only master accounts can publish in this niche." : "Every destination must belong to this niche.");
     const overrides = data.overrides || {};
     if (
       typeof overrides !== "object" ||
@@ -1074,24 +1158,6 @@ async function api(request, env, context) {
         caption: textValue(value.caption || "", 10000),
       };
     }
-    // Posts inherit the brand of a common destination. A mixed-brand post
-    // remains owned by a master unless its owner is explicitly selected.
-    let brandId = existing?.brand_id || null;
-    if (data.brand_id) {
-      const owner = await one(env, "SELECT id FROM brands WHERE id=? AND niche_id=? AND status='active'", data.brand_id, niche.id);
-      if (!owner) fail(400, "Choose an active brand for this post.");
-      brandId = owner.id;
-    } else if (!existing) {
-      const match = await one(env,
-        "SELECT COUNT(DISTINCT brand_id) AS total,MIN(brand_id) AS brand_id FROM accounts WHERE niche_id=? AND id IN (SELECT value FROM json_each(?))",
-        niche.id, JSON.stringify(destinations));
-      if (match.total === 1) brandId = match.brand_id;
-      else {
-        const root = await one(env,
-          "SELECT id FROM brands WHERE niche_id=? AND status='active' ORDER BY is_master DESC,created_at LIMIT 1", niche.id);
-        brandId = root?.id || null;
-      }
-    }
     const title = textValue(data.title || "", 120),
       caption = textValue(data.caption || "", 10000),
       post = existing?.id || id(),
@@ -1099,12 +1165,13 @@ async function api(request, env, context) {
     if (existing) {
       const result = await execute(
         env,
-        "UPDATE posts SET media_id=?,title=?,caption=?,destinations_json=?,overrides_json=?,brand_id=?,status='draft',delivery_status='draft',scheduled_at=NULL,approved_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
+        "UPDATE posts SET media_id=?,title=?,caption=?,destinations_json=?,overrides_json=?,source_group=?,brand_id=?,status='draft',delivery_status='draft',scheduled_at=NULL,approved_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
         mediaId,
         title,
         caption,
         JSON.stringify([...new Set(destinations)]),
         JSON.stringify(overrides),
+        sourceGroup,
         brandId,
         stamp,
         post,
@@ -1117,7 +1184,7 @@ async function api(request, env, context) {
     } else
       await execute(
         env,
-        "INSERT INTO posts(id,niche_id,media_id,title,caption,destinations_json,overrides_json,created_at,updated_at,brand_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO posts(id,niche_id,media_id,title,caption,destinations_json,overrides_json,source_group,brand_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         post,
         niche.id,
         mediaId,
@@ -1125,9 +1192,10 @@ async function api(request, env, context) {
         caption,
         JSON.stringify([...new Set(destinations)]),
         JSON.stringify(overrides),
-        stamp,
-        stamp,
+        sourceGroup,
         brandId,
+        stamp,
+        stamp,
       );
     await audit(env, user.id, niche.id, "draft.saved", post);
     return json(
@@ -1143,6 +1211,11 @@ async function api(request, env, context) {
       niche.id,
     );
     if (!post) fail(404, "Post not found");
+    if (postMatch[2] === "publish-now" && method === "POST") {
+      const result = await publishScheduledNow(env, user, niche, post, await body(request));
+      context?.waitUntil(runOutbox(env, 3, fetch, post.id));
+      return json(result, 202);
+    }
     if (postMatch[2] === "export" && method === "GET") {
       const media = await one(
         env,

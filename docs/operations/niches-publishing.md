@@ -7,6 +7,29 @@ R2 is still blocked by the Cloudflare account entitlement (10042). The approved 
 The Worker also supports an optional direct Brevo reset sender (300 free emails/day according to Brevo's published plan) in addition to the existing HTTPS adapter. It requires separate `NICHES_BREVO_API_KEY` in the AISO operations secret configuration and a verified `NICHES_BREVO_SENDER_EMAIL` repository variable for the Niches Worker only; no real delivery has been validated. Keep these out of source code and never reuse unrelated AISO application credentials.
 
 
+## Master-only niches
+
+Create a niche with an optional master brand and source groups. Connect each
+platform account in that niche, then assign it to the master brand or a source
+group. Open a source group’s composer to label the draft with that group.
+Publish now and Schedule use only selected master destinations. A source
+account is for organisation and cannot receive a publication from that niche.
+Master-only niches do not send Instagram Collab invitations.
+
+Migration 0003 adds default-empty routing fields. Existing niches retain the
+ordinary destination flow. Queued destinations remain pinned to the approved
+account and accounts with work in progress cannot be moved between groups.
+
+## Instagram Reel collaboration
+
+In the final publishing review, select one Meta-connected Instagram account as
+the publisher and enter one optional collaborator username. The same settings
+apply to Publish now and Schedule. The worker adds the invite to the Reel
+container request. The invited account accepts in Instagram. Direct Instagram
+Login and image posts do not use this option. The existing approval and
+publication records carry the option without a database migration. A live
+provider test is required to verify the invite with the connected account.
+
 ## Implemented and tested locally
 
 Each niche supports multiple accounts per platform, including planning accounts that remain explicitly unconnected. The composer proposes the niche's accounts, allows deselection, and saves master, platform and individual-account captions. Uploaded media supports batch drafting and upload progress. File selection and temporary previews also work when cloud storage is unavailable; previews are not cloud uploads and disappear when the page closes.
@@ -14,6 +37,8 @@ Each niche supports multiple accounts per platform, including planning accounts 
 Official OAuth implementations cover Google/YouTube, TikTok and Meta Facebook Login for Pages and eligible Instagram professional accounts. One-time OAuth state is tied to the initiating browser and live session. Tokens and pending authorisation choices are encrypted using a separate Niches AES-GCM key with account-bound associated data. No social passwords are collected.
 
 Direct publishing has an explicit review/approval boundary, per-account records, scheduled execution, leases, encrypted resumable state, duplicate approval protection and bounded retries. Ambiguous writes require checking the platform before retrying. Only provider-confirmed completion becomes published. Adapters cover YouTube resumable video, Instagram image/Reels containers, Facebook photos/Reels and TikTok direct video. The minute cron runs bounded stages; no paid queue is provisioned. Large videos remain limited to the configured 25 MB upload cap.
+
+For a future direct publication, open its date in Calendar and select **Publish now**. Confirming moves the existing deliveries forward for all approved accounts. Niches preserves the delivery IDs and uses the same provider confirmation and retry process. If any delivery has started, use its account status instead.
 
 The automated provider tests use simulated provider responses. No platform has passed an actual owner-authorised production publishing test. Custom YouTube thumbnail uploading, provider analytics/revenue imports, TikTok photo posts and long-running video throughput remain roadmap work.
 

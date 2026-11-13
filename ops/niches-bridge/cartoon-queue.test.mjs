@@ -36,7 +36,13 @@ test('only fully published duplicate jobs are suppressed',()=>{
  assert.throws(()=>planQueue(f.read(),now),/Partial\/uncertain/);
 });
 test('single statement updates every post and job atomically, keeping metadata and IDs',()=>{
- const f=fixture(),before=f.read(),plan=planQueue(before,now),sql=statements(plan,f.snapshot(),'2026-11-06T01:20:00.000Z','cartoon_queue_test');
+ const f=fixture(), current=Date.now();
+ for(let i=0;i<47;i++){
+  const due=new Date(current+(i+2)*3600000).toISOString();
+  f.db.prepare('UPDATE posts SET scheduled_at=? WHERE id=?').run(due,'queued'+i);
+  f.db.prepare('UPDATE publications SET next_attempt_at=? WHERE post_id=?').run(due,'queued'+i);
+ }
+ const before=f.read(),plan=planQueue(before,current),sql=statements(plan,f.snapshot(),new Date(current).toISOString(),'cartoon_queue_test');
  f.db.exec(sql.trigger);const changed=f.db.prepare(sql.update).all(...sql.params);assert.equal(changed.length,47);
  const after=f.read();assert.equal(after.publications.length,before.publications.length);
  for(const row of plan){const a=after.posts.find(x=>x.id===row.id),b=before.posts.find(x=>x.id===row.id);assert.equal(a.caption,b.caption);assert.equal(a.overrides_json,b.overrides_json);assert.equal(a.scheduled_at,row.due);assert.ok(after.publications.filter(x=>x.post_id===row.id).every(x=>x.next_attempt_at===row.due));}

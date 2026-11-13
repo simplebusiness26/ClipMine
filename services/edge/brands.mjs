@@ -1,159 +1,198 @@
 import { all, one, execute } from "./db.mjs";
-import { fail, id, json, now, textValue } from "./security.mjs";
+import { fail, id, textValue } from "./security.mjs";
+import { providerInfo } from "./social-oauth.mjs";
 
-const activeBrand = async (env, nicheId, brandId) => {
-  const brand = await one(env,
-    "SELECT * FROM brands WHERE id=? AND niche_id=? AND status='active'",
-    brandId, nicheId);
-  if (!brand) fail(404, "Active brand not found in this niche.");
+export function listBrands(env, nicheId) {
+  return all(env, "SELECT * FROM brands WHERE niche_id=? AND archived_at IS NULL ORDER BY is_master DESC,parent_id IS NOT NULL,name", nicheId);
+}
+
+export async function brandFor(env, nicheId, brandId) {
+  const brand = await one(env, "SELECT * FROM brands WHERE id=? AND niche_id=? AND archived_at IS NULL", brandId, nicheId);
+  if (!brand) fail(404, "Choose a brand in this niche.");
   return brand;
-};
+}
 
-const details = async (env, nicheId, master) => {
-  const [children, directAccounts, directPosts, scheduled] = await Promise.all([
-    all(env, "SELECT id,name,is_master FROM brands WHERE niche_id=? AND parent_brand_id=? AND status='active' ORDER BY name", nicheId, master.id),
-    one(env, "SELECT COUNT(*) AS total FROM accounts WHERE niche_id=? AND brand_id=? AND status!='archived'", nicheId, master.id),
-    one(env, "SELECT COUNT(*) AS total FROM posts WHERE niche_id=? AND brand_id=?", nicheId, master.id),
-    one(env, "SELECT COUNT(*) AS total FROM posts WHERE niche_id=? AND brand_id=? AND (delivery_status IN ('scheduled','queued','processing') OR status='scheduled')", nicheId, master.id),
+export async function saveBrand(env, nicheId, data, brandId) {
+  const brand = brandId ? await brandFor(env, nicheId, brandId) : null;
+  const name = textValue(data.name ?? brand?.name, 80, true).trim();
+  if (!name) fail(400, "Enter a brand name.");
+  if (brand) {
+    if (data.auto_instagram !== undefined &&
+        (!brand.is_master || typeof data.auto_instagram !== "boolean"))
+      fail(400, "Set automatic Instagram distribution on the master brand.");
+    let parent = brand.parent_id;
+    if(data.parent_id !== undefined) {
+      parent = data.parent_id || null;
+      if(brand.is_master && parent)
+        fail(400, "A master brand cannot belong to another brand.");
+      if(parent === brand.id) fail(400, "A brand cannot parent itself.");
+      if(parent) {
+        const parentBrand=await one(env,
+          "SELECT id FROM brands WHERE id=? AND niche_id=? AND is_master=1 AND archived_at IS NULL",
+          parent,nicheId);
+        if(!parentBrand) fail(400, "Choose an active master brand in this niche.");
+      }
+    }
+    const result = await execute(env,
+      "UPDATE OR IGNORE brands SET name=?,auto_instagram=?,parent_id=? WHERE id=? AND niche_id=? AND archived_at IS NULL",
+      name, Number(data.auto_instagram ?? brand.auto_instagram), parent, brand.id, nicheId);
+    if (!result.meta.changes) fail(409, "That brand name is already in use.");
+    return brandFor(env, nicheId, brand.id);
+  }
+  const master = await one(env, "SELECT id FROM brands WHERE niche_id=? AND is_master=1 AND archived_at IS NULL", nicheId);
+  const newId = id();
+  const isMaster = data.is_master === true ||
+    (data.is_master === undefined && !master && data.independent !== true);
+  if (isMaster && master) fail(409, "This niche already has an active master.");
+  const parent = isMaster || data.independent === true ? null : (master?.id ?? null);
+  const result = await execute(env,
+    "INSERT OR IGNORE INTO brands(id,niche_id,parent_id,name,is_master) VALUES (?,?,?,?,?)",
+    newId, nicheId, parent, name, Number(isMaster));
+  if (!result.meta.changes) fail(409, "The brand name or master changed. Refresh and try again.");
+  return brandFor(env, nicheId, newId);
+}
+
+export async function deliveryDestinations(env, niche, post) {
+  const selected = [...new Set(JSON.parse(post.destinations_json))];
+  const brand = post.brand_id ? await brandFor(env, niche.id, post.brand_id) : null;
+  if (!brand) return { selected, automatic: null };
+  const accounts = await all(env,
+    "SELECT id,brand_id,platform FROM accounts WHERE niche_id=? AND status!='archived'", niche.id);
+  if (selected.some((id) => !accounts.some((a) => a.id === id && a.brand_id === brand.id)))
+    fail(409, "A destination moved or was removed. Update the draft before publishing.");
+  if (!brand.parent_id || !accounts.some((a) => selected.includes(a.id) && a.platform === "instagram") ||
+      !providerInfo(env).find((p) => p.id === "instagram")?.publishing_enabled)
+    return { selected, automatic: null };
+  const master = await brandFor(env, niche.id, brand.parent_id);
+  if (!master.auto_instagram) return { selected, automatic: null };
+  const eligible = await all(env, `SELECT id FROM accounts
+    WHERE niche_id=? AND brand_id=? AND platform='instagram' AND status='connected'
+      AND encrypted_tokens IS NOT NULL AND provider_id NOT LIKE 'manual:%'
+      AND connection_kind IN ('oauth','instagram_login','instagram_unified')
+      AND (expires_at IS NULL OR expires_at>?) LIMIT 2`,
+    niche.id, master.id, new Date().toISOString());
+  return {
+    selected,
+    automatic: eligible.length === 1 ? eligible[0].id : null,
+    notice: eligible.length === 1 ? undefined : eligible.length
+      ? "Master Instagram was skipped because multiple eligible accounts are assigned. Keep one on the master brand to enable automatic delivery."
+      : "Master Instagram was skipped because it has no eligible connection.",
+  };
+}
+
+/**
+ * Preview is read-only and never returns connection credentials.
+ * Ownership is enforced by the caller's scoped niche lookup.
+ */
+export async function masterReleasePreview(env, nicheId, masterId) {
+  const master = await one(env,
+    "SELECT * FROM brands WHERE id=? AND niche_id=? AND is_master=1 AND archived_at IS NULL",
+    masterId,nicheId);
+  if (!master) fail(404, "Active master brand not found.");
+  const [children, accounts, posts, schedules, legacyAccounts] = await Promise.all([
+    all(env,"SELECT id,name FROM brands WHERE niche_id=? AND parent_id=? AND archived_at IS NULL ORDER BY name",nicheId,masterId),
+    one(env,"SELECT COUNT(*) AS total FROM accounts WHERE niche_id=? AND brand_id=? AND status!='archived'",nicheId,masterId),
+    one(env,"SELECT COUNT(*) AS total FROM posts WHERE niche_id=? AND brand_id=?",nicheId,masterId),
+    one(env,"SELECT COUNT(*) AS total FROM posts WHERE niche_id=? AND brand_id=? AND (delivery_status IN ('queued','scheduled','processing') OR status='scheduled')",nicheId,masterId),
+    one(env,"SELECT COUNT(*) AS total FROM accounts WHERE niche_id=? AND brand_id IS NULL AND routing_group='master' AND status!='archived'",nicheId),
   ]);
   return {
     master: { id: master.id, name: master.name },
     child_brands: children,
-    direct_accounts: directAccounts.total,
-    direct_posts: directPosts.total,
-    scheduled_posts: scheduled.total,
-    action: "release",
-    note: "Existing publishing targets, scheduled deliveries, media and connection tokens are preserved. The former master and its cross-post relationship will be archived.",
+    direct_accounts: accounts.total + legacyAccounts.total,
+    direct_posts: posts.total,
+    scheduled_posts: schedules.total,
+    note: "Child brands become independent. Connected accounts, media, publishing jobs and their destinations stay intact.",
   };
-};
-
-async function audit(env, userId, nicheId, action, resource) {
-  return execute(env,
-    "INSERT INTO audit_events VALUES (?,?,?,?,?,?)",
-    id(), userId, nicheId, action, resource, now());
 }
 
-// Called only after the parent route authenticates the user and verifies niche ownership.
-export async function brandRoute(request, env, user, niche, sub, readBody) {
-  const method = request.method;
-  const accountMove = sub.match(/^accounts\/([a-zA-Z0-9-]+)\/brand$/);
-  if (accountMove && method === "POST") {
-    const data = await readBody(request);
-    const brand = await activeBrand(env, niche.id, data.brand_id);
-    const existing = await one(env,
-      "SELECT id FROM accounts WHERE id=? AND niche_id=? AND status!='archived'",
-      accountMove[1], niche.id);
-    if (!existing) fail(404, "Account not found.");
-    await execute(env,
-      "UPDATE accounts SET brand_id=? WHERE id=? AND niche_id=? AND status!='archived'",
-      brand.id, existing.id, niche.id);
-    await audit(env, user.id, niche.id, "account.brand_moved", existing.id);
-    return json({ ok: true, account_id: existing.id, brand_id: brand.id });
+export async function archivedMasters(env,nicheId) {
+  return all(env,
+    "SELECT id,name,archived_at FROM brands WHERE niche_id=? AND is_master=1 AND archived_at>? ORDER BY archived_at DESC",
+    nicheId,new Date(Date.now()-30*86400000).toISOString());
+}
+
+export async function releaseMaster(env,userId,nicheId,masterId,data) {
+  const preview=await masterReleasePreview(env,nicheId,masterId);
+  if(data?.confirm!=="RELEASE" || data?.name!==preview.master.name)
+    fail(400,"Confirm RELEASE and type the master name exactly.");
+  const stamp=new Date().toISOString();
+  const independentId=id();
+  const suffix=independentId.slice(0,6);
+  const base=(preview.master.name+" Accounts").slice(0,72);
+  const existing=await one(env,"SELECT id FROM brands WHERE niche_id=? AND name=? COLLATE NOCASE",nicheId,base);
+  const independentName=existing?base.slice(0,72)+" "+suffix:base;
+  const legacy=await one(env,"SELECT master_name FROM niches WHERE id=?",nicheId);
+  // In pre-brand-ownership drafts the old master group can be unassigned.
+  // Keep those posts and accounts by moving them together; do not modify IDs.
+  const masterMatches=legacy?.master_name?.trim().toLowerCase()===preview.master.name.trim().toLowerCase();
+  const hasDirect=await one(env,
+    `SELECT
+       (SELECT COUNT(*) FROM accounts WHERE niche_id=? AND (brand_id=? OR (?=1 AND brand_id IS NULL AND routing_group='master'))) +
+       (SELECT COUNT(*) FROM posts WHERE niche_id=? AND (brand_id=? OR (?=1 AND brand_id IS NULL AND source_group=''))) AS total`,
+       nicheId,masterId,Number(masterMatches),nicheId,masterId,Number(masterMatches));
+  const statements=[
+    env.DB.prepare("UPDATE brands SET archived_at=? WHERE id=? AND niche_id=? AND is_master=1 AND archived_at IS NULL")
+      .bind(stamp,masterId,nicheId),
+  ];
+  if(hasDirect.total) statements.push(
+    env.DB.prepare("INSERT INTO brands(id,niche_id,parent_id,name,is_master) VALUES (?,?,NULL,?,0)")
+      .bind(independentId,nicheId,independentName));
+  statements.push(
+    env.DB.prepare("UPDATE brands SET parent_id=NULL WHERE niche_id=? AND parent_id=? AND archived_at IS NULL")
+      .bind(nicheId,masterId));
+  if(hasDirect.total){
+    statements.push(
+      env.DB.prepare(`UPDATE accounts SET brand_id=?,routing_group=''
+        WHERE niche_id=? AND (brand_id=? OR (?=1 AND brand_id IS NULL AND routing_group='master'))`)
+        .bind(independentId,nicheId,masterId,Number(masterMatches)),
+      env.DB.prepare(`UPDATE posts SET brand_id=?,source_group=''
+        WHERE niche_id=? AND (brand_id=? OR (?=1 AND brand_id IS NULL AND source_group=''))`)
+        .bind(independentId,nicheId,masterId,Number(masterMatches))
+    );
   }
-  if (sub === "brands" && method === "GET") {
-    return json(await all(env,
-      `SELECT b.*, 
-      (SELECT COUNT(*) FROM accounts a WHERE a.brand_id=b.id AND a.status!='archived') AS account_count,
-      (SELECT COUNT(*) FROM posts p WHERE p.brand_id=b.id) AS post_count
-      FROM brands b WHERE b.niche_id=? AND 
-      (b.status='active' OR b.archived_at>?)
-      ORDER BY b.status,b.is_master DESC,b.created_at,b.name`,
-      niche.id, new Date(Date.now() - 30*86400000).toISOString()));
+  if(masterMatches) statements.push(
+    env.DB.prepare("UPDATE niches SET master_name='',source_groups_json='[]' WHERE id=? AND lower(trim(master_name))=lower(?)")
+      .bind(nicheId,preview.master.name));
+  statements.push(
+    env.DB.prepare("INSERT INTO audit_events VALUES (?,?,?,?,?,?)")
+      .bind(id(),userId,nicheId,"brand.master_released",masterId,stamp));
+  // D1 batch is atomic. If any constraint fails, none of the account or post
+  // ownership moves are committed.
+  const result=await env.DB.batch(statements);
+  if(!result[0]?.meta?.changes) fail(409,"Master brand already changed; refresh.");
+  return {
+    ok:true, archived_master_id:masterId, released_child_brands:preview.child_brands.length,
+    transferred_accounts:preview.direct_accounts, transferred_posts:preview.direct_posts,
+    preserved_scheduled_posts:preview.scheduled_posts,
+    accounts_brand_id:hasDirect.total?independentId:null,
+  };
+}
+
+export async function restoreMaster(env,userId,nicheId,masterId) {
+  const master=await one(env,
+    "SELECT * FROM brands WHERE id=? AND niche_id=? AND is_master=1 AND archived_at IS NOT NULL",
+    masterId,nicheId);
+  if(!master) fail(404,"Archived master brand not found.");
+  if(Date.parse(master.archived_at)<Date.now()-30*86400000)
+    fail(410,"The 30-day restore period has ended.");
+  const live=await one(env,
+    "SELECT id FROM brands WHERE niche_id=? AND is_master=1 AND archived_at IS NULL",nicheId);
+  if(live) fail(409,"Archive the existing master before restoring this one.");
+  const stamp=new Date().toISOString();
+  try{
+    const results=await env.DB.batch([
+      env.DB.prepare("UPDATE brands SET archived_at=NULL WHERE id=? AND niche_id=? AND archived_at IS NOT NULL")
+        .bind(masterId,nicheId),
+      env.DB.prepare("UPDATE niches SET master_name=? WHERE id=? AND master_name=''")
+        .bind(master.name,nicheId),
+      env.DB.prepare("INSERT INTO audit_events VALUES (?,?,?,?,?,?)")
+        .bind(id(),userId,nicheId,"brand.master_restored",masterId,stamp),
+    ]);
+    if(!results[0]?.meta?.changes) fail(409,"Master changed; refresh.");
+  }catch(e){
+    if(e.status)throw e;
+    fail(409,"Master could not be restored because its name or hierarchy conflicts with an active brand.");
   }
-  if (sub === "brands" && method === "POST") {
-    const data = await readBody(request);
-    const name = textValue(data.name, 80, true);
-    const isMaster = data.is_master === true;
-    const parent = data.parent_brand_id || null;
-    if (parent && isMaster) fail(400, "Master brands cannot be children.");
-    if (parent) {
-      const root = await activeBrand(env, niche.id, parent);
-      if (!root.is_master || root.parent_brand_id)
-        fail(400, "Choose an active master brand as the parent.");
-    }
-    const count = await one(env, "SELECT COUNT(*) AS total FROM brands WHERE niche_id=? AND status='active'", niche.id);
-    if (count.total >= 100) fail(400, "This niche supports up to 100 active brands.");
-    const brandId = id();
-    await execute(env,
-      "INSERT INTO brands(id,niche_id,name,parent_brand_id,is_master,status,created_at) VALUES (?,?,?,?,?,'active',?)",
-      brandId, niche.id, name, parent, Number(isMaster), now());
-    await audit(env, user.id, niche.id, "brand.created", brandId);
-    return json(await one(env, "SELECT * FROM brands WHERE id=?", brandId), 201);
-  }
-  const match = sub.match(/^brands\/([a-zA-Z0-9-]+)(?:\/(release-preview|release|restore))?$/);
-  if (!match) fail(404, "Brand route not found.");
-  const brand = await one(env, "SELECT * FROM brands WHERE id=? AND niche_id=?", match[1], niche.id);
-  if (!brand) fail(404, "Brand not found in this niche.");
-  const action = match[2];
-  if (!action && method === "PATCH") {
-    if (brand.status !== "active") fail(409, "Restore this brand before editing it.");
-    const data = await readBody(request);
-    const name = data.name === undefined ? brand.name : textValue(data.name, 80, true);
-    const parent = data.parent_brand_id === undefined ? brand.parent_brand_id : data.parent_brand_id || null;
-    if (parent && brand.is_master) fail(400, "Master brands cannot have a parent.");
-    if (parent) {
-      if (parent === brand.id) fail(400, "A brand cannot parent itself.");
-      const root = await activeBrand(env, niche.id, parent);
-      if (!root.is_master || root.parent_brand_id)
-        fail(400, "Choose an active master brand as the parent.");
-    }
-    await execute(env, "UPDATE brands SET name=?,parent_brand_id=? WHERE id=? AND niche_id=? AND status='active'",
-      name, parent, brand.id, niche.id);
-    await audit(env, user.id, niche.id, "brand.updated", brand.id);
-    return json({ ...brand, name, parent_brand_id: parent });
-  }
-  if (action === "release-preview" && method === "GET") {
-    if (!brand.is_master || brand.status !== "active")
-      fail(409, "Only an active master brand can be released.");
-    return json(await details(env, niche.id, brand));
-  }
-  if (action === "release" && method === "POST") {
-    if (!brand.is_master || brand.status !== "active")
-      fail(409, "Only an active master brand can be released.");
-    const data = await readBody(request);
-    if (data.confirm !== "RELEASE" || data.name !== brand.name)
-      fail(400, "Confirm RELEASE and the exact master brand name.");
-    const preview = await details(env, niche.id, brand);
-    const stamp = now();
-    const replacementId = id();
-    const replacementName = textValue(brand.name + " Accounts", 80, true);
-    // D1 batch is atomic. Only the request which archives this active master
-    // can release children, and account/post IDs never change.
-    const statements = [
-      env.DB.prepare("UPDATE brands SET status='archived',archived_at=? WHERE id=? AND niche_id=? AND is_master=1 AND status='active'")
-        .bind(stamp, brand.id, niche.id),
-      env.DB.prepare("INSERT INTO brands(id,niche_id,name,parent_brand_id,is_master,status,created_at) SELECT ?,?,?,NULL,0,'active',? WHERE EXISTS(SELECT 1 FROM brands WHERE id=? AND niche_id=? AND status='archived' AND archived_at=?) AND (EXISTS(SELECT 1 FROM accounts WHERE brand_id=?) OR EXISTS(SELECT 1 FROM posts WHERE brand_id=?))")
-        .bind(replacementId, niche.id, replacementName, stamp, brand.id, niche.id, stamp, brand.id, brand.id),
-      env.DB.prepare("UPDATE brands SET parent_brand_id=NULL WHERE niche_id=? AND parent_brand_id=? AND status='active' AND EXISTS(SELECT 1 FROM brands WHERE id=? AND status='archived' AND archived_at=?)")
-        .bind(niche.id, brand.id, brand.id, stamp),
-      env.DB.prepare("UPDATE accounts SET brand_id=? WHERE niche_id=? AND brand_id=? AND EXISTS(SELECT 1 FROM brands WHERE id=? AND status='archived' AND archived_at=?)")
-        .bind(replacementId, niche.id, brand.id, brand.id, stamp),
-      env.DB.prepare("UPDATE posts SET brand_id=? WHERE niche_id=? AND brand_id=? AND EXISTS(SELECT 1 FROM brands WHERE id=? AND status='archived' AND archived_at=?)")
-        .bind(replacementId, niche.id, brand.id, brand.id, stamp),
-    ];
-    const results = await env.DB.batch(statements);
-    if (!results[0].meta.changes)
-      fail(409, "Master brand already changed. Refresh and review again.");
-    await audit(env, user.id, niche.id, "brand.master_released", brand.id);
-    return json({
-      ok: true, archived_master_id: brand.id,
-      released_child_brands: preview.child_brands.length,
-      transferred_accounts: preview.direct_accounts,
-      transferred_posts: preview.direct_posts,
-      preserved_scheduled_posts: preview.scheduled_posts,
-      accounts_brand_id: results[1].meta.changes ? replacementId : null,
-    });
-  }
-  if (action === "restore" && method === "POST") {
-    if (brand.status !== "archived") fail(409, "This brand is already active.");
-    if (!brand.archived_at || Date.parse(brand.archived_at) < Date.now() - 30 * 86400000)
-      fail(410, "The 30-day restore window has ended.");
-    const result = await execute(env,
-      "UPDATE brands SET status='active',archived_at=NULL WHERE id=? AND niche_id=? AND status='archived'",
-      brand.id, niche.id);
-    if (!result.meta.changes) fail(409, "Brand was already restored.");
-    await audit(env, user.id, niche.id, "brand.restored", brand.id);
-    return json({ ok: true, brand_id: brand.id, note: "Released child brands remain independent until you reattach them." });
-  }
-  fail(405, "Method not allowed.");
+  return {ok:true,brand_id:masterId,note:"Released sub-brands and accounts remain independent until reassigned."};
 }

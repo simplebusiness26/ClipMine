@@ -5,6 +5,7 @@ import {
   type SocialAccount,
   type Provider,
 } from "./niches-api";
+type DeliveryPlan = { selected: string[]; automatic: string | null; notice?: string };
 type Creator = {
   creator_nickname: string;
   creator_username: string;
@@ -16,25 +17,43 @@ type Creator = {
 };
 export default function PublishingReview({
   nicheId,
+  masterName,
   draft,
   accounts,
   providers,
   onResult,
   onAccounts,
+  onDraftUpdated,
 }: {
   nicheId: string;
+  masterName?: string;
   draft: Post;
   accounts: SocialAccount[];
   providers: Provider[];
   onResult: (message: string) => void;
   onAccounts: () => void;
+  onDraftUpdated?: (updated: Post) => void;
 }) {
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
+    [removingAccountId, setRemovingAccountId] = useState<string | null>(null),
     [creators, setCreators] = useState<Record<string, Creator>>({}),
-    [mode, setMode] = useState<"now" | "schedule">("now");
-  const selected = accounts.filter((a) => draft.destinations.includes(a.id));
+    [tiktokModes, setTiktokModes] = useState<Record<string, "direct" | "inbox">>({}),
+    [mode, setMode] = useState<"now" | "schedule">("now"),
+    [reviewed, setReviewed] = useState<{ key: string; plan: DeliveryPlan } | null>(null);
+  const planKey = [draft.id, draft.brand_id, ...draft.destinations].join(":");
+  const plan = reviewed?.key === planKey ? reviewed.plan : null;
+  const selected = accounts.filter((a) => draft.destinations.includes(a.id) || plan?.automatic === a.id);
+  useEffect(() => {
+    if (!draft.brand_id) return;
+    let active = true;
+    void call<DeliveryPlan>(`/api/niches/${nicheId}/posts/${draft.id}/destinations`)
+      .then((result) => { if (active) setReviewed({ key: planKey, plan: result }); })
+      .catch((error: Error) => { if (active) setError(error.message); });
+    return () => { active = false; };
+  }, [nicheId, draft.id, draft.brand_id, planKey]);
   const blocked =
+    (!!draft.brand_id && (!plan || (!!plan.automatic && !selected.some((a) => a.id === plan.automatic)))) ||
     selected.some(
       (a) =>
         a.status !== "connected" ||
@@ -45,7 +64,7 @@ export default function PublishingReview({
   useEffect(() => {
     let alive = true;
     for (const a of selected.filter(
-      (a) => a.platform === "tiktok" && a.status === "connected",
+      (a) => a.platform === "tiktok" && a.status === "connected" && tiktokModes[a.id] !== "inbox",
     ))
       void call<Creator>(`/api/niches/${nicheId}/accounts/${a.id}/creator`)
         .then((c) => {
@@ -57,7 +76,34 @@ export default function PublishingReview({
     return () => {
       alive = false;
     };
-  }, [draft.id, draft.destinations.join(","), nicheId]);
+  }, [draft.id, draft.destinations.join(","), nicheId, tiktokModes]);
+  async function removeAccount(account: SocialAccount) {
+    if (busy || removingAccountId) return;
+    // Only an editable draft can be changed. The server refuses any draft
+    // with existing publication records, preventing accidental alterations
+    // to queued/published content.
+    setError("");
+    setRemovingAccountId(account.id);
+    try {
+      const updated = await call<Post>(
+        `/api/niches/${nicheId}/posts/${draft.id}`,
+        "PATCH",
+        {
+          media_id: draft.media_id,
+          title: draft.title,
+          caption: draft.caption,
+          overrides: draft.overrides,
+          destinations: draft.destinations.filter((id) => id !== account.id),
+        },
+      );
+      onDraftUpdated?.(updated);
+    } catch (error) {
+      setError((error as Error).message);
+    } finally {
+      setRemovingAccountId(null);
+    }
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
@@ -65,13 +111,19 @@ export default function PublishingReview({
     const data = new FormData(event.currentTarget);
     const settings: Record<string, unknown> = {};
     for (const a of selected) {
+      const collaborator = String(data.get(`${a.id}_collaborator`) || "").trim();
       settings[a.id] = {
+        ...(collaborator ? { instagram_collaborator: collaborator } : {}),
         privacy: data.get(`${a.id}_privacy`),
         made_for_kids: data.get(`${a.id}_audience`) === "yes",
         allow_comments: data.get(`${a.id}_comments`) === "on",
         allow_duet: data.get(`${a.id}_duet`) === "on",
         allow_stitch: data.get(`${a.id}_stitch`) === "on",
         tiktok_consent: data.get(`${a.id}_consent`) === "on",
+        ...(a.platform === "tiktok" ? {
+          tiktok_delivery: tiktokModes[a.id] || "direct",
+          tiktok_upload_consent: data.get(`${a.id}_upload_consent`) === "on",
+        } : {}),
         commercial_content: data.get(`${a.id}_commercial`) === "on",
         brand_organic: data.get(`${a.id}_organic`) === "on",
         brand_content: data.get(`${a.id}_brand`) === "on",
@@ -92,6 +144,7 @@ export default function PublishingReview({
               ? new Date(String(data.get("scheduled_at"))).toISOString()
               : null,
           accounts: settings,
+          automatic_destination: plan?.automatic ?? null,
         },
       );
       onResult(result.message);
@@ -121,14 +174,27 @@ export default function PublishingReview({
           uploaded.
         </p>
       )}
+      {plan?.notice && <p className="n-status-note">{plan.notice}</p>}
+      {masterName && <p className="n-status-note">{draft.source_group ? `${draft.source_group} → ` : ""}{masterName} only.</p>}
       {selected.map((a) => {
         const creator = creators[a.id],
           p = providers.find((p) => p.id === a.platform);
         return (
-          <details key={a.id} open>
-            <summary>
-              {a.display_name} · {a.platform}
-            </summary>
+          <div className="electric-review-account" key={a.id}>
+            <div className="electric-review-account-bar">
+              <div className="electric-review-platform-title">
+                <span className="electric-review-platform-icon" aria-hidden="true">{a.platform.slice(0, 1).toUpperCase()}</span>
+                <span><strong>{a.display_name}</strong><small>{a.platform.toUpperCase()}</small></span>
+              </div>
+              {a.id === plan?.automatic ? <small>Automatic master Instagram</small> : <button type="button" className="electric-review-remove"
+                disabled={busy || !!removingAccountId || !onDraftUpdated}
+                onClick={() => void removeAccount(a)}
+                aria-label={`Remove ${a.display_name} from this draft`}>
+                {removingAccountId === a.id ? "Removing…" : "✕ Remove"}
+              </button>}
+            </div>
+            <details open>
+              <summary>Platform preview and posting options</summary>
             <p className="n-muted">
               {a.status === "connected"
                 ? p?.publishing_enabled
@@ -148,6 +214,23 @@ export default function PublishingReview({
                 Only confirm when you are ready for the post to go live.
               </p>
             )}
+            {a.platform === "instagram" && a.status === "connected" && !masterName && (
+              a.connection_kind === "instagram_login" ? (
+                <p className="n-muted">Collab invites require an Instagram connection through Meta. Direct Instagram Login can still publish ordinary Reels.</p>
+              ) : (
+                <label>
+                  Instagram Reel collaborator (optional)
+                  <input
+                    name={`${a.id}_collaborator`}
+                    placeholder="@podclipcasts"
+                    maxLength={31}
+                    autoCapitalize="none"
+                    spellCheck={false}
+                  />
+                  <small>Select one Instagram publishing account. The collaborator accepts the invite in Instagram.</small>
+                </label>
+              )
+            )}
             {a.platform === "facebook" && (
               <p className="n-status-note">
                 Facebook publishes this video or Reel to the connected Page.
@@ -155,6 +238,18 @@ export default function PublishingReview({
               </p>
             )}
             {a.platform === "tiktok" && (
+              <label>
+                TikTok delivery
+                <select
+                  value={tiktokModes[a.id] || "direct"}
+                  onChange={(event) => setTiktokModes((old) => ({ ...old, [a.id]: event.target.value as "direct" | "inbox" }))}
+                >
+                  <option value="direct">Direct Post</option>
+                  <option value="inbox">Send to TikTok inbox</option>
+                </select>
+              </label>
+            )}
+            {a.platform === "tiktok" && tiktokModes[a.id] !== "inbox" && (
               <p className="n-status-note">
                 TikTok requires verified media URL ownership and publishing access.
                 Unaudited apps are limited to private accounts and Only you posts.
@@ -191,7 +286,16 @@ export default function PublishingReview({
                 </label>
               </>
             )}
-            {a.platform === "tiktok" && (
+            {a.platform === "tiktok" && tiktokModes[a.id] === "inbox" && (
+              <>
+                <p className="n-status-note">Send the selected video to {a.display_name}’s TikTok inbox. Open its notification in the TikTok app to edit it and choose the caption, audience and posting settings. Niches reports when the upload reaches your inbox.</p>
+                <label className="n-checkbox">
+                  <input type="checkbox" name={`${a.id}_upload_consent`} required={!blocked} />
+                  Send this video to my TikTok inbox so I can finish it in TikTok.
+                </label>
+              </>
+            )}
+            {a.platform === "tiktok" && tiktokModes[a.id] !== "inbox" && (
               <>
                 {creator ? (
                   <>
@@ -287,13 +391,14 @@ export default function PublishingReview({
                 </p>
               </>
             )}
-            {["tiktok", "instagram"].includes(a.platform) && (
+            {(a.platform === "instagram" || (a.platform === "tiktok" && tiktokModes[a.id] !== "inbox")) && (
               <label>
                 Video cover frame (milliseconds, optional)
                 <input type="number" min="0" step="1" name={`${a.id}_cover`} />
               </label>
             )}
-          </details>
+            </details>
+          </div>
         );
       })}
       {blocked && (
@@ -343,14 +448,16 @@ export default function PublishingReview({
         disabled={
           busy ||
           blocked ||
-          selected.some((a) => a.platform === "tiktok" && !creators[a.id])
+          selected.some((a) => a.platform === "tiktok" && tiktokModes[a.id] !== "inbox" && !creators[a.id])
         }
       >
         {busy
           ? "Submitting…"
           : mode === "schedule"
             ? "Schedule publication"
-            : "Publish to selected accounts"}
+            : selected.some((a) => a.platform === "tiktok" && tiktokModes[a.id] === "inbox")
+              ? "Submit selected deliveries"
+              : "Publish to selected accounts"}
       </button>
       <p className="n-muted">
         A queued post is not marked published until its provider confirms the

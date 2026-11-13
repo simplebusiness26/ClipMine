@@ -36,10 +36,9 @@ before(async () => {
         "security",
         "db",
         "token-vault",
-        "social-oauth",
+        "social-oauth", "brands",
         "publishers",
         "outbox",
-        "brands",
       ].map((name) => ({
         type: "ESModule",
         path: `services/edge/${name}.mjs`,
@@ -154,79 +153,86 @@ test("create independent niches and enforce ownership on all workspace routes", 
     404,
   );
 });
-test("master release preserves child brands, OAuth tokens, scheduled posts and tenant isolation", async () => {
-  const workspace = (await checked("/api/niches", {
-    method: "POST", cookie: first, data: { name: "Release fixture" },
-  }, 201)).data.id;
-  const initial = (await checked(`/api/niches/${workspace}/brands`, { cookie: first })).data;
-  assert.equal(initial.length, 1);
-  const master = initial[0];
-  assert.equal(master.is_master, 1);
-  const child = (await checked(`/api/niches/${workspace}/brands`, {
-    method: "POST", cookie: first,
-    data: { name: "War Clipcast", parent_brand_id: master.id },
-  }, 201)).data;
-  const direct = (await checked(`/api/niches/${workspace}/accounts`, {
-    method: "POST", cookie: first,
-    data: { platform: "instagram", display_name: "Master IG", handle: "master.example", brand_id: master.id },
-  }, 201)).data.id;
-  const childAccount = (await checked(`/api/niches/${workspace}/accounts`, {
-    method: "POST", cookie: first,
-    data: { platform: "youtube", display_name: "Child YouTube", handle: "child.example", brand_id: child.id },
-  }, 201)).data.id;
-  await db.prepare("UPDATE accounts SET status='connected',encrypted_tokens='encrypted-fixture' WHERE id=?").bind(direct).run();
-  const scheduled = crypto.randomUUID();
-  const stamp = new Date().toISOString();
-  await db.prepare(
-    "INSERT INTO posts(id,niche_id,media_id,title,caption,destinations_json,overrides_json,status,created_at,updated_at,delivery_status,publish_mode,brand_id,scheduled_at) VALUES (?,?,NULL,?,? ,?,'{}','scheduled',?,?,'scheduled','direct',?,?)",
-  ).bind(scheduled, workspace, "Scheduled master post", "Keep schedule", JSON.stringify([direct]), stamp, stamp, master.id, "2027-01-01T18:00:00.000Z").run();
-  await checked(`/api/niches/${workspace}/brands/${master.id}/release-preview`, {
-    cookie: second,
-  }, 404);
-  const preview = (await checked(`/api/niches/${workspace}/brands/${master.id}/release-preview`, {
-    cookie: first,
+test("master release retains real brand hierarchy, social authorisations and schedules", async () => {
+  const workspace=(await checked("/api/niches",{
+    method:"POST",cookie:first,data:{name:"Release workspace"},
+  },201)).data.id;
+  const master=(await checked(`/api/niches/${workspace}/brands`,{
+    method:"POST",cookie:first,data:{name:"Podclipcast",is_master:true},
+  },201)).data;
+  const child=(await checked(`/api/niches/${workspace}/brands`,{
+    method:"POST",cookie:first,data:{name:"War Clipcast"},
+  },201)).data;
+  assert.equal(child.parent_id,master.id);
+  const account=(await checked(`/api/niches/${workspace}/accounts`,{
+    method:"POST",cookie:first,data:{
+      platform:"instagram",display_name:"Podclipcast IG",handle:"podclipcast.test",brand_id:master.id,
+    },
+  },201)).data.id;
+  const childAccount=(await checked(`/api/niches/${workspace}/accounts`,{
+    method:"POST",cookie:first,data:{
+      platform:"youtube",display_name:"War Clipcast YT",handle:"warclipcast.test",brand_id:child.id,
+    },
+  },201)).data.id;
+  await db.prepare("UPDATE accounts SET status='connected',encrypted_tokens='vault-fixture' WHERE id=?")
+    .bind(account).run();
+  const post=(await checked(`/api/niches/${workspace}/posts`,{
+    method:"POST",cookie:first,data:{
+      title:"Keep scheduled",caption:"Keep scheduled",
+      brand_id:master.id,destinations:[account],
+    },
+  },201)).data.id;
+  const due="2027-01-01T18:00:00.000Z";
+  await db.prepare("UPDATE posts SET publish_mode='direct',delivery_status='scheduled',status='scheduled',scheduled_at=? WHERE id=?")
+    .bind(due,post).run();
+  await checked(`/api/niches/${workspace}/brands/${master.id}/release-preview`,{cookie:second},404);
+  const preview=(await checked(`/api/niches/${workspace}/brands/${master.id}/release-preview`,{
+    cookie:first,
   })).data;
-  assert.equal(preview.child_brands.length, 1);
-  assert.equal(preview.direct_accounts, 1);
-  assert.equal(preview.scheduled_posts, 1);
-  await checked(`/api/niches/${workspace}/brands/${master.id}/release`, {
-    method: "POST", cookie: first, data: { confirm: "wrong", name: master.name },
-  }, 400);
-  const released = (await checked(`/api/niches/${workspace}/brands/${master.id}/release`, {
-    method: "POST", cookie: first, data: { confirm: "RELEASE", name: master.name },
+  assert.equal(preview.child_brands.length,1);
+  assert.equal(preview.direct_accounts,1);
+  assert.equal(preview.direct_posts,1);
+  assert.equal(preview.scheduled_posts,1);
+  await checked(`/api/niches/${workspace}/brands/${master.id}/release`,{
+    method:"POST",cookie:first,data:{name:master.name,confirm:"no"},
+  },400);
+  const released=(await checked(`/api/niches/${workspace}/brands/${master.id}/release`,{
+    method:"POST",cookie:first,data:{name:master.name,confirm:"RELEASE"},
   })).data;
-  assert.equal(released.released_child_brands, 1);
-  assert.equal(released.transferred_accounts, 1);
-  assert.equal(released.preserved_scheduled_posts, 1);
-  const rows = (await checked(`/api/niches/${workspace}/brands`, { cookie: first })).data;
-  const standalone = rows.find((b) => b.name === "Release fixture Accounts");
-  assert.ok(standalone);
-  assert.equal(rows.find((b) => b.id === master.id).status, "archived");
-  assert.equal(rows.find((b) => b.id === child.id).parent_brand_id, null);
-  const directRow = await db.prepare("SELECT brand_id,status,encrypted_tokens FROM accounts WHERE id=?").bind(direct).first();
-  const childRow = await db.prepare("SELECT brand_id FROM accounts WHERE id=?").bind(childAccount).first();
-  assert.equal(directRow.brand_id, standalone.id);
-  assert.equal(directRow.status, "connected");
-  assert.equal(directRow.encrypted_tokens, "encrypted-fixture");
-  assert.equal(childRow.brand_id, child.id);
-  const postRow = await db.prepare("SELECT brand_id,delivery_status,scheduled_at,destinations_json FROM posts WHERE id=?").bind(scheduled).first();
-  assert.equal(postRow.brand_id, standalone.id);
-  assert.equal(postRow.delivery_status, "scheduled");
-  assert.equal(postRow.scheduled_at, "2027-01-01T18:00:00.000Z");
-  assert.deepEqual(JSON.parse(postRow.destinations_json), [direct]);
-  await checked(`/api/niches/${workspace}/brands/${master.id}/release`, {
-    method: "POST", cookie: first, data: { confirm: "RELEASE", name: master.name },
-  }, 409);
-  await checked(`/api/niches/${workspace}/brands/${master.id}/restore`, {
-    method: "POST", cookie: first, data: {},
-  });
-  await checked(`/api/niches/${workspace}/brands/${child.id}`, {
-    method: "PATCH", cookie: first, data: { parent_brand_id: master.id },
-  });
-  const moved = (await checked(`/api/niches/${workspace}/accounts/${direct}/brand`, {
-    method: "POST", cookie: first, data: { brand_id: child.id },
+  assert.equal(released.ok,true);
+  assert.equal(released.released_child_brands,1);
+  const brands=(await checked(`/api/niches/${workspace}/brands`,{cookie:first})).data;
+  assert.equal(brands.some(b=>b.id===master.id),false);
+  const independent=brands.find(b=>b.id===released.accounts_brand_id);
+  assert.ok(independent);
+  assert.equal(independent.is_master,0);
+  assert.equal(independent.parent_id,null);
+  assert.equal(brands.find(b=>b.id===child.id).parent_id,null);
+  assert.equal((await db.prepare("SELECT brand_id FROM accounts WHERE id=?").bind(childAccount).first()).brand_id,child.id);
+  const kept=await db.prepare("SELECT brand_id,status,encrypted_tokens FROM accounts WHERE id=?").bind(account).first();
+  assert.deepEqual(kept,{brand_id:independent.id,status:"connected",encrypted_tokens:"vault-fixture"});
+  const saved=await db.prepare("SELECT brand_id,scheduled_at,destinations_json,delivery_status FROM posts WHERE id=?")
+    .bind(post).first();
+  assert.equal(saved.brand_id,independent.id);
+  assert.equal(saved.scheduled_at,due);
+  assert.equal(saved.delivery_status,"scheduled");
+  assert.deepEqual(JSON.parse(saved.destinations_json),[account]);
+  const archived=(await checked(`/api/niches/${workspace}/brands/archived`,{cookie:first})).data;
+  assert.equal(archived[0].id,master.id);
+  await checked(`/api/niches/${workspace}/brands/${master.id}/release`,{
+    method:"POST",cookie:first,data:{name:master.name,confirm:"RELEASE"},
+  },404);
+  const restored=(await checked(`/api/niches/${workspace}/brands/${master.id}/restore`,{
+    method:"POST",cookie:first,data:{},
   })).data;
-  assert.equal(moved.brand_id, child.id);
+  assert.equal(restored.ok,true);
+  const after=(await checked(`/api/niches/${workspace}/brands`,{cookie:first})).data;
+  assert.equal(after.find(b=>b.id===child.id).parent_id,null);
+  assert.equal(after.find(b=>b.id===master.id).is_master,1);
+  const reattached=(await checked(`/api/niches/${workspace}/brands/${child.id}`,{
+    method:"PATCH",cookie:first,data:{parent_id:master.id},
+  })).data;
+  assert.equal(reattached.parent_id,master.id);
 });
 
 test("validate uploads and keep object bytes private across users and niches", async () => {
@@ -561,4 +567,53 @@ test("approved exports protect media until explicit cancellation", async () => {
   await checked(`/api/niches/${niche}/media/${uploaded}`,{
     method:"DELETE",cookie:ownerCookie,
   });
+});
+
+
+test("master niche routes source drafts only to its master accounts", async () => {
+  const { cookie: hubOwner } = await checked("/api/auth/register", {
+    method: "POST", data: { email: "hub-owner@example.test", password: "master routing fixture password" },
+  });
+  const { data: hub } = await checked("/api/niches", {
+    method: "POST", cookie: hubOwner, data: {
+      name: "Podcasts", master_name: "PodClipCast",
+      source_groups: "War Clip Cast, Football Clip Cast",
+    },
+  }, 201);
+  const path = "/api/niches/" + hub.id;
+  assert.deepEqual(JSON.parse(hub.source_groups_json), ["War Clip Cast", "Football Clip Cast"]);
+  const { data: extended } = await checked(path + "/source-groups", {
+    method: "POST", cookie: hubOwner, data: { name: "Comedy Clip Cast" },
+  }, 201);
+  assert.equal(JSON.parse(extended.source_groups_json).length, 3);
+  const add = (handle) => checked(path + "/accounts", {
+    method: "POST", cookie: hubOwner,
+    data: { platform: "instagram", display_name: handle, handle },
+  }, 201);
+  const { data: master } = await add("podclipcasts");
+  const { data: source } = await add("war.clipcast");
+  const role = (account, group, cookie = hubOwner, status = 200) => checked(
+    path + "/accounts/" + account.id + "/routing",
+    { method: "PATCH", cookie, data: { group } },
+    status,
+  );
+  await role(master, "master");
+  await role(source, "source:War Clip Cast");
+  const { cookie: outsider } = await checked("/api/auth/register", {
+    method: "POST", data: { email: "hub-outsider@example.test", password: "outsider routing fixture password" },
+  });
+  await role(source, "master", outsider, 404);
+  const create = (data, status = 201) => checked(path + "/posts", {
+    method: "POST", cookie: hubOwner, data: { title: "Archive clip", ...data },
+  }, status);
+  const { data: draft } = await create({ source_group: "War Clip Cast" });
+  assert.equal(draft.source_group, "War Clip Cast");
+  assert.deepEqual(draft.destinations, [master.id]);
+  await create({ source_group: "War Clip Cast", destinations: [source.id] }, 400);
+  await create({ source_group: "Unrelated source" }, 400);
+  const { data: edited } = await checked(path + "/posts/" + draft.id, {
+    method: "PATCH", cookie: hubOwner, data: { title: "Edited", destinations: [master.id] },
+  });
+  assert.equal(edited.source_group, "War Clip Cast");
+  assert.deepEqual(edited.destinations, [master.id]);
 });

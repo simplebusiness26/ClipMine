@@ -58,6 +58,9 @@ export default function PostHistory({
                     {r.display_name} · {r.platform}
                   </strong>
                   <p className="n-badge">{r.status.replaceAll("_", " ")}</p>
+                  {r.status === "inbox_delivered" && (
+                    <p>Delivered to TikTok inbox. Open the notification in the TikTok app to edit the video, set its caption and audience, and finish posting.</p>
+                  )}
                   {r.error && <p role="alert">{r.error}</p>}
                   {r.error_code === "owner_verified" ? (
                     <small>Confirmed live by account owner; no duplicate post submitted.</small>

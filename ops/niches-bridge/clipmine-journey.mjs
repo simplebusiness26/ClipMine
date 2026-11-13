@@ -80,10 +80,9 @@ try {
         "security",
         "db",
         "token-vault",
-        "social-oauth",
+        "social-oauth", "brands",
         "publishers",
         "outbox",
-        "brands",
       ].map((name) => ({
         type: "ESModule",
         path: `services/edge/${name}.mjs`,

@@ -1,8 +1,10 @@
 import PostHistory from "./PostHistory";
 import { parseBatchArchive } from "./batch-zip";
 import SocialAccounts from "./SocialAccounts";
-import BrandManagement from "./BrandManagement";
 import PublishingReview from "./PublishingReview";
+import PublishingCalendar from "./PublishingCalendar";
+import ElectricDrafts from "./ElectricDrafts";
+import { contentMatches } from "./content-filter";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import ClipMine from "./App";
 import {
@@ -10,6 +12,7 @@ import {
   mediaPath,
   uploadMedia,
   type Niche,
+  type Brand,
   type Media,
   type Post,
   type Provider,
@@ -20,6 +23,9 @@ import {
   type Notice,
 } from "./niches-api";
 import "./niches.css";
+import "./niches-electric.css";
+import "./electric-launch.css";
+const electricSkin = import.meta.env.VITE_NICHES_SKIN === "electric";
 const tabs = [
   "Overview",
   "Content",
@@ -29,14 +35,13 @@ const tabs = [
   "Calendar",
   "Analytics",
   "Accounts",
-  "Brands",
   "Ideas",
   "Revenue",
   "Settings",
   "ClipMine",
 ] as const;
 type Tab = (typeof tabs)[number];
-const symbols = ["◈", "▦", "+", "▤", "↗", "▦", "↗", "◎", "▣", "✧", "£", "⚙", "▷"];
+const symbols = ["◈", "▦", "+", "▤", "↗", "▦", "↗", "◎", "✧", "£", "⚙", "▷"];
 const date = (value: string) =>
   new Date(value).toLocaleString(undefined, {
     dateStyle: "medium",
@@ -91,10 +96,10 @@ function Auth({ onLogin }: { onLogin: () => void }) {
     }
   }
   return (
-    <div className="n-auth">
+    <div className={electricSkin ? "n-auth n-electric electric-auth" : "n-auth"}>
       <div className="n-auth-story">
         <div className="n-brand">
-          <Mark /> niches<span className="n-beta">BETA</span>
+          <Mark /> {electricSkin ? "Niches" : "niches"}{!electricSkin && <span className="n-beta">BETA</span>}
         </div>
         <div>
           <span className="n-kicker">YOUR BRANDS. ONE WORKSPACE.</span>
@@ -202,6 +207,7 @@ export default function Niches() {
     [creating, setCreating] = useState(false),
     [notices, setNotices] = useState<Notice[]>([]),
     [showNotices, setShowNotices] = useState(false),
+    [mobileMenuOpen, setMobileMenuOpen] = useState(false),
     [error, setError] = useState(""),
     [refreshKey, setRefreshKey] = useState(0);
   async function refresh() {
@@ -226,7 +232,8 @@ export default function Niches() {
         const found = list.find((n) => n.id === nicheId);
         if (found) {
           setActive(found);
-          if (params.get("section") === "Accounts") setTab("Accounts");
+          const requested = params.get("section");
+          if (requested && tabs.some((section) => section === requested)) setTab(requested as Tab);
         }
       }
     } catch {
@@ -273,7 +280,7 @@ export default function Niches() {
     setRefreshKey((k) => k + 1);
   }
   return (
-    <div className="n-app">
+    <div className={electricSkin ? "n-app n-electric" : "n-app"}>
       <aside className="n-sidebar">
         <button
           className="n-brand"
@@ -282,7 +289,7 @@ export default function Niches() {
             setTab("Overview");
           }}
         >
-          <Mark /> niches<span className="n-beta">BETA</span>
+          <Mark /> {electricSkin ? "Niches" : "niches"}{!electricSkin && <span className="n-beta">BETA</span>}
         </button>
         <span className="n-sidebar-label">WORKSPACE</span>
         <button
@@ -353,18 +360,51 @@ export default function Niches() {
       </aside>
       <div className="n-main">
         <header className="n-topbar">
-          <span>
-            <button onClick={() => setActive(null)}>Workspace</button> /{" "}
-            <strong>{active ? active.name : "All niches"}</strong>
-            {active && ` / ${tab}`}
-          </span>
-          <button
-            className="n-icon-button"
-            aria-label="Notifications"
-            onClick={() => setShowNotices(!showNotices)}
-          >
-            ♧ {notices.filter((n) => !n.read_at).length || ""}
-          </button>
+          {electricSkin ? (
+            <>
+              <div className="electric-niche-switch">
+                <span aria-hidden="true">⚡</span>
+                <label>
+                  <select aria-label="Choose niche" value={active?.id || ""}
+                    onChange={(event) => {
+                      const n = niches.find((item) => item.id === event.target.value);
+                      if (n) open(n, tab === "Calendar" ? "Calendar" : n.brand_count ? "Accounts" : "Overview");
+                      else { setActive(null); setTab("Overview"); }
+                    }}>
+                    <option value="">All niches</option>
+                    {niches.map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="electric-toolbar">
+                <span className="electric-preview-notice">NICHES ELECTRIC</span>
+                <button className="n-icon-button" aria-label="Notifications"
+                  onClick={() => setShowNotices(!showNotices)}>
+                  ♧ {notices.filter((n) => !n.read_at).length || ""}
+                </button>
+                <button className="electric-menu-button" type="button"
+                  aria-label="Open all Niches sections" aria-expanded={mobileMenuOpen}
+                  onClick={() => setMobileMenuOpen((open) => !open)}>☰</button>
+                <button className="electric-top-upload" onClick={() => {
+                  if (active) setTab("Create");
+                  else if (niches.length) open(niches[0], "Create");
+                  else setCreating(true);
+                }}>↑ Upload</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <span>
+                <button onClick={() => setActive(null)}>Workspace</button> /{" "}
+                <strong>{active ? active.name : "All niches"}</strong>
+                {active && ` / ${tab}`}
+              </span>
+              <button className="n-icon-button" aria-label="Notifications"
+                onClick={() => setShowNotices(!showNotices)}>
+                ♧ {notices.filter((n) => !n.read_at).length || ""}
+              </button>
+            </>
+          )}
         </header>
         <main className="n-page">
           {error && (
@@ -548,6 +588,59 @@ export default function Niches() {
           <span><a href="/terms">Terms</a> · <a href="/privacy">Privacy</a></span>
         </footer>
       </div>
+      {electricSkin && mobileMenuOpen && (
+        <div className="electric-menu-overlay">
+          <nav className="electric-menu-drawer" aria-label="All Niches sections">
+            <div className="electric-menu-header">
+              <strong>All Niches sections</strong>
+              <button type="button" aria-label="Close navigation" onClick={() => setMobileMenuOpen(false)}>✕</button>
+            </div>
+            <button type="button" onClick={() => {
+              setMobileMenuOpen(false); setActive(null); setTab("Overview");
+            }}>◈ All niches</button>
+            {tabs.map((target, index) => (
+              <button key={target} type="button"
+                aria-current={active && tab === target ? "page" : undefined}
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  if (active) setTab(target);
+                  else if (niches.length) open(niches[0], target);
+                  else setCreating(true);
+                }}>
+                <span aria-hidden="true">{symbols[index]}</span> {target}
+              </button>
+            ))}
+            <button type="button" onClick={async () => {
+              setMobileMenuOpen(false);
+              await call("/api/auth/logout", "POST", {});
+              setUser(null); setActive(null);
+            }}>Log out</button>
+          </nav>
+        </div>
+      )}
+      {electricSkin && (
+        <nav className="electric-bottom-nav" aria-label="Mobile navigation">
+          {([
+            ["Overview", "⌂", "Home"],
+            ["Content", "▱", "Content"],
+            ["Create", "+", "Create"],
+            ["Drafts", "▤", "Drafts"],
+            ["Calendar", "▦", "Calendar"],
+            ["Accounts", "♧", "Accounts"],
+          ] as const).map(([target, symbol, label]) => (
+            <button key={target}
+              className={`${active && tab === target ? "active " : ""}${target === "Create" ? "create" : ""}`}
+              aria-current={active && tab === target ? "page" : undefined}
+              onClick={() => {
+                if (active) setTab(target);
+                else if (niches.length) open(niches[0], target);
+                else setCreating(true);
+              }}>
+              <strong aria-hidden="true">{symbol}</strong><span>{label}</span>
+            </button>
+          ))}
+        </nav>
+      )}
       {creating && (
         <div className="n-modal-backdrop">
           <section
@@ -652,19 +745,30 @@ function Workspace({
     [ideas, setIdeas] = useState<Idea[]>([]),
     [revenue, setRevenue] = useState<Revenue[]>([]),
     [query, setQuery] = useState(""),
+    [contentFilter, setContentFilter] = useState<"All" | "Drafts" | "Scheduled" | "Published">("All"),
     [error, setError] = useState(""),
     [status, setStatus] = useState(""),
     [busy, setBusy] = useState(false),
     [storageAvailable, setStorageAvailable] = useState(false),
     [draft, setDraft] = useState<Post | null>(null),
+    [composeStage, setComposeStage] = useState<"prepare" | "review">("prepare"),
     [selectedMedia, setSelectedMedia] = useState(""),
+    [sourceGroup, setSourceGroup] = useState(""),
+    [brands, setBrands] = useState<Brand[]>([]),
+    [brandId, setBrandId] = useState(""),
     [destinations, setDestinations] = useState<string[]>([]),
     [analytics, setAnalytics] = useState<{ source: string }>({
       source: "Loading metrics availability…",
     });
+  const sourceGroups: string[] = JSON.parse(niche.source_groups_json || "[]");
+  const destinationsFor = (list: SocialAccount[], selectedBrand = brandId) => selectedBrand
+    ? list.filter((account) => account.brand_id === selectedBrand)
+    : niche.master_name
+    ? list.filter((account) => account.routing_group === "master")
+    : list;
   async function load() {
     try {
-      const [m, p, a, pr, ac, i, r, an, capabilities] = await Promise.all([
+      const [m, p, a, pr, ac, i, r, an, capabilities, nicheBrands] = await Promise.all([
         call<Media[]>(base + "/media"),
         call<Post[]>(base + "/posts"),
         call<SocialAccount[]>(base + "/accounts"),
@@ -674,8 +778,10 @@ function Workspace({
         call<Revenue[]>(base + "/revenue"),
         call<{ source: string }>(base + "/analytics"),
         call<{ storage_available: boolean }>("/api/config"),
+        call<Brand[]>(base + "/brands"),
       ]);
       setStorageAvailable(capabilities.storage_available);
+      setBrands(nicheBrands);
       setMedia(m);
       setPosts(p);
       setAccounts(a);
@@ -684,10 +790,13 @@ function Workspace({
       setIdeas(i);
       setRevenue(r);
       setAnalytics(an);
-      if (!draft)
+      if (!draft) {
+        const selectedBrand = brandId || nicheBrands.find((brand) => !brand.parent_id)?.id || "";
+        setBrandId(selectedBrand);
         setDestinations(
-          a.filter((x) => x.status !== "archived").map((x) => x.id),
+          destinationsFor(a, selectedBrand).filter((x) => selectedBrand || niche.master_name ? x.status === "connected" : x.status !== "archived").map((x) => x.id),
         );
+      }
     } catch (e) {
       setError((e as Error).message);
     }
@@ -714,9 +823,12 @@ function Workspace({
       setBusy(false);
     }
   }
-  function edit(post: Post) {
+  function edit(post: Post, stage: "prepare" | "review" = "prepare") {
     setDraft(post);
+    setComposeStage(stage);
     setSelectedMedia(post.media_id || "");
+    setSourceGroup(post.source_group || "");
+    setBrandId(post.brand_id || "");
     setDestinations(
       post.destinations.filter((id) => accounts.some((a) => a.id === id)),
     );
@@ -739,6 +851,8 @@ function Workspace({
           caption: post.caption,
           media_id: post.media_id,
           destinations: [account.id],
+          source_group: post.source_group,
+          brand_id: post.brand_id,
           // Carry over only the target account and its platform metadata.
           // Archived accounts can no longer be valid keys in a new draft.
           overrides: Object.fromEntries(
@@ -820,7 +934,8 @@ function Workspace({
             media_id: uploaded.id,
             title: asset.title,
             caption: asset.caption,
-            destinations: accounts.filter(a => a.status !== "archived").map(a => a.id),
+            brand_id: brandId || null,
+            destinations: destinationsFor(accounts).filter(a => brandId || niche.master_name ? a.status === "connected" : a.status !== "archived").map(a => a.id),
           });
           imported++;
         }
@@ -856,13 +971,22 @@ function Workspace({
           caption: data.caption,
           media_id: selectedMedia || null,
           destinations,
+          source_group: !brandId && niche.master_name ? sourceGroup : "",
+          brand_id: brandId || null,
           overrides,
         },
       );
       setDraft(post);
-      setStatus(
-        "Draft saved. Review below to prepare your export or reminder.",
-      );
+      if (electricSkin) {
+        setComposeStage("review");
+        window.scrollTo({
+          top: 0,
+          behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
+        });
+      }
+      setStatus(electricSkin
+        ? "Draft saved safely. You're in publishing review — nothing goes live until you approve."
+        : "Draft saved. Review below to prepare your export or reminder.");
     });
   }
   useEffect(() => {
@@ -874,9 +998,7 @@ function Workspace({
     }, 8000);
     return () => clearInterval(interval);
   }, [tab, niche.id]);
-  const visible = media.filter((m) =>
-    m.filename.toLowerCase().includes(query.toLowerCase()),
-  );
+  const visible = media.filter((m) => contentMatches(m, posts, query, electricSkin ? contentFilter : "All"));
   const pending = posts.filter(
     (p) =>
       p.status === "draft" ||
@@ -885,7 +1007,7 @@ function Workspace({
   );
   return (
     <>
-      <div className="n-page-head compact">
+      <div className={electricSkin && (tab === "Overview" || tab === "Content" || tab === "Drafts") ? "n-page-head compact electric-workspace-heading" : "n-page-head compact"}>
         <div>
           <span className="n-kicker">
             {niche.name.toUpperCase()} / {tab.toUpperCase()}
@@ -932,7 +1054,7 @@ function Workspace({
           {status}
         </p>
       )}
-      <div className="n-actions" style={{ marginBottom: 20 }}>
+      <div className={electricSkin && (tab === "Overview" || tab === "Content" || tab === "Drafts") ? "n-actions electric-overview-secondary-actions" : "n-actions"} style={{ marginBottom: 20 }}>
         <button type="button" onClick={() => setTab("Accounts")}>
           + Add / manage social accounts ({accounts.length})
         </button>
@@ -940,7 +1062,60 @@ function Workspace({
           Upload content
         </button>
       </div>
-      {tab === "Overview" && (
+      {!brands.length && niche.master_name && (tab === "Overview" || tab === "Accounts") && (
+        <section className="n-panel" aria-label="Master and source accounts">
+          <span className="n-kicker">MASTER PUBLISHING</span>
+          <h2>{niche.master_name}</h2>
+          <p>Only accounts in the master group receive published posts.</p>
+          {[["master", niche.master_name], ...sourceGroups.map((name) => ["source:" + name, name]), ["", "Unassigned"]].map(([group, name]) => (
+            <div key={group} className="n-panel">
+              <h3>{name}{group === "master" ? " · Master" : ""}</h3>
+              {accounts.filter((a) => (a.routing_group || "") === group).map((a) => (
+                <div key={a.id}>
+                  <label>
+                    {a.display_name} · {a.platform} · {a.status}
+                    <select
+                      aria-label={`Group for ${a.display_name}`}
+                      value={a.routing_group || ""}
+                      disabled={busy}
+                      onChange={(event) => {
+                        const next = event.currentTarget.value;
+                        void run(async () => { await call(base + `/accounts/${a.id}/routing`, "PATCH", { group: next }); });
+                      }}
+                    >
+                      <option value="">Unassigned</option>
+                      <option value="master">{niche.master_name} · Master</option>
+                      {sourceGroups.map((source) => <option key={source} value={"source:" + source}>{source}</option>)}
+                    </select>
+                  </label>
+                </div>
+              ))}
+              {group.startsWith("source:") && <button type="button" onClick={() => {
+                setDraft(null);
+                setSelectedMedia("");
+                setSourceGroup(name);
+                setComposeStage("prepare");
+                setDestinations(destinationsFor(accounts).filter((a) => a.status === "connected").map((a) => a.id));
+                setTab("Publish");
+              }}>Create post from {name}</button>}
+            </div>
+          ))}
+          <form onSubmit={(event) => {
+            event.preventDefault();
+            const form = event.currentTarget;
+            const name = new FormData(form).get("source");
+            void run(async () => {
+              await call(base + "/source-groups", "POST", { name });
+              form.reset();
+            });
+          }}>
+            <label>New source group<input name="source" maxLength={80} required /></label>
+            <button type="submit" disabled={busy}>Add source group</button>
+          </form>
+          {tab === "Overview" && <button type="button" onClick={() => setTab("Accounts")}>Connect social accounts</button>}
+        </section>
+      )}
+      {tab === "Overview" && !electricSkin && (
         <>
           <div className="n-stats">
             <Stat
@@ -1015,9 +1190,135 @@ function Workspace({
           </div>
         </>
       )}
+      {tab === "Overview" && electricSkin && (
+        <div className="electric-dashboard">
+          <div className="electric-hero">
+            <div>
+              <h1>{niche.name}<span className="electric-desktop-title"> Workspace</span><span className="electric-mobile-title"> 👋</span></h1>
+              <p>Manage your content, drafts, schedule and publishing.</p>
+            </div>
+            <div className={`electric-brand-art ${niche.name.trim().toLowerCase() === "craig's cartoons" ? "electric-cartoon-art" : ""}`} aria-label={`${niche.name} brand workspace`}>
+              <strong>{niche.name}</strong>
+              <small>{niche.description || "Your content workspace"}</small>
+            </div>
+          </div>
+          <div className="electric-action-row">
+            <label className="electric-action-tile">
+              <span aria-hidden="true">♧</span>
+              <strong>{busy ? "Uploading…" : "Upload Files"}</strong>
+              <small>{storageAvailable ? "Add media to your library" : "Storage unavailable"}</small>
+              <input type="file" multiple
+                aria-label="Upload files to this niche"
+                accept="video/mp4,video/quicktime,video/webm,image/jpeg,image/png,image/webp"
+                disabled={busy} onChange={(e) => void upload(e.target.files)} />
+            </label>
+            <label className="electric-action-tile">
+              <span aria-hidden="true">▱</span>
+              <strong>{busy ? "Importing…" : "Import ZIP"}</strong>
+              <small>{storageAvailable ? "Import content as drafts" : "Storage unavailable"}</small>
+              <input type="file" accept=".zip,application/zip" disabled={busy || !storageAvailable}
+                aria-label="Import ZIP as drafts"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  void importZip(file);
+                }} />
+            </label>
+            <button className="electric-action-tile" type="button" onClick={() => {
+              setDraft(null); setSelectedMedia(""); setTab("Publish");
+            }}>
+              <span aria-hidden="true">✎</span>
+              <strong>Create Draft</strong>
+              <small>Add title, caption and destinations</small>
+            </button>
+          </div>
+          <section className="electric-section" aria-label="Publishing queue">
+            <div className="electric-section-head">
+              <h2><span className="electric-desktop-queue">▦ Publishing Queue</span><span className="electric-mobile-queue">Next in Queue</span></h2>
+              <button onClick={() => setTab("Calendar")}>View Calendar ›</button>
+            </div>
+            {posts.some((p) => p.status === "scheduled" && p.scheduled_at) ? (
+              <div className="electric-queue-grid">
+                {posts.filter((p) => p.status === "scheduled" && p.scheduled_at)
+                  .sort((a,b) => a.scheduled_at!.localeCompare(b.scheduled_at!))
+                  .slice(0,3).map((p) => {
+                    const source = media.find((m) => m.id === p.media_id);
+                    return (
+                      <button className="electric-queue-item" key={p.id}
+                        onClick={() => setTab("Calendar")} type="button">
+                        <span className="electric-queue-thumb">
+                          {source ? <Preview niche={niche.id} media={source} /> : "▷"}
+                        </span>
+                        <span className="electric-queue-copy">
+                          <strong>{p.title || source?.filename || "Untitled post"}</strong>
+                          <small>{date(p.scheduled_at!)}</small>
+                          <span className="electric-status">{p.publish_mode === "direct" ? "Scheduled" : "Reminder"}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+              </div>
+            ) : (
+              <div className="electric-empty">No upcoming posts. <button onClick={() => setTab("Drafts")}>View drafts</button></div>
+            )}
+          </section>
+          <section className="electric-section" aria-label="Recent content">
+            <div className="electric-section-head">
+              <h2>Recent Content</h2>
+              <button onClick={() => setTab("Content")}>View All Content ›</button>
+            </div>
+            {media.length ? (
+              <div className="electric-card-grid">
+                {media.slice(0,4).map((m) => {
+                  const related = posts.find((p) => p.media_id === m.id);
+                  return (
+                    <button className="electric-content-card" key={m.id} type="button"
+                      onClick={() => { setSelectedMedia(m.id); setDraft(null); setTab("Publish"); }}>
+                      <Preview niche={niche.id} media={m} />
+                      <span className="electric-card-info">
+                        <strong title={m.filename}>{related?.title || m.filename}</strong>
+                        <span className={`electric-status ${related?.status || "draft"}`}>
+                          {related ? related.status.replaceAll("_"," ") : "Library"}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="electric-empty">Your library is empty. Upload your first video to get started.</div>
+            )}
+          </section>
+          <section className="electric-section" aria-label="Social accounts">
+            <div className="electric-section-head">
+              <h2>♧ Social Accounts</h2>
+              <button onClick={() => setTab("Accounts")}>Manage Accounts ›</button>
+            </div>
+            {accounts.filter((a) => a.status !== "archived").length ? (
+              <div className="electric-accounts">
+                {accounts.filter((a) => a.status !== "archived").slice(0,8).map((a) => (
+                  <div className="electric-account" key={a.id}>
+                    <span className="electric-account-symbol" aria-hidden="true">
+                      {a.platform === "youtube" ? "▶" : a.platform === "instagram" ? "◎" : a.platform === "facebook" ? "f" : a.platform === "tiktok" ? "♪" : "◈"}
+                    </span>
+                    <span className="electric-account-body">
+                      <strong>{a.display_name || a.platform}</strong>
+                      <small className={a.status === "connected" ? "connected" : "unconnected"}>
+                        {a.platform} · {a.status === "connected" ? "Connected" : a.status.replaceAll("_"," ")}
+                      </small>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="electric-empty">No accounts added. <button onClick={() => setTab("Accounts")}>Manage accounts</button></div>
+            )}
+          </section>
+        </div>
+      )}
       {(tab === "Content" || tab === "Create") && (
         <>
-          <section className="n-upload">
+          <section className={electricSkin && tab === "Content" ? "n-upload electric-library-upload" : "n-upload"}>
             {!storageAvailable && (
               <div className="n-status-note" role="status">
                 Cloud storage is not enabled yet. You can choose and preview
@@ -1046,7 +1347,7 @@ function Workspace({
               your account.
             </p>
           </section>
-          <section className="n-panel">
+          <section className={electricSkin && tab === "Content" ? "n-panel electric-library-import" : "n-panel"}>
             <span className="n-kicker">BULK CONTENT / PRIVATE BETA</span>
             <h2>Import a ready-made content ZIP.</h2>
             <p>
@@ -1164,8 +1465,18 @@ function Workspace({
           )}
           {tab === "Content" && (
             <>
+              {electricSkin && <div className="electric-library-toolbar">
+                <h2>▱ Content Library</h2>
+                <div className="electric-library-actions">
+                  <label className="n-primary">↑ Upload Files<input type="file" multiple aria-label="Upload files to content library" accept="video/mp4,video/quicktime,video/webm,image/jpeg,image/png,image/webp" disabled={busy} onChange={(e) => void upload(e.target.files)} /></label>
+                  <label className="n-primary">▱ Import ZIP<input type="file" aria-label="Import ZIP to content library" accept=".zip,application/zip" disabled={busy || !storageAvailable} onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; void importZip(file); }} /></label>
+                </div>
+              </div>}
+              {electricSkin && <div className="electric-library-filters" aria-label="Filter content by status">
+                {(["All", "Drafts", "Scheduled", "Published"] as const).map((filter) => <button key={filter} type="button" aria-pressed={contentFilter === filter} onClick={() => setContentFilter(filter)}>{filter}</button>)}
+              </div>}
               <div className="n-section-head">
-                <h2>Content library</h2>
+                {!electricSkin && <h2>Content library</h2>}
                 <input
                   aria-label="Search content"
                   placeholder="Search your content…"
@@ -1235,11 +1546,45 @@ function Workspace({
         </>
       )}
       {tab === "Publish" && (
-        <div className="n-two-col composer">
-          <section className="n-panel">
+        <div className={electricSkin ? "n-two-col composer electric-launch-flow" : "n-two-col composer"}>
+          {electricSkin && (
+            <div className="electric-launch-progress" aria-label="Publishing stages">
+              <span className="electric-launch-brand">NICHES <b>·</b> LAUNCH SEQUENCE</span>
+              <div className="electric-launch-steps">
+                <span className={composeStage === "prepare" || !draft ? "active" : "done"}>01 <strong>COMPOSE</strong></span>
+                <i aria-hidden="true" />
+                <span className={composeStage === "review" && !!draft ? "active" : ""}>02 <strong>REVIEW</strong></span>
+                <i aria-hidden="true" />
+                <span>03 <strong>LAUNCH</strong></span>
+              </div>
+            </div>
+          )}
+          {(!electricSkin || composeStage === "prepare" || !draft) && (
+          <section className="n-panel electric-stage electric-compose-stage">
             <span className="n-kicker">01 / PREPARE</span>
-            <h2>One post. Your whole niche.</h2>
+            <h2>{electricSkin ? "Build your next drop." : "One post. Your whole niche."}</h2>
             <form key={draft?.id || "new"} onSubmit={save}>
+              {brands.length > 0 && (
+                <label>Brand
+                  <select value={brandId} onChange={(event) => {
+                    const next = event.currentTarget.value;
+                    setBrandId(next);
+                    setDestinations(destinationsFor(accounts, next).filter((account) => account.status === "connected").map((account) => account.id));
+                  }}>
+                    {!brandId && <option value="">Existing niche draft</option>}
+                    {brands.map((brand) => <option value={brand.id} key={brand.id}>{brand.name}{!brand.parent_id ? " · Master" : ""}</option>)}
+                  </select>
+                </label>
+              )}
+              {!brandId && niche.master_name && (
+                <label>
+                  Source group · publishes only to {niche.master_name}
+                  <select value={sourceGroup} onChange={(event) => setSourceGroup(event.currentTarget.value)}>
+                    <option value="">Master brand post</option>
+                    {sourceGroups.map((name) => <option key={name} value={name}>{name}</option>)}
+                  </select>
+                </label>
+              )}
               <label>
                 Media
                 <select
@@ -1286,8 +1631,8 @@ function Workspace({
                 <h3>Destinations</h3>
                 <small>Selected from this niche</small>
               </div>
-              {accounts.length ? (
-                accounts.map((a) => (
+              {destinationsFor(accounts).length ? (
+                destinationsFor(accounts).map((a) => (
                   <label className="n-checkbox" key={a.id}>
                     <input
                       type="checkbox"
@@ -1338,7 +1683,9 @@ function Workspace({
                 </details>
               ))}
               {accounts
-                .filter((a) => destinations.includes(a.id))
+                .filter((a) => destinations.includes(a.id) ||
+                  (a.platform === "instagram" && brands.some((brand) =>
+                    brand.id === brandId && !!brand.parent_id && brand.parent_id === a.brand_id)))
                 .map((a) => (
                   <details key={a.id}>
                     <summary>
@@ -1364,22 +1711,40 @@ function Workspace({
                   </details>
                 ))}
               <button className="n-primary" disabled={busy}>
-                Save draft ↗
+                {electricSkin ? "Save & enter launch review ↗" : "Save draft ↗"}
               </button>
             </form>
           </section>
-          <section className="n-panel n-review">
+          )}
+          {(!electricSkin || (composeStage === "review" && !!draft)) && (
+          <section className="n-panel n-review electric-stage electric-review-stage">
+            {electricSkin && (
+              <div className="electric-launch-review-intro">
+                <span className="electric-pulse" aria-hidden="true" />
+                <span>STAGE 02 · SAFETY CHECK</span>
+                <button type="button" onClick={() => setComposeStage("prepare")}>← Edit details</button>
+              </div>
+            )}
             <span className="n-kicker">02 / REVIEW</span>
-            <h2>Your final say.</h2>
+            <h2>{electricSkin ? "Ready for lift-off?" : "Your final say."}</h2>
+            {electricSkin && <p className="electric-launch-review-subtitle">Check the destination accounts. Remove any platform you're unsure about. Nothing publishes until you confirm.</p>}
             {draft ? (
               <PublishingReview
                 nicheId={niche.id}
+                masterName={draft.brand_id ? undefined : niche.master_name}
                 draft={draft}
                 accounts={accounts}
                 providers={providers}
                 onAccounts={() => setTab("Accounts")}
+                onDraftUpdated={(updated) => {
+                  setDraft(updated);
+                  setDestinations(updated.destinations);
+                  setStatus("Platform removed from this saved draft. No publishing job was created.");
+                  changed();
+                }}
                 onResult={(message) => {
                   setDraft(null);
+                  setComposeStage("prepare");
                   setStatus(message);
                   setTab("Drafts");
                   changed();
@@ -1392,9 +1757,30 @@ function Workspace({
               </Empty>
             )}
           </section>
+          )}
         </div>
       )}
-      {tab === "Drafts" && (
+      {tab === "Drafts" && electricSkin && (
+        <ElectricDrafts
+          nicheId={niche.id}
+          posts={posts}
+          media={media}
+          accounts={accounts}
+          onEdit={(post) => edit(post)}
+          onReview={(post) => edit(post, "review")}
+          onCreate={() => {
+            setDraft(null);
+            setComposeStage("prepare");
+            setSelectedMedia("");
+            setSourceGroup("");
+            const master = brands.find((brand) => !brand.parent_id)?.id || "";
+            setBrandId(master);
+            setDestinations(destinationsFor(accounts, master).filter((account) => account.status === "connected").map((account) => account.id));
+            setTab("Publish");
+          }}
+        />
+      )}
+      {tab === "Drafts" && !electricSkin && (
         <section className="n-panel">
           <h2>Pick up where you left off.</h2>
           {!posts.length && (
@@ -1495,54 +1881,32 @@ function Workspace({
         </section>
       )}
       {tab === "Calendar" && (
-        <section className="n-panel">
-          <div className="n-section-head">
-            <h2>Coming up next.</h2>
-            <span>Device timezone · Scheduled posts & legacy reminders</span>
-          </div>
-          {posts
-            .filter((p) => p.scheduled_at && p.status === "scheduled")
-            .sort((a, b) => a.scheduled_at!.localeCompare(b.scheduled_at!))
-            .map((p) => (
-              <div className="n-post-row" key={p.id}>
-                <div>
-                  <span className="n-kicker">{date(p.scheduled_at!)}</span>
-                  <h3>{p.title || "Untitled post"}</h3>
-                  <p>
-                    {p.publish_mode === "direct"
-                      ? "Scheduled social publication"
-                      : "Legacy export reminder · No automatic social posting"}
-                  </p>
-                </div>
-                <button
-                  disabled={busy}
-                  onClick={() =>
-                    void run(async () => {
-                      await call(`${base}/posts/${p.id}/cancel`, "POST", {});
-                    })
-                  }
-                >
-                  Cancel
-                </button>
-              </div>
-            ))}
-          {!posts.some((p) => p.status === "scheduled") && (
-            <Empty title="A little breathing room.">
-              Choose Schedule for later when reviewing your post.
-            </Empty>
-          )}
-        </section>
+        <PublishingCalendar
+          nicheId={niche.id}
+          posts={posts}
+          accounts={accounts}
+          brands={brands}
+          media={media}
+          onChanged={changed}
+        />
       )}
       {tab === "Accounts" && (
         <SocialAccounts
           nicheId={niche.id}
           accounts={accounts}
           providers={providers}
+          brands={brands}
+          onCreatePost={(nextBrand) => {
+            setDraft(null);
+            setComposeStage("prepare");
+            setSelectedMedia("");
+            setBrandId(nextBrand);
+            setSourceGroup("");
+            setDestinations(destinationsFor(accounts, nextBrand).filter((account) => account.status === "connected").map((account) => account.id));
+            setTab("Publish");
+          }}
           onChanged={changed}
         />
-      )}
-      {tab === "Brands" && (
-        <BrandManagement nicheId={niche.id} accounts={accounts} onChanged={changed} />
       )}
       {tab === "Analytics" && (
         <>

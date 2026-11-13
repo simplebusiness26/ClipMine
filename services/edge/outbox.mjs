@@ -1,3 +1,4 @@
+import { deliveryDestinations } from "./brands.mjs";
 import { id, now, hash, randomToken, fail, json } from "./security.mjs";
 import { execute, one, all } from "./db.mjs";
 import { seal, unseal } from "./token-vault.mjs";
@@ -35,13 +36,18 @@ export async function queuePost(env, user, niche, post, data) {
     niche.id,
   );
   if (!media) fail(400, "Upload media to this niche before publishing.");
-  const ids = JSON.parse(post.destinations_json);
+  const { selected, automatic } = await deliveryDestinations(env, niche, post);
+  if (automatic !== (data.automatic_destination ?? null))
+    fail(409, "Master Instagram changed. Refresh the draft and review destinations again.");
+  const ids = automatic ? [...selected, automatic] : selected;
   if (!ids.length) fail(400, "Select at least one destination account.");
   const options = data.accounts || {};
   if (!options || typeof options !== "object" || Array.isArray(options))
     fail(400, "Invalid account publishing settings.");
   if (ids.length > 20)
     fail(400, "Choose up to 20 accounts for one publishing batch.");
+  let instagramDestinations = 0;
+  let hasInstagramCollab = false;
   for (const accountId of ids) {
     const a = await one(
       env,
@@ -51,6 +57,8 @@ export async function queuePost(env, user, niche, post, data) {
     );
     if (!a)
       fail(409, "Every selected account must be connected for publishing.");
+    if (!post.brand_id && niche.master_name && a.routing_group !== "master")
+      fail(400, "Only master accounts can publish in this niche.");
     const provider = providerInfo(env).find((p) => p.id === a.platform);
     if (!provider?.publishing_enabled)
       fail(
@@ -63,14 +71,25 @@ export async function queuePost(env, user, niche, post, data) {
         "The TikTok media URL/domain must be verified in the developer portal.",
       );
     const selected = resolveOptions(post, a, options);
+    if (!post.brand_id && niche.master_name && a.platform === "instagram" && selected.instagram_collaborator !== undefined)
+      fail(400, "Instagram Collab invites are unavailable in master-only niches.");
+    if (a.platform === "instagram") {
+      instagramDestinations++;
+      hasInstagramCollab ||= selected.instagram_collaborator !== undefined;
+    }
+
     validatePost(
       a,
       media,
       post,
       selected,
-      a.platform === "tiktok" ? await creatorInfo(env, a) : null,
+      a.platform === "tiktok" && selected.tiktok_delivery !== "inbox"
+        ? await creatorInfo(env, a)
+        : null,
     );
   }
+  if (hasInstagramCollab && instagramDestinations > 1)
+    fail(400, "Choose one Instagram publishing account when inviting a collaborator.");
   const date = data.scheduled_at ? new Date(data.scheduled_at) : null;
   if (
     date &&
@@ -82,9 +101,10 @@ export async function queuePost(env, user, niche, post, data) {
   // Claim and insert once in one transaction. UNIQUE(post,account) is the final duplicate guard.
   const statements = [
     env.DB.prepare(
-      "UPDATE posts SET delivery_status=?,publish_mode='direct',options_json=?,approved_at=?,scheduled_at=?,updated_at=? WHERE id=? AND updated_at=? AND delivery_status IN ('draft','cancelled') AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
+      "UPDATE posts SET delivery_status=?,publish_mode='direct',destinations_json=?,options_json=?,approved_at=?,scheduled_at=?,updated_at=? WHERE id=? AND updated_at=? AND delivery_status IN ('draft','cancelled') AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
     ).bind(
       date ? "scheduled" : "queued",
+      JSON.stringify(ids),
       JSON.stringify(options),
       approved,
       date?.toISOString() || null,
@@ -131,6 +151,41 @@ export async function queuePost(env, user, niche, post, data) {
       : "Publication queued. Each account’s result will appear in publish history.",
   };
 }
+export async function publishScheduledNow(env, user, niche, post, data) {
+  if (data.confirmed !== true)
+    fail(400, "Confirm that this scheduled post should publish now.");
+  const due = now();
+  const eligible = `id=? AND niche_id=? AND publish_mode='direct'
+    AND delivery_status='scheduled' AND scheduled_at>?
+    AND EXISTS (SELECT 1 FROM publications WHERE post_id=posts.id)
+    AND NOT EXISTS (
+      SELECT 1 FROM publications WHERE post_id=posts.id
+        AND (status<>'pending' OR submission_started<>0 OR attempt<>0
+          OR lease_until IS NOT NULL OR provider_post_id IS NOT NULL)
+    )`;
+  const args = [post.id, niche.id, due];
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO audit_events SELECT ?,?,?,?,?,?
+        WHERE EXISTS (SELECT 1 FROM posts WHERE ${eligible})`,
+    ).bind(id(), user.id, niche.id, "post.publish_now", post.id, due, ...args),
+    env.DB.prepare(
+      `UPDATE posts SET delivery_status='queued',scheduled_at=NULL,updated_at=?
+        WHERE ${eligible}`,
+    ).bind(due, ...args),
+    env.DB.prepare(
+      `UPDATE publications SET next_attempt_at=?,updated_at=?
+        WHERE post_id=? AND status='pending' AND attempt=0
+          AND submission_started=0 AND lease_until IS NULL
+          AND EXISTS (SELECT 1 FROM posts WHERE id=publications.post_id
+            AND niche_id=? AND delivery_status='queued' AND updated_at=?)`,
+    ).bind(due, due, post.id, niche.id, due),
+  ]);
+  if (!results[1].meta.changes)
+    fail(409, "This post is no longer waiting to publish. Refresh its delivery status.");
+  return { status: "queued" };
+}
+
 async function mediaGrant(env, media, pub) {
   const token = randomToken();
   await execute(
@@ -185,12 +240,14 @@ export async function refreshPostStatus(env, postId) {
   if (!rows.length) return;
   const states = rows.map((r) => r.status),
     done = states.every((x) =>
-      ["published", "failed", "needs_review", "cancelled"].includes(x),
+      ["published", "inbox_delivered", "failed", "needs_review", "cancelled"].includes(x),
     );
   const status = states.every((x) => x === "published")
     ? "published"
+    : states.every((x) => x === "inbox_delivered")
+      ? "inbox_delivered"
     : done
-      ? states.includes("published")
+      ? states.includes("published") || states.includes("inbox_delivered")
         ? "partial"
         : states.includes("needs_review")
           ? "needs_review"
@@ -204,12 +261,14 @@ export async function refreshPostStatus(env, postId) {
     postId,
   );
 }
-export async function runOutbox(env, limit = 5, fetcher = fetch) {
+export async function runOutbox(env, limit = 5, fetcher = fetch, postId = null) {
   const jobs = await all(
     env,
-    "SELECT p.* FROM publications p JOIN posts s ON s.id=p.post_id WHERE s.publish_mode='direct' AND p.status IN ('pending','processing','retry') AND (p.next_attempt_at IS NULL OR p.next_attempt_at<=?) AND (p.lease_until IS NULL OR p.lease_until<?) ORDER BY p.updated_at LIMIT ?",
+    "SELECT p.* FROM publications p JOIN posts s ON s.id=p.post_id WHERE s.publish_mode='direct' AND p.status IN ('pending','processing','retry') AND (p.next_attempt_at IS NULL OR p.next_attempt_at<=?) AND (p.lease_until IS NULL OR p.lease_until<?) AND (? IS NULL OR p.post_id=?) ORDER BY p.updated_at LIMIT ?",
     now(),
     now(),
+    postId,
+    postId,
     limit,
   );
   for (const pub of jobs) {
@@ -268,6 +327,11 @@ export async function runOutbox(env, limit = 5, fetcher = fetch) {
             { uncertain: true },
           );
       }
+      if (!post.brand_id) {
+        const routing = await one(env, "SELECT master_name FROM niches WHERE id=?", post.niche_id);
+        if (routing?.master_name && account.routing_group !== "master")
+          fail(400, "The approved account is no longer a master destination.");
+      }
       const options = resolveOptions(
         post,
         account,
@@ -275,7 +339,7 @@ export async function runOutbox(env, limit = 5, fetcher = fetch) {
       );
       const token = await accessToken(env, account, fetcher),
         creator =
-          account.platform === "tiktok" && !state.phase
+          account.platform === "tiktok" && !state.phase && options.tiktok_delivery !== "inbox"
             ? await creatorInfo(env, account, fetcher)
             : null;
       const phase = state.phase || "init",
@@ -309,12 +373,17 @@ export async function runOutbox(env, limit = 5, fetcher = fetch) {
         },
         fetcher,
       });
+      // A provider-rejected Instagram container in the pre-publish phase can
+      // be recreated on manual retry. A confirmation-phase failure remains
+      // subject to the existing uncertain submission rules.
+      const resetContainer = account.platform === "instagram" &&
+        state.phase === "container" && result.status === "failed";
       await execute(
         env,
         "UPDATE publications SET status=?,provider_post_id=COALESCE(?,provider_post_id),state_json=?,lease_until=NULL,next_attempt_at=?,error=?,error_code=NULL,updated_at=? WHERE id=?",
         result.status,
         result.providerId || null,
-        await seal(
+        resetContainer ? "{}" : await seal(
           env,
           { ...result.state, inflight: false },
           `publication:${pub.id}`,
@@ -422,15 +491,18 @@ export async function retryPublication(env, user, niche, pubId, data) {
       409,
       "Check the social platform and explicitly confirm this post was not published before retrying.",
     );
-  await execute(
+  const updated = await one(
     env,
-    "UPDATE publications SET status='pending',state_json=?,submission_started=?,lease_until=NULL,next_attempt_at=?,error=NULL,error_code=NULL,updated_at=? WHERE id=?",
+    "UPDATE publications SET status='pending',state_json=?,submission_started=?,lease_until=NULL,next_attempt_at=?,error=NULL,error_code=NULL,updated_at=? WHERE id=? AND status=? AND updated_at=? RETURNING id",
     pub.status === "needs_review" ? "{}" : pub.state_json,
     pub.status === "needs_review" ? 0 : pub.submission_started,
     now(),
     now(),
     pub.id,
+    pub.status,
+    pub.updated_at,
   );
+  if (!updated) fail(409, "This delivery changed. Refresh before retrying.");
   await execute(
     env,
     "INSERT INTO audit_events VALUES (?,?,?,?,?,?)",

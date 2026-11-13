@@ -1,0 +1,4 @@
+ALTER TABLE niches ADD COLUMN master_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE niches ADD COLUMN source_groups_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE accounts ADD COLUMN routing_group TEXT NOT NULL DEFAULT '';
+ALTER TABLE posts ADD COLUMN source_group TEXT NOT NULL DEFAULT '';

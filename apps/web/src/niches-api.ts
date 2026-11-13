@@ -5,10 +5,13 @@ export interface Niche {
   colour: string;
   initials: string;
   brand_json: string;
+  master_name?: string;
+  source_groups_json?: string;
   media_count?: number;
   draft_count?: number;
   scheduled_count?: number;
   account_count?: number;
+  brand_count?: number;
   connected_count?: number;
   accounts_json?: string;
 }
@@ -19,6 +22,14 @@ export interface Media {
   size: number;
   created_at: string;
 }
+export interface Brand {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  auto_instagram: number;
+  is_master?: number;
+  archived_at?: string | null;
+}
 export interface SocialAccount {
   id: string;
   platform: string;
@@ -26,6 +37,7 @@ export interface SocialAccount {
   status: string;
   provider_id?: string;
   connection_kind?: string;
+  routing_group?: string;
   brand_id?: string | null;
 }
 export interface Provider {
@@ -39,6 +51,8 @@ export interface Provider {
 }
 export interface Post {
   publish_mode?: string;
+  source_group?: string;
+  brand_id?: string | null;
   id: string;
   media_id: string | null;
   title: string;
