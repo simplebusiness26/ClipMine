@@ -1,0 +1,57 @@
+name: Build Niches Android
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, work/niches-completion]
+    paths: ['.github/workflows/niches-android.yml']
+permissions:
+  contents: write
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build:web
+        env:
+          VITE_NICHES_SKIN: electric
+      - name: Configure live Niches wrapper
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const root='apps/web/';
+          const config=JSON.parse(fs.readFileSync(root+'capacitor.config.json','utf8'));
+          config.appName='Niches';
+          config.server={url:'https://niches.ai-seo.workers.dev',cleartext:false};
+          fs.writeFileSync(root+'capacitor.config.json',JSON.stringify(config,null,2));
+          const gradle=root+'android/app/build.gradle';
+          fs.writeFileSync(gradle,fs.readFileSync(gradle,'utf8').replace('applicationId "com.clipmine.app"','applicationId "com.clipmine.app.niches"'));
+          const labels=root+'android/app/src/main/res/values/strings.xml';
+          fs.writeFileSync(labels,fs.readFileSync(labels,'utf8').replaceAll('>ClipMine<','>Niches<'));
+          JS
+      - run: npx cap sync android
+        working-directory: apps/web
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+      - name: Build installable development APK
+        working-directory: apps/web/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk ../../../niches.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: niches-android-apk
+          path: niches.apk
+      - name: Publish downloadable development APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "niches-android-${GITHUB_RUN_ID}" niches.apk --prerelease --title "Niches Android development build" --notes "Installable development wrapper for the live Niches website. Android push notifications are not configured. This build uses a development signing key."
