@@ -137,6 +137,21 @@ try {
       .getByRole("button", { name: "Create niche ↗", exact: true })
       .click();
     await page.getByRole("heading", { name: "Your next chapter." }).waitFor();
+    const desktopStudio = page.locator(".n-sidebar").getByRole("button", { name: /ClipMine/ });
+    await desktopStudio.click();
+    await page.getByRole("heading", { name: "ClipMine", exact: true }).waitFor();
+    await page.getByRole("link", { name: /Open Phone Studio/ }).waitFor();
+    if (await page.getByRole("navigation", { name: "Niche workspace" }).count())
+      throw new Error("ClipMine retained the previous niche workspace");
+    await page.getByRole("button", { name: /All niches/ }).click();
+    await page.getByRole("button", { name: /Original stories for people who love driving/ }).click();
+    const cars = (await (await page.request.get(base + "/api/niches")).json()).find((niche) => niche.name === "Cars");
+    await page.goto(base + "/?niche=" + encodeURIComponent(cars.id) + "&section=ClipMine");
+    await page.getByRole("heading", { name: "ClipMine", exact: true }).waitFor();
+    if (await page.getByRole("navigation", { name: "Niche workspace" }).count())
+      throw new Error("The older ClipMine URL selected a niche");
+    await page.goto(base + "/?niche=" + encodeURIComponent(cars.id));
+    await page.getByRole("heading", { name: "Your next chapter." }).waitFor();
     await page
       .locator('nav[aria-label="Niche workspace"] button')
       .filter({ has: page.locator("span", { hasText: /^Accounts$/ }) })
