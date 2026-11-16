@@ -137,6 +137,21 @@ try {
       .getByRole("button", { name: "Create niche ↗", exact: true })
       .click();
     await page.getByRole("heading", { name: "Your next chapter." }).waitFor();
+    const desktopStudio = page.locator(".n-sidebar").getByRole("button", { name: /ClipMine/ });
+    await desktopStudio.click();
+    await page.getByRole("heading", { name: "ClipMine", exact: true }).waitFor();
+    await page.getByRole("link", { name: /Open Phone Studio/ }).waitFor();
+    if (await page.getByRole("navigation", { name: "Niche workspace" }).count())
+      throw new Error("ClipMine retained the previous niche workspace");
+    await page.getByRole("button", { name: /All niches/ }).click();
+    await page.getByRole("button", { name: /Original stories for people who love driving/ }).click();
+    const cars = (await (await page.request.get(base + "/api/niches")).json()).find((niche) => niche.name === "Cars");
+    await page.goto(base + "/?niche=" + encodeURIComponent(cars.id) + "&section=ClipMine");
+    await page.getByRole("heading", { name: "ClipMine", exact: true }).waitFor();
+    if (await page.getByRole("navigation", { name: "Niche workspace" }).count())
+      throw new Error("The older ClipMine URL selected a niche");
+    await page.goto(base + "/?niche=" + encodeURIComponent(cars.id));
+    await page.getByRole("heading", { name: "Your next chapter." }).waitFor();
     await page
       .locator('nav[aria-label="Niche workspace"] button')
       .filter({ has: page.locator("span", { hasText: /^Accounts$/ }) })
@@ -340,7 +355,6 @@ try {
         "Ideas",
         "Revenue",
         "Settings",
-        "ClipMine",
       ]) {
         await page
           .locator('nav[aria-label="Niche workspace"] button')
@@ -368,7 +382,7 @@ try {
       }
     }
     console.log(
-      "PASS local browser: register → niche → 3 Instagrams/2 TikToks/1 YouTube → select destinations → file upload/preview → draft → ZIP metadata import; 12 tabs at 5 viewport widths",
+      "PASS local browser: register → niche → 3 Instagrams/2 TikToks/1 YouTube → select destinations → file upload/preview → draft → ZIP metadata import; niche tabs at 5 viewport widths and workspace ClipMine",
     );
   } else {
     for (const width of [320, 375, 390, 430]) {

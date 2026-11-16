@@ -40,7 +40,6 @@ const tabs = [
   "Ideas",
   "Revenue",
   "Settings",
-  "ClipMine",
 ] as const;
 type Tab = (typeof tabs)[number];
 type AccountOverview = SocialAccount & { niche_name: string; brand_name: string | null; niche_id: string };
@@ -58,7 +57,7 @@ function AllAccounts({ niches, open }: { niches: Niche[]; open: (niche: Niche, t
     {niches.length > 0 && <label>Add an account to a niche <select defaultValue="" onChange={(event) => { const niche = niches.find((item) => item.id === event.target.value); if (niche) open(niche, "Accounts"); }}><option value="">Choose a niche</option>{niches.map((niche) => <option key={niche.id} value={niche.id}>{niche.name}</option>)}</select></label>}
   </section>;
 }
-const symbols = ["◈", "▦", "+", "▤", "↗", "▦", "✓", "↗", "◎", "✧", "£", "⚙", "▷"];
+const symbols = ["◈", "▦", "+", "▤", "↗", "▦", "✓", "↗", "◎", "✧", "£", "⚙"];
 const date = (value: string) =>
   new Date(value).toLocaleString(undefined, {
     dateStyle: "medium",
@@ -225,7 +224,7 @@ export default function Niches() {
     [notices, setNotices] = useState<Notice[]>([]),
     [showNotices, setShowNotices] = useState(false),
     [mobileMenuOpen, setMobileMenuOpen] = useState(false),
-    [globalView, setGlobalView] = useState<"niches" | "accounts" | "published">("niches"),
+    [globalView, setGlobalView] = useState<"niches" | "accounts" | "published" | "clipmine">("niches"),
     [error, setError] = useState(""),
     [refreshKey, setRefreshKey] = useState(0);
   async function refresh() {
@@ -244,13 +243,15 @@ export default function Niches() {
       setUser(await call("/api/auth/me"));
       await refresh();
       const params = new URLSearchParams(location.search),
-        nicheId = params.get("niche");
-      if (nicheId) {
+        nicheId = params.get("niche"),
+        requested = params.get("section");
+      if (requested === "ClipMine") {
+        openStudio();
+      } else if (nicheId) {
         const list = await call<Niche[]>("/api/niches");
         const found = list.find((n) => n.id === nicheId);
         if (found) {
           setActive(found);
-          const requested = params.get("section");
           if (requested && tabs.some((section) => section === requested)) setTab(requested as Tab);
         }
       }
@@ -293,6 +294,14 @@ export default function Niches() {
     setError("");
     window.scrollTo(0, 0);
   }
+  function openStudio() {
+    setActive(null);
+    setGlobalView("clipmine");
+    setTab("Overview");
+    setError("");
+    window.scrollTo(0, 0);
+  }
+  const showingStudio = !active && globalView === "clipmine";
   function changed() {
     void refresh().catch((e) => setError(e.message));
     setRefreshKey((k) => k + 1);
@@ -304,6 +313,7 @@ export default function Niches() {
           className="n-brand"
           onClick={() => {
             setActive(null);
+            setGlobalView("niches");
             setTab("Overview");
           }}
         >
@@ -311,11 +321,15 @@ export default function Niches() {
         </button>
         <span className="n-sidebar-label">WORKSPACE</span>
         <button
-          className={!active ? "n-nav active" : "n-nav"}
+          className={!active && globalView === "niches" ? "n-nav active" : "n-nav"}
           onClick={() => { setActive(null); setGlobalView("niches"); }}
         >
           ◈ <span>All niches</span>
           <small>{niches.length}</small>
+        </button>
+        <button className={showingStudio ? "n-nav active" : "n-nav"}
+          aria-current={showingStudio ? "page" : undefined} onClick={openStudio}>
+          ▷ <span>ClipMine</span>
         </button>
         <button className={!active && globalView === "accounts" ? "n-nav active" : "n-nav"} onClick={() => { setActive(null); setGlobalView("accounts"); }}>◎ <span>All accounts</span></button>
         <button className={!active && globalView === "published" ? "n-nav active" : "n-nav"} onClick={() => { setActive(null); setGlobalView("published"); }}>✓ <span>Published</span></button>
@@ -345,7 +359,6 @@ export default function Niches() {
                   onClick={() => setTab(t)}
                 >
                   {symbols[i]} <span>{t}</span>
-                  {t === "ClipMine" && <small>STUDIO</small>}
                 </button>
               ))}
             </nav>
@@ -382,6 +395,7 @@ export default function Niches() {
         <header className="n-topbar">
           {electricSkin ? (
             <>
+              {showingStudio ? <strong>ClipMine</strong> : (
               <div className="electric-niche-switch">
                 <span aria-hidden="true">⚡</span>
                 <label>
@@ -396,6 +410,7 @@ export default function Niches() {
                   </select>
                 </label>
               </div>
+              )}
               <div className="electric-toolbar">
                 <span className="electric-preview-notice">NICHES ELECTRIC</span>
                 <button className="n-icon-button" aria-label="Notifications"
@@ -405,18 +420,18 @@ export default function Niches() {
                 <button className="electric-menu-button" type="button"
                   aria-label="Open all Niches sections" aria-expanded={mobileMenuOpen}
                   onClick={() => setMobileMenuOpen((open) => !open)}>☰</button>
-                <button className="electric-top-upload" onClick={() => {
+                {!showingStudio && <button className="electric-top-upload" onClick={() => {
                   if (active) setTab("Create");
                   else if (niches.length) open(niches[0], "Create");
                   else setCreating(true);
-                }}>↑ Upload</button>
+                }}>↑ Upload</button>}
               </div>
             </>
           ) : (
             <>
               <span>
-                <button onClick={() => setActive(null)}>Workspace</button> /{" "}
-                <strong>{active ? active.name : "All niches"}</strong>
+                <button onClick={() => { setActive(null); setGlobalView("niches"); }}>Workspace</button> /{" "}
+                <strong>{showingStudio ? "ClipMine" : active ? active.name : "All niches"}</strong>
                 {active && ` / ${tab}`}
               </span>
               <button className="n-icon-button" aria-label="Notifications"
@@ -458,7 +473,7 @@ export default function Niches() {
               )}
             </section>
           )}
-          {!active && globalView === "published" ? <Published /> : !active && globalView === "accounts" ? (
+          {showingStudio ? <Studio niches={niches} changed={changed} /> : !active && globalView === "published" ? <Published /> : !active && globalView === "accounts" ? (
             <AllAccounts niches={niches} open={open} />
           ) : !active ? (
             <>
@@ -582,13 +597,7 @@ export default function Niches() {
                     niche.
                   </p>
                 </div>
-                <button
-                  onClick={() =>
-                    niches.length
-                      ? open(niches[0], "ClipMine")
-                      : setCreating(true)
-                  }
-                >
+                <button onClick={openStudio}>
                   Open ClipMine ↗
                 </button>
               </div>
@@ -600,6 +609,7 @@ export default function Niches() {
               tab={tab}
               setTab={setTab}
               changed={changed}
+              openStudio={openStudio}
               refreshKey={refreshKey}
             />
           )}
@@ -620,6 +630,10 @@ export default function Niches() {
             <button type="button" onClick={() => {
               setMobileMenuOpen(false); setActive(null); setGlobalView("niches"); setTab("Overview");
             }}>◈ All niches</button>
+            <button type="button" aria-current={showingStudio ? "page" : undefined}
+              onClick={() => { setMobileMenuOpen(false); openStudio(); }}>
+              <span aria-hidden="true">▷</span> ClipMine
+            </button>
             <button type="button" onClick={() => { setMobileMenuOpen(false); setActive(null); setGlobalView("accounts"); }}>◎ All accounts</button>
             <button type="button" onClick={() => { setMobileMenuOpen(false); setActive(null); setGlobalView("published"); }}>✓ All published</button>
             {tabs.map((target, index) => (
@@ -657,6 +671,7 @@ export default function Niches() {
               aria-current={active && tab === target ? "page" : undefined}
               onClick={() => {
                 if (active) setTab(target);
+                else if (target === "Overview" && showingStudio) setGlobalView("niches");
                 else if (target === "Accounts") setGlobalView("accounts");
                 else if (niches.length) open(niches[0], target);
                 else setCreating(true);
@@ -742,12 +757,14 @@ function Workspace({
   tab,
   setTab,
   changed,
+  openStudio,
   refreshKey,
 }: {
   niche: Niche;
   tab: Tab;
   setTab: (tab: Tab) => void;
   changed: () => void;
+  openStudio: () => void;
   refreshKey: number;
 }) {
   const base = `/api/niches/${niche.id}`;
@@ -1046,20 +1063,16 @@ function Workspace({
                 ? "Make your next move."
                 : tab === "Content"
                   ? "A home for your content."
-                  : tab === "ClipMine"
-                    ? "Find your best moments."
-                    : tab}
+                  : tab}
           </h1>
           <p>
             {tab === "Overview"
               ? niche.description ||
                 "Everything this brand needs, in one place."
-              : tab === "ClipMine"
-                ? "Long video in. Fresh ideas out. Saved directly to this niche."
-                : "Create, review and keep your brand moving."}
+              : "Create, review and keep your brand moving."}
           </p>
         </div>
-        {!["Create", "Publish", "ClipMine"].includes(tab) && (
+        {!["Create", "Publish"].includes(tab) && (
           <button
             className="n-primary"
             onClick={() => {
@@ -1487,7 +1500,7 @@ function Workspace({
                   studio.
                 </p>
               </div>
-              <button onClick={() => setTab("ClipMine")}>Open studio ↗</button>
+              <button onClick={openStudio}>Open studio ↗</button>
             </div>
           )}
           {tab === "Content" && (
@@ -2189,7 +2202,6 @@ function Workspace({
           </form>
         </section>
       )}
-      {tab === "ClipMine" && <Studio niche={niche} changed={changed} />}
     </>
   );
 }
@@ -2213,31 +2225,46 @@ function Preview({
     <img src={mediaPath(niche, media.id)} alt={media.filename} loading="lazy" />
   );
 }
-function Studio({ niche, changed }: { niche: Niche; changed: () => void }) {
+function Studio({ niches, changed }: { niches: Niche[]; changed: () => void }) {
   const [available, setAvailable] = useState<boolean | null>(null);
+  const [hostNicheId, setHostNicheId] = useState("");
   useEffect(() => {
     void call<{ clipmine_available: boolean }>("/api/config")
-      .then((c) => setAvailable(c.clipmine_available))
+      .then((config) => setAvailable(config.clipmine_available))
       .catch(() => setAvailable(false));
   }, []);
-  if (available === null) return <p>Checking studio connection…</p>;
-  if (!available)
-    return (
-      <section className="n-panel">
-        <Empty title="The studio needs its rendering engine.">
-          ClipMine’s original FFmpeg editor is preserved. A private Python
-          rendering service must be connected before processing can run here.
-          Cloudflare Workers cannot run the existing FFmpeg process.
-        </Empty>
-        <p className="n-muted">
-          No paid compute has been enabled. Upload-ready content can already be
-          organised in your niche.
-        </p>
-      </section>
-    );
+  const hostNiche = niches.find((niche) => niche.id === hostNicheId);
   return (
-    <div className="n-studio">
-      <ClipMine nicheId={niche.id} onSent={changed} />
-    </div>
+    <>
+      <div className="n-page-head compact">
+        <div>
+          <h1>ClipMine</h1>
+          <p>Make clips, preview them, then choose where they go.</p>
+        </div>
+      </div>
+      <section className="n-panel">
+        <h2>ClipMine Phone Studio</h2>
+        <ol>
+          <li>Paste a video link or upload a video from your phone.</li>
+          <li>Choose Best bits or Numbered parts and set how many 30, 60 or 90 second clips you want.</li>
+          <li>Preview the clips, connect to Niches, then choose the niche, brand or account under <strong>Send to Niches Drafts</strong>.</li>
+        </ol>
+        <a className="n-primary" href="https://colab.research.google.com/drive/1FQatg88WooJV2YI7TUwtZjCwzTgqoZbb" target="_blank" rel="noopener noreferrer">
+          Open Phone Studio in Chrome ↗
+        </a>
+      </section>
+      {available && niches.length > 0 && (
+        <section className="n-panel">
+          <label>
+            Use the hosted editor for a niche
+            <select value={hostNicheId} onChange={(event) => setHostNicheId(event.target.value)}>
+              <option value="">Choose a niche</option>
+              {niches.map((niche) => <option key={niche.id} value={niche.id}>{niche.name}</option>)}
+            </select>
+          </label>
+          {hostNiche && <div className="n-studio"><ClipMine key={hostNiche.id} nicheId={hostNiche.id} onSent={changed} /></div>}
+        </section>
+      )}
+    </>
   );
 }

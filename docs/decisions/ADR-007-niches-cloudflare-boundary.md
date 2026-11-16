@@ -28,3 +28,11 @@ Start with draft/export and scheduled export reminders. Do not mark a post as pu
 ## Superseded scope
 
 The owner's 2026-10-26 brief supersedes the private-only product scope in the original PRD. Original upload rights, human approval and private media invariants remain in force. The legacy single-operator pipeline stays available only behind its documented private boundary.
+
+## ClipMine navigation
+
+ClipMine is opened from the workspace menu without a selected niche. The phone studio
+handles clipping in Colab and asks the creator to choose the destination when sending
+reviewed clips to Niches drafts. It uses the existing authenticated media and draft
+endpoints. The optional hosted editor keeps its existing niche-scoped project API
+and asks the creator to select a niche explicitly before using that editor.
