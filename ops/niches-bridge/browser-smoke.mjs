@@ -355,7 +355,6 @@ try {
         "Ideas",
         "Revenue",
         "Settings",
-        "ClipMine",
       ]) {
         await page
           .locator('nav[aria-label="Niche workspace"] button')
@@ -383,7 +382,7 @@ try {
       }
     }
     console.log(
-      "PASS local browser: register → niche → 3 Instagrams/2 TikToks/1 YouTube → select destinations → file upload/preview → draft → ZIP metadata import; 12 tabs at 5 viewport widths",
+      "PASS local browser: register → niche → 3 Instagrams/2 TikToks/1 YouTube → select destinations → file upload/preview → draft → ZIP metadata import; niche tabs at 5 viewport widths and workspace ClipMine",
     );
   } else {
     for (const width of [320, 375, 390, 430]) {
