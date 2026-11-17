@@ -27,6 +27,7 @@ class Settings:
     render_height: int
     ffmpeg_binary: str
     ffprobe_binary: str
+    whisper_initial_prompt: str = ""
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -56,4 +57,5 @@ class Settings:
             render_height=_env_int("CLIPMINE_RENDER_HEIGHT", 1280),
             ffmpeg_binary=os.getenv("CLIPMINE_FFMPEG_BINARY", "ffmpeg"),
             ffprobe_binary=os.getenv("CLIPMINE_FFPROBE_BINARY", "ffprobe"),
+            whisper_initial_prompt=os.getenv("CLIPMINE_WHISPER_INITIAL_PROMPT", "")[:1000],
         )

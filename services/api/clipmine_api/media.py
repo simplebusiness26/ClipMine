@@ -5,6 +5,7 @@ import logging
 import re
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -122,6 +123,8 @@ def transcribe_media(
                 settings.whisper_compute_type,
                 "--language",
                 language,
+                "--initial-prompt",
+                settings.whisper_initial_prompt,
             ],
             check=False,
             capture_output=True,
@@ -176,7 +179,7 @@ def _caption_groups(text: str, duration: float) -> list[tuple[float, float, str]
     words = safe_text.split()
     if not words:
         return []
-    groups = [words[index : index + 7] for index in range(0, len(words), 7)]
+    groups = [words[index : index + 4] for index in range(0, len(words), 4)]
     slot = duration / len(groups)
     return [
         (index * slot, min(duration, (index + 1) * slot), " ".join(group))
@@ -197,6 +200,61 @@ def write_srt(path: Path, text: str, duration: float) -> bool:
     return True
 
 
+def write_ass(
+    path: Path, text: str, duration: float, settings: Settings,
+    segments: list[TranscriptSegment] | None = None, start_seconds: float = 0,
+) -> bool:
+    """Use an explicit canvas; SRT's default ASS canvas made captions oversized.
+
+    Segment timings preserve pauses. Within a segment cue timing remains approximate;
+    it is not word alignment and still needs editorial review.
+    """
+    cues = []
+    if segments:
+        for segment in segments:
+            left = segment.start_seconds - start_seconds
+            right = segment.end_seconds - start_seconds
+            if left < -0.05 or right > duration + 0.05:
+                raise MediaError(
+                    "CAPTION_RANGE_INVALID", "Captions cross the selected clip boundary.",
+                )
+            for a, b, caption in _caption_groups(segment.text, right - left):
+                cues.append((max(0, left + a), min(duration, left + b), caption))
+    else:
+        cues = _caption_groups(text, duration)
+    if not cues:
+        return False
+
+    def stamp(value: float) -> str:
+        centiseconds = max(0, round(value * 100))
+        hours, remainder = divmod(centiseconds, 360000)
+        minutes, remainder = divmod(remainder, 6000)
+        seconds, cents = divmod(remainder, 100)
+        return f"{hours}:{minutes:02}:{seconds:02}.{cents:02}"
+
+    width, height = settings.render_width, settings.render_height
+    font_size = round(width * 0.050)
+    margin = round(width * 0.075)
+    bottom = round(height * 0.19)
+    header = (
+        f"[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\n"
+        "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\n"
+        "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,"
+        "BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,"
+        "BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\n"
+        f"Style: Default,Arial,{font_size},&H00FFFFFF,&H00FFFFFF,&H00111111,"
+        f"&H80000000,-1,0,0,0,100,100,0,0,1,2,1,2,{margin},{margin},{bottom},1\n\n"
+        "[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
+    )
+    lines = []
+    for left, right, caption in cues:
+        safe = caption.replace("\\", "").replace("{", "(").replace("}", ")")
+        wrapped = r"\N".join(textwrap.wrap(safe, width=26))
+        lines.append(f"Dialogue: 0,{stamp(left)},{stamp(right)},Default,,0,0,0,,{wrapped}")
+    path.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
+    return True
+
+
 def _video_filter(settings: Settings, srt_path: Path | None) -> str:
     width = settings.render_width
     height = settings.render_height
@@ -210,12 +268,7 @@ def _video_filter(settings: Settings, srt_path: Path | None) -> str:
     if not srt_path:
         return base + "[v]"
     escaped = str(srt_path.resolve()).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
-    style = (
-        "FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,"
-        "OutlineColour=&H00111111,BorderStyle=1,Outline=3,Shadow=1,"
-        "Alignment=2,MarginV=90"
-    )
-    return base + f",subtitles='{escaped}':force_style='{style}'[v]"
+    return base + f",subtitles='{escaped}'[v]"
 
 
 def render_vertical_clip(
@@ -225,13 +278,17 @@ def render_vertical_clip(
     end_seconds: float,
     caption_text: str,
     settings: Settings,
+    *,
+    transcript_segments: list[TranscriptSegment] | None = None,
 ) -> bool:
     duration = end_seconds - start_seconds
     if duration <= 0:
         raise MediaError("RENDER_RANGE_INVALID", "The clip end must be after its start.")
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    srt_path = output_path.with_suffix(".srt")
-    has_captions = write_srt(srt_path, caption_text, duration)
+    srt_path = output_path.with_suffix(".ass")
+    has_captions = write_ass(
+        srt_path, caption_text, duration, settings, transcript_segments, start_seconds,
+    )
 
     command = [
         settings.ffmpeg_binary,

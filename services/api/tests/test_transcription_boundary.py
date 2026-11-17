@@ -58,3 +58,19 @@ def test_worker_json_becomes_validated_segments(
     assert mode == "faster-whisper:tiny"
     assert len(segments) == 1
     assert segments[0].text == "A complete thought."
+
+
+def test_campaign_spelling_hints_are_passed_to_isolated_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPMINE_WHISPER_INITIAL_PROMPT", "Vi City, Chicago")
+    settings = transcription_settings(tmp_path, monkeypatch)
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, '{"segments":[]}', "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    transcribe_media(tmp_path / "source.mp4", settings, "en")
+    assert commands[0][-2:] == ["--initial-prompt", "Vi City, Chicago"]

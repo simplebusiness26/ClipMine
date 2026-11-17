@@ -51,3 +51,11 @@ def test_timeline_fallback_spreads_candidates_across_source() -> None:
     assert candidates[0].start_seconds == 0
     assert candidates[-1].end_seconds == 130
     assert all(candidate.confidence == "experimental" for candidate in candidates)
+
+
+def test_candidate_never_exceeds_maximum_when_a_segment_crosses_it() -> None:
+    segments = [
+        TranscriptSegment(start_seconds=0, end_seconds=10, text="The opening."),
+        TranscriptSegment(start_seconds=10, end_seconds=45, text="A long explanation."),
+    ]
+    assert generate_candidates(segments, 1, 20, 30) == []
