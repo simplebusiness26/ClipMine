@@ -53,6 +53,99 @@ export async function campaignReminders(env, timestamp = Date.now()) {
       `campaign-${kind}-${row.id}`, row.user_id, row.niche_id, message, current, row.id);
   }
 }
+export function contentRewardsDryRunInput(input, timestamp = Date.now()) {
+  const campaign = URL.parse(input.campaign_url ?? "");
+  const reel = URL.parse(input.reel_url ?? "");
+  const deadline = Date.parse(input.deadline);
+  if (
+    !campaign || campaign.origin !== "https://contentrewards.com" ||
+    !/^\/c\/campaigns\/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\/?$/i.test(campaign.pathname) ||
+    !reel || !["https://instagram.com", "https://www.instagram.com"].includes(reel.origin) ||
+    !/^\/reel\/[A-Za-z0-9_-]+\/?$/.test(reel.pathname) ||
+    campaign.username || campaign.password || reel.username || reel.password ||
+    !Number.isFinite(deadline) || deadline <= timestamp || deadline > timestamp + 30 * 60_000
+  ) return null;
+  return {
+    campaign_url: campaign.origin + campaign.pathname,
+    reel_url: "https://www.instagram.com" + reel.pathname,
+    deadline: new Date(deadline).toISOString(),
+  };
+}
+
+export async function dispatchContentRewardsDryRun(env, fetcher = fetch, timestamp = Date.now()) {
+  const account = env.CONTENT_REWARDS_DRY_RUN_ACCOUNT_ID;
+  const token = env.CONTENT_REWARDS_DISPATCH_TOKEN;
+  if (!account || !token) return;
+  const current = new Date(timestamp).toISOString();
+  const oldest = new Date(timestamp - 30 * 60_000).toISOString();
+  const rows = await all(env, `SELECT p.id,p.public_url,p.published_at,s.campaign_url,
+      s.campaign_deadline_minutes,s.niche_id,n.user_id
+    FROM publications p JOIN accounts a ON a.id=p.account_id
+    JOIN posts s ON s.id=p.post_id JOIN niches n ON n.id=s.niche_id
+    WHERE p.account_id=? AND a.platform='instagram' AND p.status='published'
+      AND p.campaign_submitted_at IS NULL AND p.public_url IS NOT NULL AND s.campaign_url IS NOT NULL
+      AND p.published_at>? AND p.published_at<=?
+      AND p.content_rewards_dry_run_dispatched_at IS NULL AND p.content_rewards_dry_run_attempts<3
+      AND (p.content_rewards_dry_run_retry_at IS NULL OR p.content_rewards_dry_run_retry_at<=?)
+    ORDER BY p.published_at LIMIT 10`, account, oldest, current, current);
+  for (const row of rows) {
+    const deadline = new Date(Date.parse(row.published_at) + Math.min(row.campaign_deadline_minutes, 30) * 60_000);
+    if (!Number.isFinite(deadline.getTime())) continue;
+    const input = contentRewardsDryRunInput({
+      campaign_url: row.campaign_url, reel_url: row.public_url, deadline: deadline.toISOString(),
+    }, timestamp);
+    if (!input) continue;
+
+    // A single tick owns dispatch while the lease is active. A repeated event can only prepare the form.
+    const retryAt = new Date(timestamp + 60_000).toISOString();
+    const claimed = await one(env, `UPDATE publications
+      SET content_rewards_dry_run_attempts=content_rewards_dry_run_attempts+1,
+          content_rewards_dry_run_retry_at=?
+      WHERE id=? AND status='published' AND account_id=? AND public_url=? AND published_at=?
+        AND campaign_submitted_at IS NULL AND content_rewards_dry_run_dispatched_at IS NULL
+        AND content_rewards_dry_run_attempts<3
+        AND (content_rewards_dry_run_retry_at IS NULL OR content_rewards_dry_run_retry_at<=?)
+        AND EXISTS (SELECT 1 FROM posts WHERE posts.id=publications.post_id
+          AND campaign_url=? AND campaign_deadline_minutes=?)
+      RETURNING content_rewards_dry_run_attempts AS attempts`, retryAt, row.id, account,
+      row.public_url, row.published_at, current, row.campaign_url, row.campaign_deadline_minutes);
+    if (!claimed) continue;
+
+    let accepted = false;
+    try {
+      const response = await fetcher("https://api.github.com/repos/simplebusiness26/ClipMine/dispatches", {
+        method: "POST",
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000),
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "User-Agent": "Niches Content Rewards dry run",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          event_type: "content-rewards-dry-run",
+          client_payload: { publication_id: row.id, ...input },
+        }),
+      });
+      accepted = response.status === 204;
+    } catch {
+      // An unconfirmed dispatch can be retried on a later tick.
+    }
+    if (accepted) {
+      await execute(env, `UPDATE publications SET content_rewards_dry_run_dispatched_at=?
+        WHERE id=? AND content_rewards_dry_run_dispatched_at IS NULL`, current, row.id);
+    } else if (claimed.attempts === 3) {
+      await execute(env, `INSERT OR IGNORE INTO notifications(id,user_id,niche_id,message,read_at,created_at)
+        SELECT ?,?,?,?,NULL,? WHERE EXISTS (SELECT 1 FROM publications
+          WHERE id=? AND campaign_submitted_at IS NULL AND content_rewards_dry_run_dispatched_at IS NULL)`,
+      `content-rewards-dry-run-${row.id}`, row.user_id, row.niche_id,
+      "The Content Rewards browser test could not start. Open Published to submit this clip manually.",
+      current, row.id);
+    }
+  }
+}
+
 export async function creatorInfo(env, account, fetcher = fetch) {
   const token = await accessToken(env, account, fetcher);
   const result = await providerJSON(

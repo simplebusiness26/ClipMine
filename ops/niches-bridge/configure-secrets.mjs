@@ -52,6 +52,8 @@ for (const name of [
   "INSTAGRAM_APP_ID",
   "INSTAGRAM_APP_SECRET",
   "BREVO_API_KEY",
+  "CONTENT_REWARDS_DRY_RUN_ACCOUNT_ID",
+  "CONTENT_REWARDS_DISPATCH_TOKEN",
 ]) {
   const value = process.env["NICHES_" + name];
   if (!value) continue;

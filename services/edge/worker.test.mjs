@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { scheduled } from "./worker.mjs";
-import { campaignReminders, refreshPermalinks } from "./outbox.mjs";
+import { campaignReminders, dispatchContentRewardsDryRun, refreshPermalinks } from "./outbox.mjs";
 import { seal, accountContext } from "./token-vault.mjs";
 let mf, db, first, second, niche, niche2, media, post;
 const origin = "http://localhost";
@@ -240,6 +240,64 @@ test("master release retains real brand hierarchy, social authorisations and sch
     method:"PATCH",cookie:first,data:{parent_id:master.id},
   })).data;
   assert.equal(reattached.parent_id,master.id);
+});
+
+test("a confirmed opted-in Reel dispatches the campaign dry run once", async () => {
+  const workspace = (await checked("/api/niches", {
+    method: "POST", cookie: first, data: { name: "Content Rewards dry run fixture" },
+  }, 201)).data.id;
+  const { id: account } = (await checked(`/api/niches/${workspace}/accounts`, {
+    method: "POST", cookie: first, data: { platform: "instagram", display_name: "Dry run", handle: "dry.run" },
+  }, 201)).data;
+  const campaign = "https://contentrewards.com/c/campaigns/cc01471a-0dd5-471d-95b7-90955b037974";
+  const reel = "https://www.instagram.com/reel/example/";
+  const timestamp = Date.parse("2026-11-17T03:40:00.000Z");
+  const publication = "dry-run-fixture";
+  const { id: post } = (await checked(`/api/niches/${workspace}/posts`, {
+    method: "POST", cookie: first, data: { title: "Dry run", destinations: [account], campaign_url: campaign },
+  }, 201)).data;
+  await db.prepare(`INSERT INTO publications(id,post_id,account_id,status,provider_post_id,updated_at,published_at)
+    VALUES (?,?,?,'published','123',?,?)`).bind(publication, post, account,
+    "2026-11-17T03:40:00.000Z", "2026-11-17T03:32:12.000Z").run();
+
+  const env = { DB: db, CONTENT_REWARDS_DRY_RUN_ACCOUNT_ID: account, CONTENT_REWARDS_DISPATCH_TOKEN: "test" };
+  const calls = [];
+  const send = async (url, options) => {
+    calls.push({ url, body: JSON.parse(options.body) });
+    return new Response(null, { status: 204 });
+  };
+  await dispatchContentRewardsDryRun(env, send, timestamp);
+  assert.equal(calls.length, 0);
+  await db.prepare("UPDATE publications SET public_url=? WHERE id=?").bind(reel, publication).run();
+  await dispatchContentRewardsDryRun({ DB: db }, send, timestamp);
+  await dispatchContentRewardsDryRun({ ...env, CONTENT_REWARDS_DRY_RUN_ACCOUNT_ID: "another-account" }, send, timestamp);
+  await dispatchContentRewardsDryRun(env, send, Date.parse("2026-11-17T04:02:12.000Z"));
+  assert.equal(calls.length, 0);
+
+  await dispatchContentRewardsDryRun(env, async () => new Response(null, { status: 503 }), timestamp);
+  await dispatchContentRewardsDryRun(env, send, timestamp);
+  assert.equal(calls.length, 0);
+  await Promise.all([
+    dispatchContentRewardsDryRun(env, send, timestamp + 60_000),
+    dispatchContentRewardsDryRun(env, send, timestamp + 60_000),
+  ]);
+  assert.deepEqual(calls, [{
+    url: "https://api.github.com/repos/simplebusiness26/ClipMine/dispatches",
+    body: {
+      event_type: "content-rewards-dry-run",
+      client_payload: {
+        publication_id: publication, campaign_url: campaign, reel_url: reel,
+        deadline: "2026-11-17T04:02:12.000Z",
+      },
+    },
+  }]);
+  await dispatchContentRewardsDryRun(env, send, timestamp + 120_000);
+  assert.equal(calls.length, 1);
+  const receipt = await db.prepare(`SELECT campaign_submitted_at,content_rewards_dry_run_dispatched_at
+    FROM publications WHERE id=?`).bind(publication).first();
+  assert.equal(receipt.campaign_submitted_at, null);
+  assert.equal(receipt.content_rewards_dry_run_dispatched_at, "2026-11-17T03:41:00.000Z");
+  await db.prepare("DELETE FROM publications WHERE id=?").bind(publication).run();
 });
 
 test("campaign confirmation is manual, reversible and scoped to its owner", async () => {
