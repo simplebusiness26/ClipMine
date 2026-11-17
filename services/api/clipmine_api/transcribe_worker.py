@@ -11,6 +11,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", required=True)
     parser.add_argument("--compute-type", required=True)
     parser.add_argument("--language", default="auto")
+    parser.add_argument("--initial-prompt", default="")
     return parser.parse_args()
 
 
@@ -29,7 +30,8 @@ def main() -> int:
         language=None if args.language == "auto" else args.language,
         vad_filter=True,
         beam_size=5,
-        condition_on_previous_text=True,
+        condition_on_previous_text=False,
+        initial_prompt=args.initial_prompt or None,
     )
     segments = []
     for item in raw_segments:

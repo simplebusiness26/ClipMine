@@ -60,17 +60,19 @@ def _score_window(segments: list[TranscriptSegment]) -> tuple[float, list[str]]:
     score = 38.0
     reasons: list[str] = []
 
-    if text and (text.lstrip().startswith(("why", "how", "what")) or "?" in text[:120]):
+    if text and (lower.lstrip().startswith(("why", "how", "what")) or "?" in text[:120]):
         score += 12
         reasons.append("Opens with a direct question")
     elif any(pattern in lower[:180] for pattern in HOOK_PATTERNS):
         score += 10
         reasons.append("Opens with a clear hook")
     else:
-        score += 4
-        reasons.append("Starts on a complete spoken idea")
+        reasons.append("Starts at a transcript segment; review the opening context")
 
-    if text.endswith((".", "!", "?")):
+    last_word = words[-1] if words else ""
+    if text.endswith((".", "!", "?")) and last_word not in {
+        "if", "and", "but", "because", "so", "the", "a", "to", "of", "or",
+    }:
         score += 13
         reasons.append("Ends at a complete thought")
     if any(pattern in lower for pattern in PAYOFF_PATTERNS):
@@ -136,7 +138,7 @@ def generate_candidates(
     for start_index, first in enumerate(ordered):
         window: list[TranscriptSegment] = []
         for segment in ordered[start_index:]:
-            if segment.start_seconds - first.start_seconds > max_seconds:
+            if segment.end_seconds - first.start_seconds > max_seconds:
                 break
             window.append(segment)
             duration = segment.end_seconds - first.start_seconds
