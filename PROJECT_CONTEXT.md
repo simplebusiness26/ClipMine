@@ -8,7 +8,8 @@ Phone studio quality follow-up (2026-11-17): sentence-boundary candidate selecti
 explicit-canvas captions with optional segment timing, and campaign spelling hints
 are implemented in the Python engine. See [phone studio quality controls](docs/operations/phone-studio-quality.md).
 These controls do not guarantee campaign approval. Colab-to-Niches password entry
-is blocked; a safe export/authorization route still needs verification.
+is blocked. A passwordless, preview-first browser export handoff is implemented;
+live transfer verification remains required. See [ADR-009](docs/decisions/ADR-009-browser-export-handoff.md).
 
 Niches is the new product inside this existing ClipMine repository. ClipMine remains the long-video studio. The owner explicitly authorised this expansion on 2026-10-26. The private-only scope below is historical, not the new target.
 

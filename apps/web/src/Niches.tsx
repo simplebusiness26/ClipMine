@@ -1,4 +1,5 @@
 import PostHistory from "./PostHistory";
+import ClipMineImport from "./ClipMineImport";
 import Published from "./Published";
 import { parseBatchArchive } from "./batch-zip";
 import SocialAccounts from "./SocialAccounts";
@@ -288,6 +289,8 @@ export default function Niches() {
       </div>
     );
   if (!user) return <Auth onLogin={() => void load()} />;
+  if (new URLSearchParams(location.search).get("clipmine-import") === "1")
+    return <ClipMineImport niches={niches} />;
   function open(n: Niche, t: Tab = "Overview") {
     setActive(n);
     setTab(t);

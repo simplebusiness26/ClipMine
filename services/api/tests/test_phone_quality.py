@@ -32,6 +32,14 @@ def test_best_bits_rejects_unfinished_or_out_of_range_speech():
                         {30: 1}, "Best bits", 0) == []
 
 
+def test_natural_source_end_without_punctuation_is_flagged_for_review():
+    clips = select_clips(36.04, [segment(0, 35.76, "Here is the whole story")],
+                         {30: 5}, "Best bits", 0)
+    assert len(clips) == 1
+    assert clips[0].end == 35.76
+    assert clips[0].review_issues
+
+
 def test_caption_canvas_safe_area_and_real_segment_pauses(tmp_path: Path):
     path = tmp_path / "captions.ass"
     settings = Settings.from_env()

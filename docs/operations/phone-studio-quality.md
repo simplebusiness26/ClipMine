@@ -5,7 +5,9 @@ bits selection. Requested lengths are targets, with a 65–120% duration window.
 Candidates end at transcript segment boundaries with sentence punctuation and
 reject trailing connectors such as “so, if”. Heavy overlap is suppressed. Fewer
 clips are returned when the source cannot supply enough distinct candidates.
-Punctuation is a heuristic; it is not proof that a story stands alone.
+Punctuation is a heuristic; it is not proof that a story stands alone. A natural
+source ending within 400 ms is also allowed if it is not a dangling connector,
+with an explicit review warning when punctuation is missing.
 
 Numbered parts retain exact boundaries and carry an explicit review warning.
 They must not be treated as automatically compliant campaign clips.
@@ -25,8 +27,8 @@ retain an approximate fallback and require sync review.
 Before scheduling, review the actual rendered video for complete context, names,
 caption sync, source framing, campaign assets and required disclosures. A render
 success is not a campaign approval. Do not send Niches passwords to Colab; its
-legacy password client is not a verified safe connection flow. Export transfer
-and secure Niches authorization remain separate requirements.
+legacy password client is not a verified safe connection flow. Use the browser
+handoff review page described in [ADR-009](../decisions/ADR-009-browser-export-handoff.md).
 
 ## Regression validation
 

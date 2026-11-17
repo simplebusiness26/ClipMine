@@ -79,7 +79,12 @@ def select_clips(duration, segments, counts, mode, start):
                 if window and segment.start_seconds - window[-1].end_seconds > 2.5:
                     break
                 window.append(segment)
-                if span < minimum or not complete_ending(segment.text):
+                words = re.findall(r"[\w']+", segment.text.lower())
+                source_end = (
+                    0 <= duration - segment.end_seconds <= 0.40
+                    and bool(words) and words[-1] not in TRAILING_CONNECTORS
+                )
+                if span < minimum or not (complete_ending(segment.text) or source_end):
                     continue
                 text = " ".join(s.text.strip() for s in window)
                 score, reasons = _score_window(window)
@@ -88,6 +93,8 @@ def select_clips(duration, segments, counts, mode, start):
                     round(first.start_seconds, 3), round(segment.end_seconds, 3), length,
                     _title_from_text(text, 1), text, round(score, 1),
                     tuple(reasons), tuple(window),
+                    ("Source ending has no punctuation; verify its final thought.",)
+                    if source_end and not complete_ending(segment.text) else (),
                 ))
 
     options.sort(key=lambda clip: clip.score, reverse=True)
