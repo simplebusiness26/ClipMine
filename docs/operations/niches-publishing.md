@@ -93,3 +93,35 @@ provider testing, and a Niches APK remain incomplete.
 ## Removing stored media after publication
 
 Library deletion retains posts and publication receipts, including public URLs. Shared files remain protected while any export is approved or any destination is scheduled, active or uncertain. D1 atomically reserves cleanup and unlinks attachments before removing the media index. A durable cleanup entry retries storage removal after failures. This does not delete posts on social platforms.
+
+## Content Rewards browser dry run
+
+The dry run uses the Instagram publication record after it receives both its
+public Reel URL and Instagram's publish time. Only the nominated Instagram
+account participates. A joined campaign link must use the Content Rewards
+campaign page. The job receives the public Reel link, campaign link, publication
+identifier and submission deadline. The smaller of the configured deadline and
+30 minutes applies.
+
+Configuration for a first test:
+
+1. Deploy the Niches worker through the existing isolated operations launcher
+   and apply migration `0009_content_rewards_dry_run.sql`. The workflow must be
+   on the ClipMine repository's default branch for an event to start it.
+2. Supply `NICHES_CONTENT_REWARDS_DRY_RUN_ACCOUNT_ID` and
+   `NICHES_CONTENT_REWARDS_DISPATCH_TOKEN` to the scoped Niches deployment runner.
+   Use a token limited to ClipMine with permission to dispatch the repository
+   event. The adapter installs only the dedicated Niches Worker bindings.
+3. Configure a securely obtained signed-in Playwright state as the ClipMine
+   Actions secret `CONTENT_REWARDS_BROWSER_STATE`. Keep account credentials and
+   session state out of Git, event payloads, logs and artifacts. A sign-in in a
+   separate browser session does not automatically sign in the Actions runner.
+4. Publish one approved test Reel with its campaign link. Inspect the **Content
+   Rewards browser dry run** Actions result. A prepared form is a successful
+   dry-run result. Complete the actual submission through Content Rewards within
+   its window and record it in Published.
+
+Without both Worker bindings, the minute scheduler skips the dispatch. The dry
+run opens the original campaign and fills its Reel link field, then closes the
+browser. It does not tick the campaign acknowledgement or send the form. The
+existing manual confirmation and deadline reminders continue to apply.

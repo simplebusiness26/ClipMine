@@ -102,6 +102,7 @@ jobs:
       - run: npm run test:edge && node --test ops/niches-bridge/config.test.mjs
       - run: npm run build:web
       - run: npx playwright install --with-deps chromium
+      - run: node --test ops/niches-bridge/content-rewards-browser.test.mjs
       - name: Start disposable local application
         run: |
           node ops/niches-bridge/local-test-server.mjs > /tmp/niches-local.log 2>&1 &

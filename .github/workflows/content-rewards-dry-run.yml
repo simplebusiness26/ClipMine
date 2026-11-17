@@ -1,0 +1,28 @@
+name: Content Rewards browser dry run
+
+on:
+  repository_dispatch:
+    types: [content-rewards-dry-run]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: content-rewards-dry-run-${{ github.event.client_payload.publication_id }}
+  cancel-in-progress: false
+
+jobs:
+  prepare-form:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npx playwright install chromium
+      - run: node ops/niches-bridge/content-rewards-dry-run.mjs
+        env:
+          CONTENT_REWARDS_BROWSER_STATE: ${{ secrets.CONTENT_REWARDS_BROWSER_STATE }}

@@ -13,6 +13,7 @@ import {
   runOutbox,
   refreshPermalinks,
   campaignReminders,
+  dispatchContentRewardsDryRun,
   providerMedia,
   retryPublication,
   confirmPublishedExternally,
@@ -1405,6 +1406,7 @@ export async function scheduled(env) {
   await execute(env, "DELETE FROM oauth_states WHERE expires_at<?", now());
   await execute(env, "DELETE FROM oauth_selections WHERE expires_at<?", now());
   await execute(env, "DELETE FROM media_grants WHERE expires_at<?", now());
+  await dispatchContentRewardsDryRun(env);
 }
 export default {
   async fetch(request, env, context) {
