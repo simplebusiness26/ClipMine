@@ -43,6 +43,7 @@ describe("Electric creator launch workflow", () => {
     const html = renderToStaticMarkup(createElement(PublishingReview, {
       nicheId: "niche-1",
       draft: post("A"),
+      media: [],
       accounts: [account],
       providers: [{ id: "youtube", name: "YouTube", status: "connected", publishing_enabled: true, oauth_ready: true, reason: "" }],
       onAccounts: () => {},

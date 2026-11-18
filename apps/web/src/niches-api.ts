@@ -49,9 +49,12 @@ export interface Provider {
   status: string;
   reason: string;
 }
+export type PostKind = "auto" | "carousel";
 export interface Post {
   campaign_url?: string | null;
   campaign_deadline_minutes?: number;
+  post_kind?: PostKind;
+  media_ids?: string[];
   publish_mode?: string;
   source_group?: string;
   brand_id?: string | null;

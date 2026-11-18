@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
   call,
+  type Media,
   type Post,
   type SocialAccount,
   type Provider,
@@ -19,6 +20,7 @@ export default function PublishingReview({
   nicheId,
   masterName,
   draft,
+  media,
   accounts,
   providers,
   onResult,
@@ -28,6 +30,7 @@ export default function PublishingReview({
   nicheId: string;
   masterName?: string;
   draft: Post;
+  media: Media[];
   accounts: SocialAccount[];
   providers: Provider[];
   onResult: (message: string) => void;
@@ -41,7 +44,8 @@ export default function PublishingReview({
     [tiktokModes, setTiktokModes] = useState<Record<string, "direct" | "inbox">>({}),
     [mode, setMode] = useState<"now" | "schedule">("now"),
     [reviewed, setReviewed] = useState<{ key: string; plan: DeliveryPlan } | null>(null);
-  const planKey = [draft.id, draft.brand_id, ...draft.destinations].join(":");
+  const isCarousel = draft.post_kind === "carousel";
+  const planKey = [draft.id, draft.brand_id, draft.post_kind, ...(draft.media_ids || []), ...draft.destinations].join(":");
   const plan = reviewed?.key === planKey ? reviewed.plan : null;
   const selected = accounts.filter((a) => draft.destinations.includes(a.id) || plan?.automatic === a.id);
   useEffect(() => {
@@ -90,6 +94,8 @@ export default function PublishingReview({
         "PATCH",
         {
           media_id: draft.media_id,
+          post_kind: draft.post_kind || "auto",
+          media_ids: draft.media_ids || [],
           title: draft.title,
           caption: draft.caption,
           overrides: draft.overrides,
@@ -157,6 +163,16 @@ export default function PublishingReview({
   return (
     <form onSubmit={submit}>
       <h3>{draft.title || "Untitled draft"}</h3>
+      {isCarousel && (
+        <div>
+          <p className="n-muted">Instagram carousel · {draft.media_ids?.length || 0} slides</p>
+          <ol>
+            {draft.media_ids?.map((id, index) => (
+              <li key={id}>{media.find((item) => item.id === id)?.filename || "Missing file"}{index === 0 ? " · Cover" : ""}</li>
+            ))}
+          </ol>
+        </div>
+      )}
       <p className="n-caption-preview">
         {draft.caption || "No master caption"}
       </p>
@@ -209,12 +225,12 @@ export default function PublishingReview({
             </p>
             {a.platform === "instagram" && (
               <p className="n-status-note">
-                Instagram publishes this Reel or post to the connected account.
+                Instagram publishes this {isCarousel ? "swipeable carousel" : "Reel or post"} to the connected account.
                 There is no Private visibility option in this publishing flow.
                 Only confirm when you are ready for the post to go live.
               </p>
             )}
-            {a.platform === "instagram" && a.status === "connected" && !masterName && (
+            {a.platform === "instagram" && a.status === "connected" && !masterName && !isCarousel && (
               a.connection_kind === "instagram_login" ? (
                 <p className="n-muted">Collab invites require an Instagram connection through Meta. Direct Instagram Login can still publish ordinary Reels.</p>
               ) : (
@@ -391,7 +407,7 @@ export default function PublishingReview({
                 </p>
               </>
             )}
-            {(a.platform === "instagram" || (a.platform === "tiktok" && tiktokModes[a.id] !== "inbox")) && (
+            {(a.platform === "instagram" || (a.platform === "tiktok" && tiktokModes[a.id] !== "inbox")) && !isCarousel && (
               <label>
                 Video cover frame (milliseconds, optional)
                 <input type="number" min="0" step="1" name={`${a.id}_cover`} />

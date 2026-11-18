@@ -19,6 +19,10 @@ Implemented locally: authenticated niche portal, D1 ownership model, private R2 
 
 Production follow-up (2026-10-27): the isolated Niches portal is deployed in AISO’s Cloudflare account. Registration, sessions, multiple planning accounts per niche, drafts and mobile smoke passed. R2 remains denied by the account entitlement, but a project-only free Workers KV namespace now backs private authenticated 25 MiB beta uploads; real remote upload/full and ranged download/anonymous denial passed in [the isolated deployment run](https://github.com/simplebusiness26/agentCart/actions/runs/40452645608). Beta KV data is eventually consistent and not suited to large uploads or permanent storage. Encryption/OAuth and per-account publishing outbox are implemented and simulated-provider tested, **not** real-provider verified. Optional Brevo reset sender code is implemented but requires dedicated secrets and a verified sender; email delivery is **not** verified. Remote render hosting, real device/backup recovery and direct social integrations are still blocked. Never describe a planned account as connected or an export reminder as a published post; the Cloudflare deployment guard must not be bypassed.
 
+Instagram carousel publishing adds ordered JPEG/video slides to the existing
+draft, launch review and scheduler. See the
+[carousel publishing workflow](docs/operations/niches-publishing.md#instagram-carousels).
+
 ## Historical ClipMine baseline
 
 Last updated: 2026-08-13

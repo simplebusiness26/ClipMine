@@ -17,6 +17,7 @@ import {
   type Brand,
   type Media,
   type Post,
+  type PostKind,
   type Provider,
   type SocialAccount,
   type Activity,
@@ -878,6 +879,8 @@ function Workspace({
     [draft, setDraft] = useState<Post | null>(null),
     [composeStage, setComposeStage] = useState<"prepare" | "review">("prepare"),
     [selectedMedia, setSelectedMedia] = useState(""),
+    [contentKind, setContentKind] = useState<PostKind>("auto"),
+    [selectedMediaIds, setSelectedMediaIds] = useState<string[]>([]),
     [sourceGroup, setSourceGroup] = useState(""),
     [brands, setBrands] = useState<Brand[]>([]),
     [brandId, setBrandId] = useState(""),
@@ -885,6 +888,11 @@ function Workspace({
     [analytics, setAnalytics] = useState<{ source: string }>({
       source: "Loading metrics availability…",
     });
+  useEffect(() => {
+    setContentKind(draft?.post_kind || "auto");
+    setSelectedMediaIds(draft?.post_kind === "carousel" ? (draft.media_ids || []) : []);
+  }, [draft?.id]);
+  const instagramOnlyFormat = contentKind === "carousel";
   const sourceGroups: string[] = JSON.parse(niche.source_groups_json || "[]");
   const destinationsFor = (list: SocialAccount[], selectedBrand = brandId) => selectedBrand
     ? list.filter((account) => account.brand_id === selectedBrand)
@@ -952,6 +960,8 @@ function Workspace({
     setDraft(post);
     setComposeStage(stage);
     setSelectedMedia(post.media_id || "");
+    setContentKind(post.post_kind || "auto");
+    setSelectedMediaIds(post.post_kind === "carousel" ? (post.media_ids || []) : []);
     setSourceGroup(post.source_group || "");
     setBrandId(post.brand_id || "");
     setDestinations(
@@ -975,6 +985,8 @@ function Workspace({
           title: post.title,
           caption: post.caption,
           media_id: post.media_id,
+          post_kind: post.post_kind || "auto",
+          media_ids: post.media_ids || [],
           destinations: [account.id],
           source_group: post.source_group,
           brand_id: post.brand_id,
@@ -1096,7 +1108,9 @@ function Workspace({
           caption: data.caption,
           campaign_url: data.campaign_url,
           campaign_deadline_minutes: Number(data.campaign_deadline_minutes || 30),
-          media_id: selectedMedia || null,
+          media_id: contentKind === "carousel" ? selectedMediaIds[0] || null : selectedMedia || null,
+          post_kind: contentKind,
+          media_ids: contentKind === "carousel" ? selectedMediaIds : [],
           destinations,
           source_group: !brandId && niche.master_name ? sourceGroup : "",
           brand_id: brandId || null,
@@ -1692,7 +1706,7 @@ function Workspace({
                   <select value={brandId} onChange={(event) => {
                     const next = event.currentTarget.value;
                     setBrandId(next);
-                    setDestinations(destinationsFor(accounts, next).filter((account) => account.status === "connected").map((account) => account.id));
+                    setDestinations(destinationsFor(accounts, next).filter((account) => account.status === "connected" && (!instagramOnlyFormat || account.platform === "instagram")).map((account) => account.id));
                   }}>
                     {!brandId && <option value="">Existing niche draft</option>}
                     {brands.map((brand) => <option value={brand.id} key={brand.id}>{brand.name}{!brand.parent_id ? " · Master" : ""}</option>)}
@@ -1709,27 +1723,69 @@ function Workspace({
                 </label>
               )}
               <label>
-                Media
-                <select
-                  value={selectedMedia}
-                  onChange={(e) => setSelectedMedia(e.target.value)}
-                >
-                  <option value="">Choose from your library</option>
-                  {media.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.filename}
-                    </option>
-                  ))}
+                Content format
+                <select aria-label="Content format" value={contentKind} onChange={(event) => {
+                  const next = event.currentTarget.value as PostKind;
+                  setContentKind(next);
+                  const current = media.find((item) => item.id === selectedMedia);
+                  if (next === "carousel")
+                    setSelectedMediaIds((ids) => ids.length ? ids :
+                      current && ["image/jpeg", "video/mp4", "video/quicktime"].includes(current.mime) ? [current.id] : []);
+                  if (next === "carousel")
+                    setDestinations((ids) => ids.filter((id) => accounts.some((a) => a.id === id && a.platform === "instagram")));
+                }}>
+                  <option value="auto">Single photo or video</option>
+                  <option value="carousel">Carousel · 2–10 swipeable slides</option>
                 </select>
               </label>
-              {selectedMedia && media.find((m) => m.id === selectedMedia) && (
-                <div className="n-compose-preview">
-                  <Preview
-                    niche={niche.id}
-                    media={media.find((m) => m.id === selectedMedia)!}
-                    controls
-                  />
+              {instagramOnlyFormat && <p className="n-muted">
+                Choose an Instagram account to publish this carousel.
+              </p>}
+              {contentKind === "carousel" ? (
+                <div className="n-carousel-picker" aria-label="Carousel slides in publishing order">
+                  <strong>Slides ({selectedMediaIds.length}/10)</strong>
+                  {selectedMediaIds.map((id, index) => {
+                    const item = media.find((m) => m.id === id);
+                    return <div className="n-carousel-slide" key={id}>
+                      <span>{index + 1}. {item?.filename || "Missing file"}{index === 0 ? " · Cover" : ""}</span>
+                      <div>
+                        <button type="button" disabled={index === 0} onClick={() => setSelectedMediaIds((ids) => {
+                          const next = [...ids]; [next[index - 1], next[index]] = [next[index],next[index - 1]]; return next;
+                        })} aria-label={`Move slide ${index + 1} earlier`}>↑</button>
+                        <button type="button" disabled={index === selectedMediaIds.length - 1} onClick={() => setSelectedMediaIds((ids) => {
+                          const next = [...ids]; [next[index + 1], next[index]] = [next[index],next[index + 1]]; return next;
+                        })} aria-label={`Move slide ${index + 1} later`}>↓</button>
+                        <button type="button" onClick={() => setSelectedMediaIds((ids) => ids.filter((x) => x !== id))}>Remove</button>
+                      </div>
+                    </div>;
+                  })}
+                  <label>Add a slide (JPEG, MP4 or MOV)
+                    <select value="" disabled={selectedMediaIds.length >= 10} onChange={(e) => {
+                      const id = e.currentTarget.value; if (id) setSelectedMediaIds((ids) => [...ids, id]);
+                    }}>
+                      <option value="">Choose an uploaded file</option>
+                      {media.filter((m) =>
+                        ["image/jpeg","video/mp4","video/quicktime"].includes(m.mime) && !selectedMediaIds.includes(m.id)
+                      ).map((m) => <option key={m.id} value={m.id}>{m.filename}</option>)}
+                    </select>
+                  </label>
+                  <small>Choose 2–10 slides. Use arrows to change the order before saving.</small>
                 </div>
+              ) : (
+                <>
+                  <label>
+                    Media
+                    <select value={selectedMedia} onChange={(e) => setSelectedMedia(e.target.value)}>
+                      <option value="">Choose from your library</option>
+                      {media.map((m) => <option key={m.id} value={m.id}>{m.filename}</option>)}
+                    </select>
+                  </label>
+                  {selectedMedia && media.find((m) => m.id === selectedMedia) && (
+                    <div className="n-compose-preview">
+                      <Preview niche={niche.id} media={media.find((m) => m.id === selectedMedia)!} controls />
+                    </div>
+                  )}
+                </>
               )}
               <label>
                 Post title
@@ -1764,7 +1820,7 @@ function Workspace({
                   <label className="n-checkbox" key={a.id}>
                     <input
                       type="checkbox"
-                      disabled={a.status === "archived"}
+                      disabled={a.status === "archived" || (instagramOnlyFormat && a.platform !== "instagram")}
                       checked={destinations.includes(a.id)}
                       onChange={(e) =>
                         setDestinations((d) =>
@@ -1861,6 +1917,7 @@ function Workspace({
                 nicheId={niche.id}
                 masterName={draft.brand_id ? undefined : niche.master_name}
                 draft={draft}
+                media={media}
                 accounts={accounts}
                 providers={providers}
                 onAccounts={() => setTab("Accounts")}

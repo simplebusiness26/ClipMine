@@ -30,6 +30,21 @@ Login and image posts do not use this option. The existing approval and
 publication records carry the option without a database migration. A live
 provider test is required to verify the invite with the connected account.
 
+## Instagram carousels
+
+Upload 2–10 JPEG, MP4 or MOV files to the same niche. In **Publish**, choose
+**Carousel**, add the slides in order and use the arrows to reorder them.
+The first slide is the cover. Select a connected Instagram account, save the
+draft and use **Launch Review** to publish now or schedule it.
+
+The scheduled time starts processing. Niches creates and verifies the
+individual Instagram containers before submitting the carousel, so several
+minutes can pass before it appears on Instagram. Files used by a carousel
+draft or unfinished delivery are protected from deletion. Migration
+`0011_instagram_carousels.sql` adds the ordered slide list with defaults
+for existing posts. An ambiguous final publish waits for provider
+confirmation or manual review before retrying.
+
 ## Implemented and tested locally
 
 Each niche supports multiple accounts per platform, including planning accounts that remain explicitly unconnected. The composer proposes the niche's accounts, allows deselection, and saves master, platform and individual-account captions. Uploaded media supports batch drafting and upload progress. File selection and temporary previews also work when cloud storage is unavailable; previews are not cloud uploads and disappear when the page closes.
