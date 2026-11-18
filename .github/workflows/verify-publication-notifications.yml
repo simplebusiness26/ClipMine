@@ -1,0 +1,35 @@
+name: Verify publication notifications
+on:
+  push:
+    branches: [verify/publication-notifications]
+permissions:
+  contents: read
+jobs:
+  mobile-browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    container: mcr.microsoft.com/playwright:v1.55.0-noble
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build:web
+      - name: Test desktop and mobile Niches in a disposable workspace
+        env:
+          NICHES_URL: http://127.0.0.1:8787
+          NICHES_TEST_WRITE: '1'
+        shell: bash
+        run: |
+          node ops/niches-bridge/local-test-server.mjs > /tmp/niches-local.log 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8787/api/health; then
+              npm run test:browser
+              exit
+            fi
+            sleep 1
+          done
+          cat /tmp/niches-local.log
+          exit 1
