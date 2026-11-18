@@ -7,7 +7,7 @@ import PublishingReview from "./PublishingReview";
 import PublishingCalendar from "./PublishingCalendar";
 import ElectricDrafts from "./ElectricDrafts";
 import { contentMatches } from "./content-filter";
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import ClipMine from "./App";
 import {
   call,
@@ -215,6 +215,15 @@ function Auth({ onLogin }: { onLogin: () => void }) {
     </div>
   );
 }
+function isContentRewardsNotice(notice: Notice) {
+  if (!notice.publication_id || notice.platform !== "instagram" || !notice.campaign_url) return false;
+  try {
+    const { origin } = new URL(notice.campaign_url);
+    return origin === "https://contentrewards.com" || origin === "https://www.contentrewards.com";
+  } catch {
+    return false;
+  }
+}
 export default function Niches() {
   const [user, setUser] = useState<{ email: string } | null>(null),
     [checking, setChecking] = useState(true),
@@ -224,17 +233,20 @@ export default function Niches() {
     [creating, setCreating] = useState(false),
     [notices, setNotices] = useState<Notice[]>([]),
     [showNotices, setShowNotices] = useState(false),
+    [savingNotice, setSavingNotice] = useState<string | null>(null),
     [mobileMenuOpen, setMobileMenuOpen] = useState(false),
     [globalView, setGlobalView] = useState<"niches" | "accounts" | "published" | "clipmine">("niches"),
     [error, setError] = useState(""),
     [refreshKey, setRefreshKey] = useState(0);
+  const noticeRequest = useRef(0);
+  const refreshNotices = useCallback(async () => {
+    const request = ++noticeRequest.current;
+    const result = await call<Notice[]>("/api/notifications");
+    if (request === noticeRequest.current) setNotices(result);
+  }, []);
   async function refresh() {
-    const [ns, nt] = await Promise.all([
-      call<Niche[]>("/api/niches"),
-      call<Notice[]>("/api/notifications"),
-    ]);
+    const [ns] = await Promise.all([call<Niche[]>("/api/niches"), refreshNotices()]);
     setNiches(ns);
-    setNotices(nt);
     setActive((current) =>
       current ? ns.find((n) => n.id === current.id) || null : null,
     );
@@ -265,6 +277,19 @@ export default function Niches() {
   useEffect(() => {
     void load();
   }, []);
+  useEffect(() => {
+    if (!user) return;
+    function refreshIfVisible() {
+      if (!document.hidden) void refreshNotices().catch(() => {});
+    }
+    const timer = window.setInterval(refreshIfVisible, 30_000);
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+      noticeRequest.current++;
+    };
+  }, [user, refreshNotices]);
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
@@ -305,6 +330,54 @@ export default function Niches() {
     window.scrollTo(0, 0);
   }
   const showingStudio = !active && globalView === "clipmine";
+  const noticeCount = notices.filter((notice) =>
+    !notice.read_at && !(isContentRewardsNotice(notice) && notice.campaign_submitted_at),
+  ).length;
+  function openNotifications() {
+    setShowNotices(true);
+    window.scrollTo(0, 0);
+    void refreshNotices().catch((e: Error) => setError(e.message));
+  }
+  async function markNotificationsRead() {
+    try {
+      await call("/api/notifications", "POST", {});
+      await refreshNotices();
+      setShowNotices(false);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  async function saveCampaignSubmission(notice: Notice, submitted: boolean) {
+    setSavingNotice(notice.id);
+    setError("");
+    try {
+      const result = await call<{ campaign_submitted_at: string | null }>(
+        `/api/niches/${notice.niche_id}/publications/${notice.publication_id}/campaign`,
+        "PATCH",
+        { submitted },
+      );
+      noticeRequest.current++;
+      setNotices((current) => current.map((row) =>
+        row.id === notice.id ? { ...row, campaign_submitted_at: result.campaign_submitted_at } : row,
+      ));
+      void refreshNotices().catch(() => {});
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSavingNotice(null);
+    }
+  }
+  const notificationButton = (
+    <button type="button" className="n-icon-button n-notification-button" aria-label="Notifications"
+      aria-expanded={showNotices} aria-controls={showNotices ? "niches-notifications" : undefined}
+      onClick={() => showNotices ? setShowNotices(false) : openNotifications()}>
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
+      </svg>
+      {noticeCount > 0 && <span className="n-notification-count">{noticeCount}</span>}
+    </button>
+  );
   function changed() {
     void refresh().catch((e) => setError(e.message));
     setRefreshKey((k) => k + 1);
@@ -338,13 +411,10 @@ export default function Niches() {
         <button className={!active && globalView === "published" ? "n-nav active" : "n-nav"} onClick={() => { setActive(null); setGlobalView("published"); }}>✓ <span>Published</span></button>
         <button
           className="n-nav"
-          onClick={() => {
-            setActive(null);
-            setShowNotices(true);
-          }}
+          onClick={openNotifications}
         >
           ◉ <span>Notifications</span>
-          <small>{notices.filter((n) => !n.read_at).length}</small>
+          <small>{noticeCount}</small>
         </button>
         {active && (
           <>
@@ -416,10 +486,7 @@ export default function Niches() {
               )}
               <div className="electric-toolbar">
                 <span className="electric-preview-notice">NICHES ELECTRIC</span>
-                <button className="n-icon-button" aria-label="Notifications"
-                  onClick={() => setShowNotices(!showNotices)}>
-                  ♧ {notices.filter((n) => !n.read_at).length || ""}
-                </button>
+                {notificationButton}
                 <button className="electric-menu-button" type="button"
                   aria-label="Open all Niches sections" aria-expanded={mobileMenuOpen}
                   onClick={() => setMobileMenuOpen((open) => !open)}>☰</button>
@@ -437,10 +504,7 @@ export default function Niches() {
                 <strong>{showingStudio ? "ClipMine" : active ? active.name : "All niches"}</strong>
                 {active && ` / ${tab}`}
               </span>
-              <button className="n-icon-button" aria-label="Notifications"
-                onClick={() => setShowNotices(!showNotices)}>
-                ♧ {notices.filter((n) => !n.read_at).length || ""}
-              </button>
+              {notificationButton}
             </>
           )}
         </header>
@@ -451,26 +515,42 @@ export default function Niches() {
             </p>
           )}
           {showNotices && (
-            <section className="n-panel">
+            <section className="n-panel n-notifications" id="niches-notifications" aria-labelledby="notifications-title">
               <div className="n-section-head">
-                <h2>Notifications</h2>
-                <button
-                  onClick={async () => {
-                    await call("/api/notifications", "POST", {});
-                    await refresh();
-                    setShowNotices(false);
-                  }}
-                >
-                  Mark read & close
-                </button>
+                <h2 id="notifications-title">Notifications</h2>
+                <button type="button" onClick={() => void markNotificationsRead()}>Mark read &amp; close</button>
               </div>
               {notices.length ? (
-                notices.map((n) => (
-                  <p key={n.id}>
-                    {n.message}
-                    <small> · {date(n.created_at)}</small>
-                  </p>
-                ))
+                <ul className="n-notification-list">
+                  {notices.map((notice) => {
+                    const campaign = isContentRewardsNotice(notice);
+                    const title = notice.title || "Untitled post";
+                    return (
+                      <li key={notice.id} className="n-notification-row">
+                        {notice.publication_id ? (
+                          <>
+                            <h3>{title}</h3>
+                            <p>Published on {notice.platform}{notice.display_name && ` · ${notice.display_name}`} · {date(notice.published_at || notice.created_at)}</p>
+                            <div className="n-notification-links">
+                              {notice.public_url && <a href={notice.public_url} target="_blank" rel="noreferrer">View post</a>}
+                              {campaign && notice.campaign_url && <a href={notice.campaign_url} target="_blank" rel="noreferrer">Open campaign</a>}
+                            </div>
+                            {campaign && (
+                              <label className="n-notification-check">
+                                <input type="checkbox" aria-label={`Submitted to Content Rewards for ${title}`}
+                                  checked={Boolean(notice.campaign_submitted_at)} disabled={savingNotice !== null}
+                                  onChange={(event) => void saveCampaignSubmission(notice, event.currentTarget.checked)} />
+                                <span>{notice.campaign_submitted_at ? "Submitted to Content Rewards" : "Mark as submitted to Content Rewards"}</span>
+                              </label>
+                            )}
+                          </>
+                        ) : (
+                          <p>{notice.message} <small>· {date(notice.created_at)}</small></p>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
               ) : (
                 <p>You’re all caught up.</p>
               )}

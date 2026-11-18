@@ -87,6 +87,16 @@ export interface Notice {
   message: string;
   read_at: string | null;
   created_at: string;
+  niche_id: string | null;
+  publication_id: string | null;
+  title: string | null;
+  display_name: string | null;
+  platform: string | null;
+  public_url: string | null;
+  published_at: string | null;
+  campaign_url: string | null;
+  campaign_deadline_minutes: number | null;
+  campaign_submitted_at: string | null;
 }
 export async function call<T>(
   path: string,

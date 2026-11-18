@@ -771,6 +771,13 @@ test("master caption fallback and per-account overrides survive a multi-account 
   assert.equal(uploadCount, 2);
   await runOutbox(env, 10, mock);
   assert.equal(initCount, 2);
+  const notices = await json("/api/notifications");
+  assert.equal(notices.filter((notice) => rows.some((row) => row.id === notice.publication_id)).length, 2);
+  for (const row of rows) {
+    const notice = notices.find((item) => item.publication_id === row.id);
+    assert.equal(notice.read_at, null);
+    assert.equal(notice.campaign_submitted_at, null);
+  }
   assert.equal(
     (
       await db
@@ -878,6 +885,7 @@ test("owner can confirm a provider-uncertain post already live without a second 
   });
   const pub = await db.prepare("SELECT * FROM publications WHERE post_id=?").bind(draft.id).first();
   assert.equal(pub.status, "needs_review");
+  assert.equal((await json("/api/notifications")).some((notice) => notice.publication_id === pub.id), false);
   const url = `/api/niches/${niche.id}/publications/${pub.id}/confirm-live`;
   assert.ok((await request(url, "POST", { confirmed_live: true }, otherCookie)).status >= 400);
   assert.equal((await request(url, "POST", { confirmed_live: false })).status, 400);
@@ -886,6 +894,7 @@ test("owner can confirm a provider-uncertain post already live without a second 
   const confirmed = await db.prepare("SELECT * FROM publications WHERE id=?").bind(pub.id).first();
   assert.equal(confirmed.status, "published");
   assert.equal(confirmed.error_code, "owner_verified");
+  assert.equal((await json("/api/notifications")).filter((notice) => notice.publication_id === pub.id).length, 1);
   const updatedPost = await db.prepare("SELECT delivery_status FROM posts WHERE id=?").bind(draft.id).first();
   assert.equal(updatedPost.delivery_status, "published");
   assert.equal((await request(url, "POST", { confirmed_live: true })).status, 409);

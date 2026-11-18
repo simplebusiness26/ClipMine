@@ -125,3 +125,17 @@ Without both Worker bindings, the minute scheduler skips the dispatch. The dry
 run opens the original campaign and fills its Reel link field, then closes the
 browser. It does not tick the campaign acknowledgement or send the form. The
 existing manual confirmation and deadline reminders continue to apply.
+
+## In-app publication notifications
+
+The Notifications bell shows a notice when a publication is confirmed on its
+social account. Opening a notice can take the user to the live post once the
+provider returns its public link. The migration includes earlier confirmed
+publications in the feed as read history.
+
+A published Instagram campaign linked to Content Rewards shows its campaign link
+and a submission checkbox. Check it after Content Rewards confirms the
+submission. The checkbox edits the same publication status as the Published
+page. When it is checked, related submission reminders leave the active feed.
+Marking notifications read only affects the unread badge. The dry-run browser
+workflow only prepares the form.
