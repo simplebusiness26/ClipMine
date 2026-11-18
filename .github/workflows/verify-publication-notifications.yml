@@ -26,7 +26,7 @@ jobs:
           node ops/niches-bridge/local-test-server.mjs > /tmp/niches-local.log 2>&1 &
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8787/api/health; then
-              npm run test:browser
+              node ops/niches-bridge/verify-notification-only.mjs
               exit
             fi
             sleep 1
