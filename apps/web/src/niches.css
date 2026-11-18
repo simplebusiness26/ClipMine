@@ -1491,3 +1491,65 @@ html {
 }
 
 .n-person button{font-size:11px!important;white-space:nowrap;padding:8px}.n-post-row{flex-wrap:wrap}.n-modal code{overflow-wrap:anywhere}.n-account-grid .n-primary{white-space:normal}
+
+.n-notification-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 44px;
+}
+.n-notification-count {
+  min-width: 20px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: #e6ecdd;
+  color: #34442e;
+  font-size: 11px;
+  font-weight: 700;
+}
+.n-electric .n-notification-count {
+  background: #37246b;
+  color: #f8edff;
+}
+.n-notifications {
+  margin-bottom: 18px;
+}
+.n-notification-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: min(60dvh, 560px);
+  overflow-y: auto;
+}
+.n-notification-row {
+  padding: 12px 0;
+  border-top: 1px solid #e4e9dd;
+  overflow-wrap: anywhere;
+}
+.n-electric .n-notification-row {
+  border-color: var(--electric-border);
+}
+.n-notification-row h3,
+.n-notification-row p {
+  margin: 0 0 5px;
+}
+.n-notification-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+.n-notification-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  width: fit-content;
+}
+.n-notification-check input[type="checkbox"] {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: #357247;
+}

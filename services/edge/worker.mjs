@@ -418,14 +418,29 @@ async function api(request, env, context) {
       return json(
         await all(
           env,
-          "SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 100",
+          `SELECT f.*,CASE WHEN f.id LIKE 'publication-%' THEN p.id END AS publication_id,
+            p.public_url,p.published_at,p.campaign_submitted_at,
+            s.title,s.campaign_url,s.campaign_deadline_minutes,a.display_name,a.platform
+          FROM notifications f
+          LEFT JOIN publications p ON p.id=CASE
+            WHEN f.id LIKE 'publication-%' THEN substr(f.id,length('publication-')+1)
+            WHEN f.id LIKE 'campaign-warning-%' THEN substr(f.id,length('campaign-warning-')+1)
+            WHEN f.id LIKE 'campaign-overdue-%' THEN substr(f.id,length('campaign-overdue-')+1)
+          END AND p.status='published'
+          LEFT JOIN posts s ON s.id=p.post_id AND s.niche_id=f.niche_id
+          LEFT JOIN accounts a ON a.id=p.account_id AND a.niche_id=s.niche_id
+          WHERE f.user_id=? AND (
+            (f.id NOT LIKE 'campaign-warning-%' AND f.id NOT LIKE 'campaign-overdue-%')
+            OR (s.campaign_url IS NOT NULL AND p.campaign_submitted_at IS NULL)
+          )
+          ORDER BY f.created_at DESC,f.id DESC LIMIT 100`,
           user.id,
         ),
       );
     if (method === "POST") {
       await execute(
         env,
-        "UPDATE notifications SET read_at=? WHERE user_id=?",
+        "UPDATE notifications SET read_at=? WHERE user_id=? AND read_at IS NULL",
         now(),
         user.id,
       );
@@ -1078,7 +1093,10 @@ async function api(request, env, context) {
       publication.campaign_url = value;
     }
     if (Object.hasOwn(data, "submitted")) {
-      await execute(env, "UPDATE publications SET campaign_submitted_at=? WHERE id=?", data.submitted ? now() : null, publication.id);
+      const result = await one(env, `UPDATE publications
+        SET campaign_submitted_at=CASE WHEN ?=1 THEN COALESCE(campaign_submitted_at,?) ELSE NULL END
+        WHERE id=? RETURNING campaign_submitted_at`, data.submitted ? 1 : 0, now(), publication.id);
+      return json({ok:true,campaign_submitted_at:result.campaign_submitted_at});
     }
     return json({ok:true});
   }

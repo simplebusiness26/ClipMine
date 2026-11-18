@@ -305,6 +305,21 @@ test("campaign confirmation is manual, reversible and scoped to its owner", asyn
   const account=(await checked(`/api/niches/${workspace}/accounts`,{method:'POST',cookie:first,data:{platform:'instagram',display_name:'Example',handle:'campaign.test'}},201)).data.id;
   const post=(await checked(`/api/niches/${workspace}/posts`,{method:'POST',cookie:first,data:{title:'Campaign',destinations:[account],campaign_url:'https://contentrewards.com/c/example'}},201)).data.id;
   await db.prepare("INSERT INTO publications(id,post_id,account_id,status,provider_post_id,updated_at,public_url,published_at) VALUES (?,?,?,?,?,?,?,?)").bind('campaign-fixture',post,account,'published','123','2026-11-13T00:00:00.000Z','https://www.instagram.com/reel/test/','2026-11-13T00:00:00.000Z').run();
+  const backfill = await readFile("migrations/0010_publication_notifications.sql", "utf8");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    for (const statement of backfill.split(";").map((value) => value.trim()).filter(Boolean)) {
+      await db.prepare(statement).run();
+    }
+  }
+  async function notificationRows(cookie = first) {
+    return (await checked("/api/notifications", { cookie })).data;
+  }
+  const publishedNotice = (rows) => rows.find((notice) => notice.publication_id === "campaign-fixture");
+  const initialNotices = await notificationRows();
+  assert.equal(initialNotices.filter((notice) => notice.publication_id === "campaign-fixture").length, 1);
+  assert.ok(publishedNotice(initialNotices).read_at);
+  assert.equal(publishedNotice(initialNotices).campaign_submitted_at, null);
+  assert.equal(publishedNotice(await notificationRows(second)), undefined);
   const metadataEnv={DB:db,NICHES_TOKEN_KEY:'ab'.repeat(32)};
   const rawAccount=await db.prepare('SELECT * FROM accounts WHERE id=?').bind(account).first();
   const encrypted=await seal(metadataEnv,{access_token:'test',expires_at:'2099-01-01T00:00:00.000Z'},accountContext(rawAccount));
@@ -327,7 +342,15 @@ test("campaign confirmation is manual, reversible and scoped to its owner", asyn
   await campaignReminders({DB:db},published+26*60000);
   await campaignReminders({DB:db},published+26*60000);
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE id=?").bind('campaign-warning-campaign-fixture').first()).n,1);
-  await checked(path,{method:'PATCH',cookie:first,data:{submitted:true}});
+  assert.equal(publishedNotice(await notificationRows()).public_url, receipt.public_url);
+  assert.ok((await notificationRows()).some((notice) => notice.id === "campaign-warning-campaign-fixture"));
+  await checked("/api/notifications", { method: "POST", cookie: first, data: {} });
+  assert.equal(publishedNotice(await notificationRows()).campaign_submitted_at, null);
+  const confirmation = (await checked(path,{method:'PATCH',cookie:first,data:{submitted:true}})).data;
+  const doneNotices = await notificationRows();
+  assert.equal(publishedNotice(doneNotices).campaign_submitted_at, confirmation.campaign_submitted_at);
+  assert.ok(confirmation.campaign_submitted_at);
+  assert.equal(doneNotices.some((notice) => notice.id === "campaign-warning-campaign-fixture"), false);
   await campaignReminders({DB:db},published+31*60000);
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE id=?").bind('campaign-overdue-campaign-fixture').first()).n,0);
   rows=(await checked('/api/publications',{cookie:first})).data.publications;
@@ -338,7 +361,7 @@ test("campaign confirmation is manual, reversible and scoped to its owner", asyn
   assert.equal((await db.prepare('SELECT campaign_submitted_at FROM publications WHERE id=?').bind('campaign-fixture').first()).campaign_submitted_at,null);
   await checked(path,{method:'PATCH',cookie:first,data:{campaign_url:'javascript:alert(1)'}},400);
   await db.prepare('DELETE FROM publications WHERE id=?').bind('campaign-fixture').run();
-  await db.prepare("DELETE FROM notifications WHERE id LIKE 'campaign-%-campaign-fixture'").run();
+  await db.prepare("DELETE FROM notifications WHERE id IN ('publication-campaign-fixture','campaign-warning-campaign-fixture','campaign-overdue-campaign-fixture')").run();
 });
 
 test("validate uploads and keep object bytes private across users and niches", async () => {

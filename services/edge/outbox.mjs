@@ -8,6 +8,13 @@ import {
   validatePost,
   resolveOptions,
 } from "./publishers.mjs";
+function publishedNotice(env, publicationId, createdAt) {
+  return env.DB.prepare(`INSERT OR IGNORE INTO notifications(id,user_id,niche_id,message,read_at,created_at)
+    SELECT 'publication-' || p.id,n.user_id,n.id,'Post published.',NULL,?
+    FROM publications p JOIN posts s ON s.id=p.post_id JOIN niches n ON n.id=s.niche_id
+    WHERE p.id=? AND p.status='published'`).bind(createdAt, publicationId);
+}
+
 // Metadata retrieval is read-only: it must never submit or retry a post.
 export async function refreshPermalinks(env, fetcher = fetch) {
   const rows = await all(env, `SELECT a.*,p.id AS publication_id,p.provider_post_id,p.permalink_attempts,p.public_url,p.published_at
@@ -517,9 +524,10 @@ export async function runOutbox(env, limit = 5, fetcher = fetch, postId = null) 
       // subject to the existing uncertain submission rules.
       const resetContainer = account.platform === "instagram" &&
         state.phase === "container" && result.status === "failed";
-      await execute(
-        env,
+      const updatedAt = now();
+      const update = env.DB.prepare(
         "UPDATE publications SET status=?,provider_post_id=COALESCE(?,provider_post_id),state_json=?,lease_until=NULL,next_attempt_at=?,error=?,error_code=NULL,updated_at=? WHERE id=?",
+      ).bind(
         result.status,
         result.providerId || null,
         resetContainer ? "{}" : await seal(
@@ -529,9 +537,14 @@ export async function runOutbox(env, limit = 5, fetcher = fetch, postId = null) 
         ),
         new Date(Date.now() + 15000).toISOString(),
         result.error || null,
-        now(),
+        updatedAt,
         pub.id,
       );
+      if (result.status === "published") {
+        await env.DB.batch([update, publishedNotice(env, pub.id, updatedAt)]);
+      } else {
+        await update.run();
+      }
     } catch (error) {
       const safeRead =
         ["poll", "container", "confirm"].includes(state.phase) &&
@@ -594,12 +607,12 @@ export async function confirmPublishedExternally(env, user, niche, pubId, data) 
   if (!pub) fail(404, "Publication not found");
   if (pub.status !== "needs_review")
     fail(409, "Only uncertain publication outcomes can be confirmed manually.");
-  const changed = await execute(
-    env,
-    "UPDATE publications SET status='published',error=NULL,error_code='owner_verified',lease_until=NULL,next_attempt_at=NULL,updated_at=? WHERE id=? AND status='needs_review'",
-    now(),
-    pub.id,
-  );
+  const updatedAt = now();
+  const [changed] = await env.DB.batch([
+    env.DB.prepare("UPDATE publications SET status='published',error=NULL,error_code='owner_verified',lease_until=NULL,next_attempt_at=NULL,updated_at=? WHERE id=? AND status='needs_review'")
+      .bind(updatedAt, pub.id),
+    publishedNotice(env, pub.id, updatedAt),
+  ]);
   if (!changed.meta.changes)
     fail(409, "Publication status changed. Refresh and check the platform.");
   await execute(
