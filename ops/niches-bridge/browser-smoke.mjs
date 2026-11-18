@@ -143,7 +143,7 @@ async function verifyCampaignNotification(page, nicheId) {
     await bell.click();
     if (await check.isChecked() || updates !== 0)
       throw new Error("Marking notifications read must not record a submission");
-    await check.check();
+    await check.click();
     await panel.getByText("Submitted to Content Rewards", { exact: true }).waitFor();
     await page.reload();
     await bell.click();
