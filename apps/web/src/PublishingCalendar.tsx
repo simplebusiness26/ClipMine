@@ -264,7 +264,7 @@ export default function PublishingCalendar({
                 {events.slice(0, 2).map(({ post }) => (
                   <span className={"n-calendar-event " + tone(post, now)} key={post.id} title={post.title || "Untitled post"}>
                     <i aria-hidden="true" />
-                    <span>{post.title || "Untitled"}</span>
+                    <span>{post.post_kind === "carousel" && "Carousel · "}{post.title || "Untitled"}</span>
                   </span>
                 ))}
                 {events.length > 2 && <span className="n-calendar-more">+{events.length - 2} more</span>}
@@ -305,7 +305,7 @@ export default function PublishingCalendar({
               <article className={"n-calendar-detail " + t} key={post.id}>
                 <div className="n-calendar-detail-primary">
                   <div>
-                    <span className={"n-calendar-state " + t}>{stateLabel(post, now)}</span>
+                    <span className={"n-calendar-state " + t}>{post.post_kind === "carousel" && "Carousel · "}{stateLabel(post, now)}</span>
                     <h4>{post.title || post.overrides?.youtube?.title || "Untitled post"}</h4>
                     <p className="n-calendar-time">
                       {when.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })} · {post.publish_mode === "direct" ? "Direct publishing" : "Export reminder / manual"}
@@ -331,7 +331,7 @@ export default function PublishingCalendar({
                 </div>
                 {open && (
                   <div className="n-calendar-expanded">
-                    {filename && <p>Media · {filename}</p>}
+                    {filename && <p>Media · {filename}{post.post_kind === "carousel" ? ` · ${post.media_ids?.length || 0} slides` : ""}</p>}
                     <p>{post.caption || "No master caption; platform-specific captions may be set."}</p>
                     <PostHistory nicheId={nicheId} postId={post.id} autoOpen onChanged={onChanged} />
                   </div>

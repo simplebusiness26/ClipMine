@@ -1,4 +1,5 @@
 import { brandFor, listBrands, saveBrand, deliveryDestinations, masterReleasePreview, archivedMasters, releaseMaster, restoreMaster } from "./brands.mjs";
+import { POST_KINDS, mediaIdsFor, validateCarouselIds, validateCarouselSlides } from "./content-format.mjs";
 import { withMedia } from "./kv-media.mjs";
 import { resetEmailReady, sendResetEmail } from "./reset-email.mjs";
 import {
@@ -123,6 +124,7 @@ function postRow(row) {
     status: row.publish_mode === "direct" ? row.delivery_status : row.status,
     destinations: JSON.parse(row.destinations_json),
     overrides: JSON.parse(row.overrides_json),
+    media_ids: mediaIdsFor(row),
   };
 }
 async function readBounded(stream, max) {
@@ -907,7 +909,9 @@ async function api(request, env, context) {
       // any shared scheduled, active or uncertain destination protects the file.
       const result = await env.DB.batch([
         env.DB.prepare(`INSERT OR IGNORE INTO media_deletions SELECT id,niche_id,object_key,? FROM media WHERE id=? AND niche_id=?
-          AND NOT EXISTS(SELECT 1 FROM posts s WHERE s.media_id=media.id AND (
+          AND NOT EXISTS(SELECT 1 FROM posts s WHERE (s.media_id=media.id OR
+            EXISTS(SELECT 1 FROM json_each(s.media_ids_json) WHERE value=media.id)) AND (
+            (s.post_kind='carousel' AND s.status='draft' AND s.delivery_status='draft') OR
             (s.publish_mode='export' AND s.status IN ('scheduled','export_ready')) OR
             (s.publish_mode='direct' AND s.delivery_status IN ('scheduled','queued','processing','retry','needs_review')) OR
             EXISTS(SELECT 1 FROM publications p WHERE p.post_id=s.id AND p.status NOT IN ('published','failed','cancelled','inbox_delivered'))))`).bind(now(),media.id,niche.id),
@@ -915,7 +919,7 @@ async function api(request, env, context) {
         env.DB.prepare("DELETE FROM media_grants WHERE media_id=? AND EXISTS(SELECT 1 FROM media_deletions WHERE id=?)").bind(media.id,media.id),
         env.DB.prepare("DELETE FROM media WHERE id=? AND EXISTS(SELECT 1 FROM media_deletions WHERE id=?)").bind(media.id,media.id),
       ]);
-      if (!result[0].meta.changes) fail(409, "This file is still needed by scheduled, active or uncertain publishing. Finish or cancel that work before deleting the stored file.");
+      if (!result[0].meta.changes) fail(409, "This file is used by a carousel draft or unfinished publication. Remove it from the draft or finish or cancel publishing before deleting the file.");
     }
     // A durable cleanup entry survives storage failures and can be retried.
     await env.MEDIA.delete((media || pending).object_key);
@@ -1160,22 +1164,26 @@ async function api(request, env, context) {
       existing.status !== "cancelled"
     )
       fail(409, "Cancel this post before editing it.");
-    const mediaId = data.media_id || null;
-    if (
-      mediaId &&
-      !(await one(
-        env,
-        "SELECT id FROM media WHERE id=? AND niche_id=?",
-        mediaId,
-        niche.id,
-      ))
-    )
-      fail(404, "Media not found in this niche");
+    const postKind = data.post_kind ?? existing?.post_kind ?? "auto";
+    if (!POST_KINDS.includes(postKind)) fail(400, "Choose a supported content format.");
+    const carousel = postKind === "carousel";
+    const slides = carousel ? data.media_ids ?? (existing?.post_kind === "carousel" ? mediaIdsFor(existing) : []) : [];
+    if (carousel) validateCarouselIds(slides);
+    const mediaId = carousel ? slides[0] : data.media_id || null;
+    const mediaIds = carousel ? slides : mediaId ? [mediaId] : [];
+    if (mediaIds.some((item) => typeof item !== "string" || !/^[a-zA-Z0-9-]+$/.test(item)))
+      fail(400, "Invalid selected media.");
+    const assets = await all(env,
+      "SELECT mime FROM media WHERE niche_id=? AND id IN (SELECT value FROM json_each(?))",
+      niche.id, JSON.stringify(mediaIds),
+    );
+    if (assets.length !== mediaIds.length) fail(404, "Selected media not found in this niche.");
+    if (carousel) validateCarouselSlides(assets);
     const brandId = data.brand_id === null ? null : data.brand_id ?? existing?.brand_id ?? null;
     if (brandId) await brandFor(env, niche.id, brandId);
     const accounts = await all(
       env,
-      "SELECT id,routing_group,brand_id FROM accounts WHERE niche_id=? AND status!='archived'",
+      "SELECT id,platform,routing_group,brand_id FROM accounts WHERE niche_id=? AND status!='archived'",
       niche.id,
     );
     const eligible = brandId ? accounts.filter((account) => account.brand_id === brandId) : niche.master_name
@@ -1184,12 +1192,14 @@ async function api(request, env, context) {
     const sourceGroup = data.source_group ?? existing?.source_group ?? "";
     if (sourceGroup !== "" && (!niche.master_name || !JSON.parse(niche.source_groups_json).includes(sourceGroup)))
       fail(400, "Choose a source group in this niche.");
-    const destinations = data.destinations ?? eligible.map((a) => a.id);
+    const destinations = data.destinations ?? eligible.filter((account) => !carousel || account.platform === "instagram").map((a) => a.id);
     if (
       !Array.isArray(destinations) ||
       destinations.some((a) => !eligible.some((b) => b.id === a))
     )
       fail(400, brandId ? "Every destination must belong to the selected brand." : niche.master_name ? "Only master accounts can publish in this niche." : "Every destination must belong to this niche.");
+    if (carousel && destinations.some((id) => !eligible.some((account) => account.id === id && account.platform === "instagram")))
+      fail(400, "Choose Instagram accounts for carousel publishing.");
     const overrides = data.overrides || {};
     if (
       typeof overrides !== "object" ||
@@ -1229,45 +1239,34 @@ async function api(request, env, context) {
       caption = textValue(data.caption || "", 10000),
       post = existing?.id || id(),
       stamp = now();
-    if (existing) {
-      const result = await execute(
-        env,
-        "UPDATE posts SET media_id=?,title=?,caption=?,destinations_json=?,overrides_json=?,source_group=?,brand_id=?,campaign_url=?,campaign_deadline_minutes=?,status='draft',delivery_status='draft',scheduled_at=NULL,approved_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
-        mediaId,
-        title,
-        caption,
-        JSON.stringify([...new Set(destinations)]),
-        JSON.stringify(overrides),
-        sourceGroup,
-        brandId,
-        campaignUrl,
-        campaignDeadline,
-        stamp,
-        post,
-      );
-      if (!result.meta.changes)
-        fail(
-          409,
-          "This draft changed publishing state. Refresh before editing.",
-        );
-    } else
-      await execute(
-        env,
-        "INSERT INTO posts(id,niche_id,media_id,title,caption,destinations_json,overrides_json,source_group,brand_id,campaign_url,campaign_deadline_minutes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        post,
-        niche.id,
-        mediaId,
-        title,
-        caption,
-        JSON.stringify([...new Set(destinations)]),
-        JSON.stringify(overrides),
-        sourceGroup,
-        brandId,
-        campaignUrl,
-        campaignDeadline,
-        stamp,
-        stamp,
-      );
+    const inputs = [
+      mediaId, postKind, JSON.stringify(slides), title, caption,
+      JSON.stringify([...new Set(destinations)]), JSON.stringify(overrides),
+      sourceGroup, brandId, campaignUrl, campaignDeadline, stamp,
+    ];
+    // Recheck the uploaded media in the write statement. A concurrent deletion
+    // cannot leave a newly saved carousel pointing at a missing slide.
+    const mediaStillExists = `NOT EXISTS (
+      SELECT 1 FROM json_each(?) AS selected
+      WHERE NOT EXISTS (SELECT 1 FROM media WHERE niche_id=? AND id=selected.value)
+    )`;
+    const mediaCheck = [JSON.stringify(mediaIds), niche.id];
+    const result = existing
+      ? await execute(env,
+        `UPDATE posts SET media_id=?,post_kind=?,media_ids_json=?,title=?,caption=?,
+          destinations_json=?,overrides_json=?,source_group=?,brand_id=?,campaign_url=?,
+          campaign_deadline_minutes=?,updated_at=?,status='draft',delivery_status='draft',
+          scheduled_at=NULL,approved_at=NULL WHERE id=? AND updated_at=?
+          AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id) AND ${mediaStillExists}`,
+        ...inputs, post, existing.updated_at, ...mediaCheck)
+      : await execute(env,
+        `INSERT INTO posts(id,niche_id,media_id,post_kind,media_ids_json,title,caption,
+          destinations_json,overrides_json,source_group,brand_id,campaign_url,
+          campaign_deadline_minutes,updated_at,created_at)
+          SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${mediaStillExists}`,
+        post, niche.id, ...inputs, stamp, ...mediaCheck);
+    if (!result.meta.changes)
+      fail(409, "This draft or its media changed. Refresh before saving.");
     await audit(env, user.id, niche.id, "draft.saved", post);
     return json(
       postRow(await one(env, "SELECT * FROM posts WHERE id=?", post)),
@@ -1288,24 +1287,21 @@ async function api(request, env, context) {
       return json(result, 202);
     }
     if (postMatch[2] === "export" && method === "GET") {
-      const media = await one(
-        env,
-        "SELECT id,filename FROM media WHERE id=? AND niche_id=?",
-        post.media_id,
-        niche.id,
-      );
+      const assets = [];
+      for (const mediaId of mediaIdsFor(post)) {
+        const item = await one(env, "SELECT id,filename FROM media WHERE id=? AND niche_id=?", mediaId, niche.id);
+        if (item) assets.push({...item, download:`/api/niches/${niche.id}/media/${item.id}?download=1`});
+      }
+      const media = assets[0] || null;
       return json(
         {
           brand: niche.name,
           title: post.title,
           caption: post.caption,
           platforms: JSON.parse(post.overrides_json),
-          media: media
-            ? {
-                ...media,
-                download: `/api/niches/${niche.id}/media/${media.id}?download=1`,
-              }
-            : null,
+          post_kind: post.post_kind || "auto",
+          media,
+          media_items: assets,
           direct_publishing: false,
         },
         200,

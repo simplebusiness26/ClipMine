@@ -33,6 +33,7 @@ const modules = [
   "db",
   "token-vault",
   "social-oauth", "brands",
+  "content-format",
   "publishers",
   "outbox",
 ].map((name) => ({ type: "ESModule", path: `services/edge/${name}.mjs` }));
@@ -1081,4 +1082,76 @@ test("brand Instagram distribution previews, schedules and isolates one job per 
   jobs = await json(base + "/posts/" + post.id + "/publications");
   assert.ok(jobs.every((job) => job.status === "published"));
   assert.deepEqual(delivered, ["brand-child", "brand-master"]);
+});
+
+test("Instagram carousel schedules in saved order, protects both slides and publishes one post", async () => {
+  const carouselNiche = await json("/api/niches", "POST", { name: "Carousel fixtures" });
+  const base = `/api/niches/${carouselNiche.id}`;
+  const account = await saveConnection(env, carouselNiche.id, {
+    platform: "instagram", provider_id: "carousel-account", name: "Carousel Instagram",
+    connection_kind: "instagram_login",
+    tokens: { access_token: "fixture-access", expires_at: new Date(Date.now() + 86400000).toISOString() },
+  });
+  const facebook = await json(base + "/accounts", "POST", { platform: "facebook", display_name: "Planning page", handle: "planning-page" });
+  const slideIds = ["carousel-one", "carousel-two"];
+  for (const [index, slide] of slideIds.entries()) {
+    await env.MEDIA.put(slide, new Uint8Array([index]));
+    await db.prepare("INSERT INTO media(id,niche_id,object_key,filename,mime,size,created_at) VALUES (?,?,?,?,?,?,?)")
+      .bind(slide, carouselNiche.id, slide, slide + ".jpg", "image/jpeg", 1, now()).run();
+  }
+  const fields = { title: "Two slides", caption: "Comic", post_kind: "carousel", media_ids: slideIds };
+  assert.equal((await request(base + "/posts", "POST", { ...fields, destinations: [facebook.id] })).status, 400);
+  assert.equal((await request(base + "/posts", "POST", { ...fields, media_ids: [slideIds[0], "missing-slide"] })).status, 404);
+  const draft = await json(base + "/posts", "POST", fields);
+  assert.deepEqual(draft.destinations, [account]);
+  const order = [...slideIds].reverse();
+  const postPath = base + "/posts/" + draft.id;
+  const edited = await json(postPath, "PATCH", { ...fields, media_ids: order, destinations: [account] });
+  assert.deepEqual(edited.media_ids, order);
+  assert.equal(edited.media_id, order[0]);
+  assert.deepEqual((await json(postPath + "/export")).media_items.map((slide) => slide.id), order);
+  assert.equal((await request(base + "/media/" + order[1], "DELETE")).status, 409);
+  const planned = await json(postPath + "/deliver", "POST", {
+    confirmed: true, scheduled_at: new Date(Date.now() + 300000).toISOString(),
+  });
+  assert.equal(planned.status, "scheduled");
+
+  const submitted = [];
+  const provider = async (url, options) => {
+    if (options.method !== "POST") return response({ status_code: "FINISHED" });
+    const payload = JSON.parse(options.body);
+    if (payload.is_carousel_item) {
+      const grant = await request(new URL(payload.image_url).pathname, "GET", undefined, "");
+      assert.equal(grant.status, 200);
+      const index = new Uint8Array(await grant.arrayBuffer())[0];
+      submitted.push(index);
+      return response({ id: "slide-" + index });
+    }
+    if (payload.media_type === "CAROUSEL") {
+      assert.deepEqual(payload.children, ["slide-1", "slide-0"]);
+      assert.equal(payload.caption, "Comic");
+      submitted.push("carousel");
+      return response({ id: "carousel-parent" });
+    }
+    assert.ok(url.endsWith("/media_publish"));
+    assert.equal(payload.creation_id, "carousel-parent");
+    submitted.push("publish");
+    return response({ id: "carousel-publication" });
+  };
+  await runOutbox(env, 1, provider, draft.id);
+  assert.deepEqual(submitted, []);
+  assert.equal((await request(base + "/media/" + order[1], "DELETE")).status, 409);
+  for (let step = 0; step < 7; step++) {
+    await db.prepare("UPDATE publications SET next_attempt_at='2000-01-01' WHERE post_id=?")
+      .bind(draft.id).run();
+    await runOutbox(env, 1, provider, draft.id);
+  }
+  const [publication] = await json(postPath + "/publications");
+  assert.deepEqual(submitted, [1, 0, "carousel", "publish"], JSON.stringify(publication));
+  assert.equal(publication.status, "published");
+  assert.equal(publication.provider_post_id, "carousel-publication");
+  assert.equal((await request(base + "/media/" + order[0], "DELETE")).status, 200);
+  const [published] = await json(base + "/posts");
+  assert.equal(published.status, "published");
+  assert.deepEqual(published.media_ids, order);
 });

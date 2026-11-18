@@ -1,4 +1,5 @@
 import { deliveryDestinations } from "./brands.mjs";
+import { mediaIdsFor, validateCarouselSlides } from "./content-format.mjs";
 import { id, now, hash, randomToken, fail, json } from "./security.mjs";
 import { execute, one, all } from "./db.mjs";
 import { seal, unseal } from "./token-vault.mjs";
@@ -168,19 +169,27 @@ export async function creatorInfo(env, account, fetcher = fetch) {
   );
   return result.data;
 }
+async function publishingMedia(env, post) {
+  return all(env, `SELECT media.* FROM json_each(?) AS slide
+    JOIN media ON media.id=slide.value AND media.niche_id=?
+    ORDER BY slide.key`, JSON.stringify(mediaIdsFor(post)), post.niche_id);
+}
+
 export async function queuePost(env, user, niche, post, data) {
   if (data.confirmed !== true)
     fail(400, "Review the saved post and confirm publishing.");
   if (!env.MEDIA) fail(503, "Cloud storage must be enabled before publishing.");
   if (!["draft", "cancelled"].includes(post.delivery_status))
     fail(409, "This post has already been approved.");
-  const media = await one(
-    env,
-    "SELECT * FROM media WHERE id=? AND niche_id=?",
-    post.media_id,
-    niche.id,
-  );
+  const assets = await publishingMedia(env, post);
+  const media = assets[0];
   if (!media) fail(400, "Upload media to this niche before publishing.");
+  const carousel = post.post_kind === "carousel";
+  if (carousel) {
+    if (assets.length !== mediaIdsFor(post).length || media.id !== post.media_id)
+      fail(400, "A carousel slide is no longer available in this niche.");
+    validateCarouselSlides(assets);
+  }
   const { selected, automatic } = await deliveryDestinations(env, niche, post);
   if (automatic !== (data.automatic_destination ?? null))
     fail(409, "Master Instagram changed. Refresh the draft and review destinations again.");
@@ -223,6 +232,8 @@ export async function queuePost(env, user, niche, post, data) {
       hasInstagramCollab ||= selected.instagram_collaborator !== undefined;
     }
 
+    if (carousel && a.platform !== "instagram")
+      fail(400, "Choose Instagram accounts for carousel publishing.");
     validatePost(
       a,
       media,
@@ -246,7 +257,12 @@ export async function queuePost(env, user, niche, post, data) {
   // Claim and insert once in one transaction. UNIQUE(post,account) is the final duplicate guard.
   const statements = [
     env.DB.prepare(
-      "UPDATE posts SET delivery_status=?,publish_mode='direct',destinations_json=?,options_json=?,approved_at=?,scheduled_at=?,updated_at=? WHERE id=? AND updated_at=? AND media_id=? AND delivery_status IN ('draft','cancelled') AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)",
+      `UPDATE posts SET delivery_status=?,publish_mode='direct',destinations_json=?,options_json=?,
+        approved_at=?,scheduled_at=?,updated_at=? WHERE id=? AND updated_at=? AND media_id=?
+        AND delivery_status IN ('draft','cancelled')
+        AND NOT EXISTS(SELECT 1 FROM publications WHERE post_id=posts.id)
+        AND NOT EXISTS(SELECT 1 FROM json_each(posts.media_ids_json) AS slide WHERE NOT EXISTS(
+          SELECT 1 FROM media WHERE id=slide.value AND niche_id=posts.niche_id))`,
     ).bind(
       date ? "scheduled" : "queued",
       JSON.stringify(ids),
@@ -433,17 +449,14 @@ export async function runOutbox(env, limit = 5, fetcher = fetch, postId = null) 
           "SELECT * FROM accounts WHERE id=?",
           pub.account_id,
         ),
-        post = await one(env, "SELECT * FROM posts WHERE id=?", pub.post_id),
-        media = await one(
-          env,
-          "SELECT * FROM media WHERE id=? AND niche_id=?",
-          post.media_id,
-          post.niche_id,
-        );
+        post = await one(env, "SELECT * FROM posts WHERE id=?", pub.post_id);
+      const assets = await publishingMedia(env, post);
+      const media = assets[0];
       if (
         !account ||
         account.niche_id !== post.niche_id ||
         !media ||
+        assets.length !== mediaIdsFor(post).length ||
         !env.MEDIA
       )
         fail(409, "The media or account is no longer available in this niche.");
@@ -490,7 +503,7 @@ export async function runOutbox(env, limit = 5, fetcher = fetch, postId = null) 
             : null;
       const phase = state.phase || "init",
         writes =
-          phase !== "poll" && phase !== "container" && phase !== "confirm";
+          phase !== "poll" && phase !== "container" && phase !== "confirm" && phase !== "carousel-check";
       if (writes) {
         state = { ...state, inflight: true };
         await execute(
@@ -505,12 +518,13 @@ export async function runOutbox(env, limit = 5, fetcher = fetch, postId = null) 
         account,
         token,
         media,
+        mediaList: assets,
         post,
         options,
         state,
         creator,
-        mediaURL: ["init", "upload"].includes(phase)
-          ? await mediaGrant(env, media, pub)
+        mediaURL: ["init", "upload", "carousel-child"].includes(phase)
+          ? await mediaGrant(env, phase === "carousel-child" ? assets[state.index] : media, pub)
           : null,
         object: async (range) => {
           const object = await env.MEDIA.get(media.object_key, { range });
@@ -523,7 +537,7 @@ export async function runOutbox(env, limit = 5, fetcher = fetch, postId = null) 
       // be recreated on manual retry. A confirmation-phase failure remains
       // subject to the existing uncertain submission rules.
       const resetContainer = account.platform === "instagram" &&
-        state.phase === "container" && result.status === "failed";
+        ["container", "carousel-check"].includes(state.phase) && result.status === "failed";
       const updatedAt = now();
       const update = env.DB.prepare(
         "UPDATE publications SET status=?,provider_post_id=COALESCE(?,provider_post_id),state_json=?,lease_until=NULL,next_attempt_at=?,error=?,error_code=NULL,updated_at=? WHERE id=?",
@@ -547,7 +561,7 @@ export async function runOutbox(env, limit = 5, fetcher = fetch, postId = null) 
       }
     } catch (error) {
       const safeRead =
-        ["poll", "container", "confirm"].includes(state.phase) &&
+        ["poll", "container", "confirm", "carousel-check"].includes(state.phase) &&
         !state.inflight;
       const uncertain =
           !safeRead &&
