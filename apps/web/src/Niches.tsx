@@ -8,7 +8,7 @@ import PublishingCalendar from "./PublishingCalendar";
 import ElectricDrafts from "./ElectricDrafts";
 import { contentMatches } from "./content-filter";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import ClipMine from "./App";
+import ClipMineStudio from "./ClipMineStudio";
 import {
   call,
   mediaPath,
@@ -28,6 +28,7 @@ import {
 import "./niches.css";
 import "./niches-electric.css";
 import "./electric-launch.css";
+import "./clipmine-studio.css";
 const electricSkin = import.meta.env.VITE_NICHES_SKIN === "electric";
 const tabs = [
   "Overview",
@@ -557,7 +558,7 @@ export default function Niches() {
               )}
             </section>
           )}
-          {showingStudio ? <Studio niches={niches} changed={changed} /> : !active && globalView === "published" ? <Published /> : !active && globalView === "accounts" ? (
+          {showingStudio ? <ClipMineStudio niches={niches} changed={changed} /> : !active && globalView === "published" ? <Published /> : !active && globalView === "accounts" ? (
             <AllAccounts niches={niches} open={open} />
           ) : !active ? (
             <>
@@ -2363,48 +2364,5 @@ function Preview({
     />
   ) : (
     <img src={mediaPath(niche, media.id)} alt={media.filename} loading="lazy" />
-  );
-}
-function Studio({ niches, changed }: { niches: Niche[]; changed: () => void }) {
-  const [available, setAvailable] = useState<boolean | null>(null);
-  const [hostNicheId, setHostNicheId] = useState("");
-  useEffect(() => {
-    void call<{ clipmine_available: boolean }>("/api/config")
-      .then((config) => setAvailable(config.clipmine_available))
-      .catch(() => setAvailable(false));
-  }, []);
-  const hostNiche = niches.find((niche) => niche.id === hostNicheId);
-  return (
-    <>
-      <div className="n-page-head compact">
-        <div>
-          <h1>ClipMine</h1>
-          <p>Make clips, preview them, then choose where they go.</p>
-        </div>
-      </div>
-      <section className="n-panel">
-        <h2>ClipMine Phone Studio</h2>
-        <ol>
-          <li>Paste a video link or upload a video from your phone.</li>
-          <li>Choose Best bits or Numbered parts and set how many 30, 60 or 90 second clips you want.</li>
-          <li>Preview the clips, connect to Niches, then choose the niche, brand or account under <strong>Send to Niches Drafts</strong>.</li>
-        </ol>
-        <a className="n-primary" href="https://colab.research.google.com/drive/1FQatg88WooJV2YI7TUwtZjCwzTgqoZbb" target="_blank" rel="noopener noreferrer">
-          Open Phone Studio in Chrome ↗
-        </a>
-      </section>
-      {available && niches.length > 0 && (
-        <section className="n-panel">
-          <label>
-            Use the hosted editor for a niche
-            <select value={hostNicheId} onChange={(event) => setHostNicheId(event.target.value)}>
-              <option value="">Choose a niche</option>
-              {niches.map((niche) => <option key={niche.id} value={niche.id}>{niche.name}</option>)}
-            </select>
-          </label>
-          {hostNiche && <div className="n-studio"><ClipMine key={hostNiche.id} nicheId={hostNiche.id} onSent={changed} /></div>}
-        </section>
-      )}
-    </>
   );
 }

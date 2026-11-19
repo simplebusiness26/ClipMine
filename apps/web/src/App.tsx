@@ -82,12 +82,7 @@ function AppHeader({
           <span className="header-project__eyebrow">Project</span>
           <strong>{project.title}</strong>
         </div>
-      ) : (
-        <div className="header-pill">
-          <span className="header-pill__light" />
-          Private MVP
-        </div>
-      )}
+      ) : null}
     </header>
   );
 }
@@ -172,12 +167,7 @@ function UploadPanel({
   return (
     <section className="upload-card" aria-labelledby="new-project-title">
       <div className="upload-card__intro">
-        <span className="eyebrow">New project</span>
-        <h2 id="new-project-title">Drop in the long video.</h2>
-        <p>
-          ClipMine will transcribe it, find complete moments and prepare
-          vertical drafts.
-        </p>
+        <h1 id="new-project-title">Add a video</h1>
       </div>
       <form onSubmit={submit}>
         <div
@@ -192,6 +182,8 @@ function UploadPanel({
             className="sr-only"
             onChange={onFileChange}
             ref={inputRef}
+            tabIndex={-1}
+            aria-label="Source video file"
             type="file"
           />
           <button
@@ -227,7 +219,7 @@ function UploadPanel({
               <span className="drop-zone__copy">
                 <strong>Choose a video</strong>
                 <small>
-                  MP4, MOV or WebM · up to {config?.max_upload_mb ?? 1024} MB
+                  MP4, MOV, M4V or WebM · up to {config?.max_upload_mb ?? 1024} MB
                 </small>
               </span>
             )}
@@ -247,7 +239,7 @@ function UploadPanel({
 
         <div className="upload-grid">
           <label className="field">
-            <span>Number of drafts</span>
+            <span>Number of clips</span>
             <select
               onChange={(event) => setDesiredClips(Number(event.target.value))}
               value={desiredClips}
@@ -264,6 +256,7 @@ function UploadPanel({
             <div className="segmented-control">
               {(["quick", "standard", "deep"] as const).map((preset) => (
                 <button
+                  aria-pressed={lengthPreset === preset}
                   className={lengthPreset === preset ? "is-active" : ""}
                   key={preset}
                   onClick={() => setLengthPreset(preset)}
@@ -288,9 +281,6 @@ function UploadPanel({
           />
           <span>
             I own this video or have permission to edit and republish it.
-            <small>
-              ClipMine does not download arbitrary public video links.
-            </small>
           </span>
         </label>
 
@@ -312,7 +302,7 @@ function UploadPanel({
           disabled={uploading}
           type="submit"
         >
-          {uploading ? "Uploading…" : "Mine this video"}
+          {uploading ? "Uploading…" : "Find clips"}
           {!uploading && (
             <Icon size={18}>
               <path
@@ -390,71 +380,36 @@ function Dashboard({
   onOpen: (id: string) => void;
   onUploaded: (project: Project) => void;
 }) {
+  const Container = useContext(StudioContext).nicheId ? "div" : "main";
   return (
-    <main>
-      <section className="hero">
-        <div className="hero__copy">
-          <span className="eyebrow">
-            <span /> AI first-pass editor
-          </span>
-          <h1>
-            Find the gold
-            <br />
-            in every video.
-          </h1>
-          <p>
-            Turn one long recording into multiple short-form drafts—complete
-            ideas, clean captions, ready for your final touch.
-          </p>
-          <div className="hero__proof">
-            <span>
-              <strong>01</strong> Upload once
-            </span>
-            <span>
-              <strong>02</strong> Review the moments
-            </span>
-            <span>
-              <strong>03</strong> Export vertically
-            </span>
-          </div>
-        </div>
+    <Container>
+      <div className="clipmine-dashboard">
         <UploadPanel config={config} onUploaded={onUploaded} />
-      </section>
 
-      <section className="projects-section">
-        <div className="section-heading">
-          <div>
-            <span className="eyebrow">Your workspace</span>
+        <section className="projects-section">
+          <div className="section-heading">
             <h2>Recent projects</h2>
           </div>
-          <div
-            className={`database-state ${config?.database_connected ? "is-connected" : ""}`}
-          >
-            <span />
-            {config?.database_connected
-              ? "PostgreSQL connected"
-              : "Local storage · database ready"}
-          </div>
-        </div>
-        {projects.length ? (
-          <div className="project-grid">
-            {projects.map((project) => (
-              <ProjectCard
-                key={project.id}
-                onOpen={() => onOpen(project.id)}
-                project={project}
-              />
-            ))}
-          </div>
-        ) : (
-          <div className="empty-projects">
-            <LogoMark />
-            <h3>Your first finds will appear here.</h3>
-            <p>Choose a video above to start the first ClipMine project.</p>
-          </div>
-        )}
-      </section>
-    </main>
+          {projects.length ? (
+            <div className="project-grid">
+              {projects.map((project) => (
+                <ProjectCard
+                  key={project.id}
+                  onOpen={() => onOpen(project.id)}
+                  project={project}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="empty-projects">
+              <LogoMark />
+              <h3>No projects yet</h3>
+              <p>Add a video to create your first project.</p>
+            </div>
+          )}
+        </section>
+      </div>
+    </Container>
   );
 }
 
@@ -480,14 +435,17 @@ function ProcessingView({
       </div>
     );
   }
+  const stages = [
+    { from: 0, label: "Waiting to start" },
+    { from: 10, label: "Inspect video" },
+    { from: 35, label: "Transcribe speech" },
+    { from: 72, label: "Find clips" },
+  ];
+  const activeStage = stages.filter(({ from }) => project.progress >= from).length - 1;
   return (
     <div className="processing-state">
-      <div className="mining-orbit" aria-hidden="true">
-        <LogoMark />
-        <span />
-      </div>
       <span className="eyebrow">ClipMine is working</span>
-      <h1>{project.stage}</h1>
+      <h1 aria-live="polite">{project.stage}</h1>
       <p>
         You can close this page. The project state is saved and will be here
         when you return.
@@ -507,42 +465,15 @@ function ProcessingView({
         <span>{project.source_filename}</span>
       </div>
       <ol className="stage-list">
-        <li className={project.progress >= 10 ? "is-done" : "is-active"}>
-          Inspect video
-        </li>
-        <li
-          className={
-            project.progress >= 35
-              ? "is-done"
-              : project.progress >= 10
-                ? "is-active"
-                : ""
-          }
-        >
-          Transcribe speech
-        </li>
-        <li
-          className={
-            project.progress >= 72
-              ? "is-done"
-              : project.progress >= 35
-                ? "is-active"
-                : ""
-          }
-        >
-          Find complete moments
-        </li>
-        <li
-          className={
-            project.progress >= 100
-              ? "is-done"
-              : project.progress >= 72
-                ? "is-active"
-                : ""
-          }
-        >
-          Prepare drafts
-        </li>
+        {stages.map(({ from, label }, index) => (
+          <li
+            key={from}
+            aria-current={index === activeStage ? "step" : undefined}
+            className={index < activeStage ? "is-done" : index === activeStage ? "is-active" : undefined}
+          >
+            {label}
+          </li>
+        ))}
       </ol>
     </div>
   );
@@ -558,14 +489,15 @@ function CandidateList({
   onSelect: (id: string) => void;
 }) {
   return (
-    <aside className="candidate-list">
+    <aside className="candidate-list" aria-label="Suggested clips">
       <div className="candidate-list__heading">
-        <span className="eyebrow">Found moments</span>
-        <strong>{project.candidates.length} drafts</strong>
+        <h2>Clips to review</h2>
+        <strong>{project.candidates.length} {project.candidates.length === 1 ? "clip" : "clips"}</strong>
       </div>
       <div className="candidate-list__items">
         {project.candidates.map((candidate, index) => (
           <button
+            aria-pressed={selectedId === candidate.id}
             className={`candidate-item ${selectedId === candidate.id ? "is-selected" : ""}`}
             key={candidate.id}
             onClick={() => onSelect(candidate.id)}
@@ -584,7 +516,7 @@ function CandidateList({
               </small>
             </span>
             {candidate.render_status === "ready" && (
-              <span className="candidate-item__ready">✓</span>
+              <span className="candidate-item__ready" aria-label="MP4 ready">✓</span>
             )}
           </button>
         ))}
@@ -615,16 +547,6 @@ function ClipEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    setTitle(candidate.title);
-    setStart(candidate.start_seconds);
-    setEnd(candidate.end_seconds);
-    setCaption(candidate.caption_text);
-    setError(null);
-    if (videoRef.current)
-      videoRef.current.currentTime = candidate.start_seconds;
-  }, [candidate.id]);
-
   const update: CandidateUpdate = {
     title: title.trim() || candidate.title,
     start_seconds: Number(start),
@@ -637,7 +559,7 @@ function ClipEditor({
     if (!video) return;
     try {
       setError(null);
-      video.currentTime = start;
+      video.currentTime = renderedPreview ? 0 : start;
       await video.play();
     } catch {
       setError(
@@ -648,7 +570,7 @@ function ClipEditor({
 
   const onTimeUpdate = () => {
     const video = videoRef.current;
-    if (video && video.currentTime >= end) video.pause();
+    if (!renderedPreview && video && video.currentTime >= end) video.pause();
   };
 
   const save = async () => {
@@ -689,6 +611,9 @@ function ClipEditor({
     Number(start) !== candidate.start_seconds ||
     Number(end) !== candidate.end_seconds ||
     caption !== candidate.caption_text;
+  const renderedPreview = candidate.render_status === "ready" && !dirty
+    ? candidate.export_url
+    : null;
   const captionPreview =
     caption.trim().split(/\s+/).slice(0, 7).join(" ") ||
     "Your captions will appear here";
@@ -698,14 +623,18 @@ function ClipEditor({
       <div className="preview-column">
         <div className="vertical-preview">
           <video
+            aria-label={renderedPreview ? "Rendered MP4" : "Clip preview"}
             controls
+            onLoadedMetadata={(event) => {
+              if (!renderedPreview) event.currentTarget.currentTime = start;
+            }}
             onTimeUpdate={onTimeUpdate}
             playsInline
             preload="metadata"
             ref={videoRef}
-            src={mediaUrl(project.source_url)}
+            src={mediaUrl(renderedPreview || project.source_url)}
           />
-          <div className="caption-preview">{captionPreview}</div>
+          {!renderedPreview && <div className="caption-preview">{captionPreview}</div>}
           <button
             aria-label="Play selected clip"
             className="preview-play"
@@ -721,10 +650,10 @@ function ClipEditor({
               />
             </Icon>
           </button>
-          <div className="safe-area" aria-hidden="true" />
+          {!renderedPreview && <div className="safe-area" aria-hidden="true" />}
         </div>
         <div className="preview-meta">
-          <span>9:16 preview</span>
+          <span>{renderedPreview ? "Rendered MP4" : "9:16 preview"}</span>
           <strong>{formatDuration(end - start)}</strong>
         </div>
       </div>
@@ -738,7 +667,7 @@ function ClipEditor({
             <span className="muted-label">AI selection</span>
           </div>
           <button className="text-button" onClick={playClip} type="button">
-            Preview range
+            {renderedPreview ? "Play MP4" : "Play this range"}
           </button>
         </div>
 
@@ -790,14 +719,14 @@ function ClipEditor({
           </small>
         </label>
 
-        <div className="selection-reasons">
-          <span>Why ClipMine chose this</span>
+        <details className="selection-reasons">
+          <summary>Why ClipMine chose this</summary>
           <ul>
             {candidate.reasons.map((reason) => (
               <li key={reason}>{reason}</li>
             ))}
           </ul>
-        </div>
+        </details>
 
         {(error || candidate.render_error) && (
           <div className="form-error" role="alert">
@@ -838,10 +767,10 @@ function ClipEditor({
             }}
           >
             {sent
-              ? "Sent to your niche ✓"
+              ? "Added to Niches media"
               : sending
                 ? "Sending…"
-                : "Send to Niches ↗"}
+                : "Add to Niches media"}
           </button>
         )}
         <div className="editor-actions">
@@ -851,7 +780,7 @@ function ClipEditor({
             onClick={save}
             type="button"
           >
-            {saving ? "Saving…" : "Save draft"}
+            {saving ? "Saving…" : "Save edits"}
           </button>
           {candidate.render_status === "ready" &&
           candidate.export_url &&
@@ -915,6 +844,7 @@ function ProjectWorkspace({
   onRetry: () => void;
   onDelete: () => void;
 }) {
+  const Container = useContext(StudioContext).nicheId ? "div" : "main";
   const [selectedId, setSelectedId] = useState(project.candidates[0]?.id ?? "");
 
   useEffect(() => {
@@ -927,9 +857,9 @@ function ProjectWorkspace({
     return (
       <>
         <AppHeader onHome={onHome} project={project} />
-        <main className="workspace workspace--processing">
+        <Container className="workspace workspace--processing">
           <ProcessingView onRetry={onRetry} project={project} />
-        </main>
+        </Container>
       </>
     );
   }
@@ -949,7 +879,7 @@ function ProjectWorkspace({
   return (
     <>
       <AppHeader onHome={onHome} project={project} />
-      <main className="workspace">
+      <Container className="workspace">
         <div className="workspace-heading">
           <div>
             <button className="back-button" onClick={onHome} type="button">
@@ -964,7 +894,6 @@ function ProjectWorkspace({
               </Icon>
               All projects
             </button>
-            <span className="eyebrow">Ready to shape</span>
             <h1>{project.title}</h1>
             <p>
               {formatDuration(project.duration_seconds)} source ·{" "}
@@ -1019,7 +948,7 @@ function ProjectWorkspace({
             <h3>No suitable moments were found.</h3>
           </div>
         )}
-      </main>
+      </Container>
     </>
   );
 }
@@ -1099,7 +1028,7 @@ function App({
   };
 
   const goHome = () => {
-    window.history.pushState(null, "", window.location.pathname);
+    window.history.pushState(null, "", window.location.pathname + window.location.search);
     setSelectedId(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -1140,7 +1069,7 @@ function App({
     return (
       <div className="app-loading">
         <LogoMark />
-        <span>Opening the mine…</span>
+        <span>Opening ClipMine…</span>
       </div>
     );
   }
@@ -1176,13 +1105,6 @@ function App({
               }}
               projects={projects}
             />
-            <footer>
-              <Brand />
-              <p>
-                Private-by-default video repurposing. Built for creator control.
-              </p>
-              <span>MVP 0.1</span>
-            </footer>
           </>
         )}
       </div>

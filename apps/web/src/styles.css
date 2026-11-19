@@ -131,35 +131,6 @@ textarea:focus-visible {
   stroke-linejoin: round;
 }
 
-.header-pill,
-.database-state {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 9px 13px;
-  background: rgba(255, 255, 255, 0.025);
-}
-
-.header-pill__light,
-.database-state > span {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--gold);
-  box-shadow: 0 0 12px rgba(232, 180, 75, 0.7);
-}
-
-.database-state.is-connected > span {
-  background: var(--green);
-  box-shadow: 0 0 12px rgba(134, 216, 155, 0.65);
-}
-
 .header-project {
   display: flex;
   flex-direction: column;
@@ -184,17 +155,6 @@ textarea:focus-visible {
   font-size: 13px;
 }
 
-.hero {
-  width: min(1280px, calc(100% - 56px));
-  margin: 0 auto;
-  min-height: 660px;
-  padding: 72px 0 82px;
-  display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(420px, 0.82fr);
-  gap: clamp(50px, 7vw, 110px);
-  align-items: center;
-}
-
 .eyebrow {
   color: var(--gold-bright);
   font-size: 11px;
@@ -202,57 +162,6 @@ textarea:focus-visible {
   font-weight: 750;
   letter-spacing: 0.15em;
   text-transform: uppercase;
-}
-
-.hero__copy > .eyebrow {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-
-.hero__copy > .eyebrow > span {
-  width: 26px;
-  height: 1px;
-  background: var(--gold);
-}
-
-.hero h1 {
-  margin: 18px 0 22px;
-  max-width: 720px;
-  font-size: clamp(56px, 6.5vw, 94px);
-  line-height: 0.92;
-  letter-spacing: -0.075em;
-  font-weight: 730;
-}
-
-.hero__copy > p {
-  max-width: 590px;
-  margin: 0;
-  color: #b7b8bf;
-  font-size: clamp(16px, 1.4vw, 20px);
-  line-height: 1.65;
-}
-
-.hero__proof {
-  display: flex;
-  gap: 26px;
-  margin-top: 42px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 650;
-  letter-spacing: 0.02em;
-}
-
-.hero__proof span {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.hero__proof strong {
-  color: var(--gold);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
 }
 
 .upload-card {
@@ -274,19 +183,6 @@ textarea:focus-visible {
   z-index: -1;
   border-radius: inherit;
   background: linear-gradient(135deg, rgba(246, 207, 113, 0.18), transparent 36%);
-}
-
-.upload-card__intro h2 {
-  margin: 7px 0 7px;
-  font-size: 27px;
-  letter-spacing: -0.04em;
-}
-
-.upload-card__intro p {
-  margin: 0 0 24px;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.55;
 }
 
 .drop-zone {
@@ -1093,12 +989,11 @@ footer > span {
   background: rgba(255, 255, 255, 0.025);
 }
 
-.selection-reasons > span {
+.selection-reasons summary {
   color: var(--muted);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
+  font-size: .875rem;
+  font-weight: 650;
+  cursor: pointer;
 }
 
 .selection-reasons ul {
@@ -1164,36 +1059,6 @@ footer > span {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.65;
-}
-
-.mining-orbit {
-  position: relative;
-  width: 96px;
-  height: 96px;
-  display: grid;
-  place-items: center;
-  margin: 0 auto 32px;
-  border: 1px solid rgba(232, 180, 75, 0.15);
-  border-radius: 50%;
-}
-
-.mining-orbit .logo-mark {
-  width: 47px;
-  height: 47px;
-}
-
-.mining-orbit > span {
-  position: absolute;
-  top: -4px;
-  left: 50%;
-  width: 9px;
-  height: 9px;
-  margin-left: -4px;
-  border-radius: 50%;
-  background: var(--gold-bright);
-  box-shadow: 0 0 14px var(--gold);
-  transform-origin: 4px 52px;
-  animation: orbit 2s linear infinite;
 }
 
 .processing-bar {
@@ -1322,20 +1187,7 @@ footer > span {
   50% { opacity: 1; }
 }
 
-@keyframes orbit {
-  to { transform: rotate(360deg); }
-}
-
 @media (max-width: 1100px) {
-  .hero {
-    grid-template-columns: minmax(0, 1fr) minmax(390px, 0.9fr);
-    gap: 40px;
-  }
-
-  .hero__proof {
-    flex-direction: column;
-    gap: 9px;
-  }
 
   .project-grid {
     grid-template-columns: repeat(2, 1fr);
@@ -1357,7 +1209,6 @@ footer > span {
 
 @media (max-width: 820px) {
   .app-header,
-  .hero,
   .projects-section,
   .workspace,
   footer {
@@ -1366,23 +1217,6 @@ footer > span {
 
   .app-header {
     height: 72px;
-  }
-
-  .hero {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    padding: 54px 0 70px;
-    gap: 48px;
-  }
-
-  .hero h1 {
-    font-size: clamp(52px, 13vw, 76px);
-  }
-
-  .hero__proof {
-    flex-direction: row;
-    flex-wrap: wrap;
   }
 
   .upload-card {
@@ -1437,7 +1271,6 @@ footer > span {
 
 @media (max-width: 560px) {
   .app-header,
-  .hero,
   .projects-section,
   .workspace,
   footer {
@@ -1446,30 +1279,6 @@ footer > span {
 
   .brand {
     font-size: 18px;
-  }
-
-  .header-pill {
-    padding: 8px 10px;
-    font-size: 9px;
-  }
-
-  .hero {
-    padding-top: 42px;
-  }
-
-  .hero h1 {
-    margin-top: 14px;
-    font-size: clamp(48px, 17vw, 66px);
-  }
-
-  .hero__copy > p {
-    font-size: 15px;
-  }
-
-  .hero__proof {
-    display: grid;
-    gap: 8px;
-    margin-top: 28px;
   }
 
   .upload-card {
@@ -1490,10 +1299,6 @@ footer > span {
   .workspace-heading {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .database-state {
-    align-self: flex-start;
   }
 
   .project-card {
@@ -1591,3 +1396,134 @@ footer > span {
   }
 }
 
+
+/* ClipMine is also mounted inside the Niches workspace, where it can be
+   considerably narrower than the viewport. */
+.app-shell {
+  container: clipmine-workspace / inline-size;
+}
+
+.n-studio .app-shell {
+  min-height: 0;
+}
+
+.clipmine-dashboard {
+  display: grid;
+  width: min(1080px, calc(100% - 32px));
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: clamp(18px, 3vw, 34px);
+  align-items: start;
+  margin: 24px auto 48px;
+}
+
+.clipmine-dashboard .projects-section {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+.clipmine-dashboard .project-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.upload-card__intro h1 {
+  margin: 0 0 18px;
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  letter-spacing: -.035em;
+}
+
+.app-shell .drop-zone__copy strong,
+.app-shell .field :is(input, select, textarea) {
+  font-size: 1rem;
+}
+
+.app-shell .field > span,
+.app-shell .fieldset legend,
+.app-shell .candidate-item__copy strong,
+.app-shell .rights-check,
+.app-shell .segmented-control button {
+  font-size: .875rem;
+}
+
+.app-shell .candidate-item__copy small,
+.app-shell .candidate-list__heading strong,
+.app-shell .drop-zone__copy small,
+.app-shell .first-run-note {
+  font-size: .8125rem;
+}
+
+.app-shell :is(.segmented-control button, .primary-button, .secondary-button) {
+  min-height: 44px;
+}
+
+.candidate-list__heading h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.workspace-heading h1,
+.processing-meta span,
+.caption-preview {
+  overflow-wrap: anywhere;
+}
+
+@container clipmine-workspace (max-width: 895px) {
+  .workspace-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .candidate-list {
+    position: static;
+  }
+
+  .candidate-list__items {
+    display: flex;
+    overflow: auto;
+    scroll-snap-type: x proximity;
+  }
+
+  .candidate-item {
+    flex: 0 0 min(230px, 82%);
+    scroll-snap-align: start;
+  }
+
+  .editor-shell {
+    grid-template-columns: minmax(0, .8fr) minmax(0, 1fr);
+    min-height: 0;
+  }
+}
+
+@container clipmine-workspace (max-width: 680px) {
+  .clipmine-dashboard,
+  .editor-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .clipmine-dashboard,
+  .app-shell .workspace {
+    width: calc(100% - 16px);
+  }
+
+  .n-studio .clipmine-dashboard,
+  .n-studio .app-shell .workspace {
+    width: 100%;
+  }
+
+  .upload-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .preview-column {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .app-shell .vertical-preview {
+    width: min(100%, 255px, 34vh);
+  }
+
+  .editor-actions {
+    flex-wrap: wrap;
+  }
+}

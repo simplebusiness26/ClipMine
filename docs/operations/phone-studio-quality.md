@@ -36,3 +36,15 @@ handoff review page described in [ADR-009](../decisions/ADR-009-browser-export-h
 short-source underfill, subtitle canvas, pause preservation, range validation and
 ASS override escaping. The existing media end-to-end test exercises real FFmpeg
 upload, analysis, render and download. Private campaign media stays outside Git.
+
+## Open ClipMine from Niches
+
+In the workspace menu, open **ClipMine**, then select **Open Phone Studio** to
+open the existing notebook in a new tab. After sending an export from Colab,
+review the vertical preview in Niches, select the connected Instagram account,
+confirm your review and select **Save Instagram draft**. **Open Drafts** takes
+you to that account's niche.
+
+If a private renderer is configured, **Use the hosted editor** opens the upload
+and project workflow for a selected niche. A rendered MP4 can be previewed in
+the editor and added to the niche's media library.
