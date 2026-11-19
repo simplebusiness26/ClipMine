@@ -1,0 +1,271 @@
+.clipmine-page {
+  --clipmine-ink: #f6f5fc;
+  --clipmine-muted: #bbb9d3;
+  --clipmine-line: #393853;
+  --clipmine-panel: #17162a;
+  --clipmine-accent: #c9bbff;
+  width: min(100%, 1120px);
+  margin-inline: auto;
+  color: var(--clipmine-ink);
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+.clipmine-launch {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, .75fr);
+  align-items: center;
+  min-height: 290px;
+  padding: clamp(22px, 5vw, 48px);
+  overflow: hidden;
+  background: linear-gradient(115deg, #1b1832 40%, #32265c);
+  border: 1px solid #50446e;
+  border-radius: 20px;
+}
+
+.clipmine-launch__content { position: relative; z-index: 1; }
+
+.clipmine-page :is(h1, h2, p) { margin: 0; }
+
+.clipmine-launch h1,
+.clipmine-import h1 {
+  font-size: clamp(2rem, 5vw, 3.75rem);
+  font-weight: 750;
+  letter-spacing: -.045em;
+  line-height: 1.05;
+}
+
+.clipmine-page p,
+.clipmine-help {
+  color: var(--clipmine-muted);
+  line-height: 1.55;
+}
+
+.clipmine-launch p,
+.clipmine-import header p {
+  margin-top: 10px;
+  font-size: 1rem;
+}
+
+.clipmine-page .clipmine-button {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 46px;
+  justify-content: center;
+  align-items: center;
+  padding: 10px 18px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--clipmine-accent);
+  color: #1b1234;
+  font-size: 1rem;
+  font-weight: 750;
+  line-height: 1.3;
+  text-align: center;
+  cursor: pointer;
+}
+
+.clipmine-button:hover { background: #ded4ff; }
+.clipmine-button:disabled { opacity: .55; cursor: default; }
+.clipmine-launch .clipmine-button { margin-top: 24px; }
+
+.clipmine-launch .clipmine-help {
+  display: block;
+  margin-top: 8px;
+  font-size: .875rem;
+}
+
+.clipmine-launch__art {
+  position: relative;
+  min-height: 180px;
+  isolation: isolate;
+}
+
+.clipmine-film {
+  position: absolute;
+  inset: 26% -12% auto 1%;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  padding: 12px 10px;
+  transform: rotate(-10deg);
+  border-block: 1px dashed #a998f2;
+  background: #453673;
+}
+
+.clipmine-film span {
+  height: 54px;
+  border: 1px solid #9081ca;
+  border-radius: 6px;
+  background: linear-gradient(150deg, #7561b3, #292045 75%);
+}
+
+.clipmine-frame {
+  position: absolute;
+  inset: 4% 16% auto auto;
+  display: grid;
+  width: 85px;
+  aspect-ratio: 9 / 16;
+  place-items: center;
+  transform: rotate(8deg);
+  border: 2px solid #d6c9ff;
+  border-radius: 14px;
+  background: linear-gradient(145deg, #8e76dc, #2a1e55 70%);
+  box-shadow: 0 12px 35px #140b30a3;
+}
+
+.clipmine-frame span {
+  width: 0;
+  height: 0;
+  margin-left: 4px;
+  border-block: 9px solid transparent;
+  border-left: 14px solid #eee8ff;
+}
+
+.clipmine-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.clipmine-steps li,
+.clipmine-hosted,
+.clipmine-import__panel,
+.clipmine-import__waiting {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--clipmine-line);
+  border-radius: 14px;
+  background: var(--clipmine-panel);
+}
+
+.clipmine-steps h2 { font-size: 1.05rem; line-height: 1.3; }
+.clipmine-steps p { margin-top: 5px; font-size: .9375rem; }
+
+.clipmine-page .clipmine-hosted summary {
+  min-height: 44px;
+  padding-block: 10px;
+  color: var(--clipmine-accent);
+  font-size: .9375rem;
+  cursor: pointer;
+}
+
+.clipmine-hosted__body {
+  display: grid;
+  gap: 16px;
+  padding-top: 8px;
+}
+
+.clipmine-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  font-size: .9375rem;
+  font-weight: 650;
+}
+
+.clipmine-field :is(input, select, textarea),
+.n-electric .clipmine-field select {
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 11px;
+  border: 1px solid #5c5778;
+  border-radius: 8px;
+  background: #111020;
+  color: var(--clipmine-ink);
+  font-size: 1rem;
+  font-weight: 400;
+}
+
+.clipmine-field textarea { resize: vertical; }
+.clipmine-import { padding: clamp(16px, 4vw, 36px); }
+.clipmine-import header { margin-bottom: 18px; }
+.clipmine-import h1 { font-size: clamp(1.8rem, 5vw, 2.8rem); }
+
+.clipmine-import__grid {
+  display: grid;
+  grid-template-columns: minmax(200px, .65fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.clipmine-import__preview {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  margin: 0;
+}
+
+.clipmine-import__preview video {
+  display: block;
+  width: min(100%, 320px);
+  max-height: 58vh;
+  aspect-ratio: 9 / 16;
+  background: #080711;
+  border-radius: 10px;
+}
+
+.clipmine-import__preview figcaption {
+  color: var(--clipmine-muted);
+  font-size: .875rem;
+  overflow-wrap: anywhere;
+}
+
+.clipmine-import__fields {
+  display: grid;
+  gap: 14px;
+}
+
+.clipmine-import__check {
+  display: flex;
+  align-items: start;
+  gap: 9px;
+  padding-block: 5px;
+  font-size: .9375rem;
+  line-height: 1.45;
+}
+
+.clipmine-import__check input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: var(--clipmine-accent);
+}
+
+.clipmine-import__fields a {
+  color: var(--clipmine-accent);
+  text-decoration: underline;
+}
+
+.clipmine-page .clipmine-import__error {
+  margin-bottom: 12px;
+  color: #ffc1c3;
+}
+
+.clipmine-page :is(a, button, summary, input, select, textarea):focus-visible {
+  outline: 2px solid var(--clipmine-accent);
+  outline-offset: 3px;
+}
+
+@media (max-width: 680px) {
+  .clipmine-launch {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
+  }
+
+  .clipmine-launch__art { display: none; }
+
+  .clipmine-steps,
+  .clipmine-import__grid { grid-template-columns: minmax(0, 1fr); }
+
+  .clipmine-steps { gap: 8px; }
+
+  .clipmine-page .clipmine-button { width: 100%; }
+
+  .clipmine-import__preview video { width: min(100%, 245px, 28svh); }
+}
