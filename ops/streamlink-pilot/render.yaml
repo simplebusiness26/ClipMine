@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: clipcast-streamlink-pilot
+    runtime: docker
+    branch: clipcast-streamlink-pilot
+    plan: free
+    rootDir: ops/streamlink-pilot
+    healthCheckPath: /healthz
+    envVars:
+      - key: RECORDER_PASSWORD
+        generateValue: true
+      - key: TWITCH_CHANNEL
+        sync: false
