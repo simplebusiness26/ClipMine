@@ -30,7 +30,11 @@ test("the browser dry run enters the link without pressing the submission button
     goto: async (url) => assert.equal(url, input.campaign_url),
     url: () => input.campaign_url,
     getByRole(role, { name }) {
-      assert.equal(name, role === "button" ? "Submit clip" : "Submit video link");
+      if (role === "button") assert.equal(name, "Submit clip");
+      else {
+        assert.match("Clip link", name);
+        assert.match("Submit video link", name);
+      }
       return role === "button"
         ? { click: async () => { actions.push("opened"); } }
         : field;
