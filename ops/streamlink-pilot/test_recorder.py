@@ -15,13 +15,13 @@ PASSWORD = "synthetic-test-password-only"
 AUTH = ("recorder", PASSWORD)
 
 
-def test_private_capture_flow(monkeypatch):
-    started = Event()
+def test_private_parallel_captures_and_scoop_export(monkeypatch):
+    started = {"clix": Event(), "second": Event()}
     release = Event()
 
     class FakeChat:
         def __init__(self, channel):
-            assert channel == "clipcasttest"
+            assert channel in started
             self.connected = True
             self.counts = Counter({10: 21})
             self.laughter = Counter({10: 9})
@@ -36,93 +36,124 @@ def test_private_capture_flow(monkeypatch):
             pass
 
     def finish_capture(url, output, on_progress, *, quality, max_bytes):
-        assert url == "https://www.twitch.tv/clipcasttest"
+        channel = url.rsplit("/", 1)[-1]
         assert quality.startswith("1080p60,1080p,")
         assert max_bytes == 650 * app.MIB
-        started.set()
+        started[channel].set()
         assert release.wait(3)
-        output.write_bytes(b"synthetic file")
-        return app.Capture(601.0, 1080)
+        output.write_bytes(channel.encode())
+        return app.Capture(601, 1080)
+
+    def finish_scoop(source, output, script, crop):
+        assert source.read_bytes() == b"clix highlight"
+        assert script == "chat-laugh"
+        assert crop == "right"
+        output.write_bytes(b"branded clip")
 
     monkeypatch.setattr(app, "capture_mp4", finish_capture)
     monkeypatch.setattr(app, "ChatMonitor", FakeChat)
     monkeypatch.setattr(app, "detect_laughter", lambda *_: {51: 0.88})
     monkeypatch.setattr(
-        app, "cut_clip", lambda _, output, clip: output.write_bytes(b"clip")
+        app,
+        "cut_clip",
+        lambda source, output, clip: output.write_bytes(
+            source.read_bytes() + b" highlight"
+        ),
     )
+    monkeypatch.setattr(app, "render_scoop", finish_scoop)
 
-    with TestClient(app.create_app("clipcasttest", PASSWORD)) as client:
-        assert client.get("/healthz").status_code == 200
+    with TestClient(app.create_app("clix", PASSWORD)) as client:
+        assert client.get("/healthz").json()["capture_slots"] == 2
         assert client.get("/").status_code == 401
-        assert client.get("/download").status_code == 401
         assert client.get("/", auth=("recorder", "wrong")).status_code == 401
 
         page = client.get("/", auth=AUTH)
-        token = re.search(r'name="token" value="([^"]+)"', page.text).group(1)
         assert '<option value="720p" selected>' in page.text
-        assert '<option value="1080p">' in page.text
-        permitted = {"token": token, "confirm": "yes", "quality": "1080p"}
-        assert (
-            client.post(
-                "/record", data={**permitted, "quality": "invalid"}, auth=AUTH
-            ).status_code
-            == 400
-        )
+        assert 'type="text" value="clix"' in page.text
+        token = re.search(r'name="token" value="([^"]+)"', page.text).group(1)
+        permitted = {
+            "token": token,
+            "confirm": "yes",
+            "quality": "1080p",
+            "channels": "@Clix, second",
+        }
         assert client.post("/record", data=permitted).status_code == 401
-        assert (
-            client.post("/record", data={"token": token}, auth=AUTH).status_code == 400
-        )
+        for invalid in ("https://example.test", "clix, second, third"):
+            assert client.post(
+                "/record", data={**permitted, "channels": invalid}, auth=AUTH
+            ).status_code in (400, 409)
         assert (
             client.post(
-                "/record",
-                data={"token": "bad", "confirm": "yes"},
-                auth=AUTH,
+                "/record", data={**permitted, "token": "bad"}, auth=AUTH
             ).status_code
             == 403
         )
 
-        assert (
-            client.post(
-                "/record",
-                data=permitted,
-                auth=AUTH,
-                follow_redirects=False,
-            ).status_code
-            == 303
-        )
         try:
-            assert started.wait(2)
             assert (
-                "Recording the stream and watching chat"
-                in client.get("/", auth=AUTH).text
+                client.post(
+                    "/record", data=permitted, auth=AUTH, follow_redirects=False
+                ).status_code
+                == 303
             )
+            assert started["clix"].wait(2)
+            assert started["second"].wait(2)
+            assert "2 of 2 recording slots in use" in client.get("/", auth=AUTH).text
             assert client.post("/record", data=permitted, auth=AUTH).status_code == 409
         finally:
             release.set()
 
         deadline = monotonic() + 2
-        while (
-            "Capture ready" not in client.get("/", auth=AUTH).text
-            and monotonic() < deadline
-        ):
+        while monotonic() < deadline:
+            result = client.get("/", auth=AUTH).text
+            if result.count("Capture ready") == 2:
+                break
             sleep(0.02)
-        final = client.get("/", auth=AUTH)
-        assert "1080p source" in final.text
-        assert "Best bits" in final.text
-        assert "Chat spike" in final.text
-        assert "Laughter in stream audio" in final.text
-        assert client.get("/clips/1").status_code == 401
-        assert client.get("/clips/1", auth=AUTH).content == b"clip"
-        assert client.get("/clips/2", auth=AUTH).status_code == 404
-        result = client.get("/download", auth=AUTH)
-        assert result.status_code == 200
-        assert result.content == b"synthetic file"
-        assert result.headers["content-type"] == "video/mp4"
-        assert (
-            client.post("/clear", data={"token": token}, auth=AUTH).status_code == 200
+        assert result.count("1080p source") == 2
+        assert result.count("Make Scoop version") == 2
+        links = re.findall(r'href="(/jobs/[^/]+/clips/1)"', result)
+        assert len(links) == 2
+        clix = next(
+            link
+            for link in links
+            if client.get(link, auth=AUTH).content.startswith(b"clix")
         )
-        assert client.get("/download", auth=AUTH).status_code == 404
-        assert client.get("/clips/1", auth=AUTH).status_code == 404
+        second = next(link for link in links if link != clix)
+        assert client.get(clix).status_code == 401
+        assert client.get(f"{clix}/scoop", auth=AUTH).status_code == 404
+        assert (
+            client.post(
+                f"{clix}/scoop",
+                data={"token": token, "script": "chat-laugh", "crop": "right"},
+                auth=AUTH,
+                follow_redirects=False,
+            ).status_code
+            == 303
+        )
+
+        deadline = monotonic() + 2
+        while monotonic() < deadline:
+            branded = client.get(f"{clix}/scoop", auth=AUTH)
+            if branded.status_code == 200:
+                break
+            sleep(0.02)
+        assert branded.content == b"branded clip"
+        assert client.get(f"{clix}/scoop").status_code == 401
+        assert client.get(clix, auth=AUTH).content == b"clix highlight"
+        assert client.get(second, auth=AUTH).content == b"second highlight"
+        root = clix.rsplit("/clips", 1)[0]
+        assert client.get(f"{root}/original", auth=AUTH).content == b"clix"
+        assert (
+            client.post(
+                f"{root}/clear",
+                data={"token": token},
+                auth=AUTH,
+                follow_redirects=False,
+            ).status_code
+            == 303
+        )
+        assert client.get(clix, auth=AUTH).status_code == 404
+        assert client.get(second, auth=AUTH).status_code == 200
 
 
 def test_streamlink_and_ffmpeg_create_ten_minute_mp4(tmp_path: Path):
