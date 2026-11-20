@@ -17,7 +17,12 @@ from typing import Annotated, BinaryIO
 from zipfile import BadZipFile
 
 from fastapi import Depends, FastAPI, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from streamlink import Streamlink
 from streamlink.exceptions import StreamlinkError
@@ -451,6 +456,7 @@ def create_app(
             "capture_slots": MAX_ACTIVE,
             "template": "text-only",
             "hooks": "clip-aware",
+            "previews": "inline",
         }
 
     hidden = f'<input type="hidden" name="token" value="{csrf}">'
@@ -505,18 +511,17 @@ def create_app(
                     if highlight.hook_status
                     else ""
                 )
-                details = "<details open>" if highlight.hook_status else "<details>"
                 action = (
                     "Redo ClipCast version" if has_export else "Make ClipCast version"
                 )
                 template_form = (
                     f'<form method="post" action="{base}/template">{hidden}'
-                    f"{details}<summary>Hook, written narration and framing</summary>"
                     f'<label>Top hook <input type="text" name="hook" maxlength="{HOOK_LIMIT}" '
                     f'placeholder="Generate from this clip" value="{html.escape(highlight.hook, quote=True)}"></label>'
                     "<small>Leave blank to make a hook from this clip when you export.</small>"
                     f'{hook_status}<button class="secondary" type="submit" '
                     f'formaction="{base}/hook">Suggest hook first</button>'
+                    "<details><summary>Captions and framing</summary>"
                     f'<label>Written narration <textarea name="narration" rows="2" '
                     f'maxlength="{NARRATION_LIMIT}" placeholder="Four bikes.&#10;One late arrival.">'
                     f"{html.escape(highlight.narration)}</textarea></label>"
@@ -526,8 +531,10 @@ def create_app(
                     f'<button type="submit">{action}</button></form>'
                 )
             cards.append(
-                f"<li><strong>Clip {rank} · {stamp}</strong><p>{html.escape(reasons)}</p>"
-                f'<a class="secondary" href="{base}">Download highlight</a>'
+                f'<li id="clip-{job.key}-{rank}"><strong>Clip {rank} · {stamp}</strong>'
+                f"<p>{html.escape(reasons)}</p>"
+                f'<video controls playsinline preload="none" aria-label="Preview clip {rank}" src="{base}/preview">'
+                f'<a href="{base}/preview">Open clip preview</a></video>'
                 f"{export_status}{template_form}</li>"
             )
         result = (
@@ -559,13 +566,32 @@ def create_app(
             quality = selected_quality
         notice = f'<p role="alert">{html.escape(error)}</p>' if error else ""
         script = ""
+        refresh_control = ""
         if refresh:
-            script = (
-                "<script>setInterval(() => {"
-                'if (!document.activeElement.closest("form")) {'
-                'if (location.pathname === "/") location.reload(); else location.replace("/");}'
-                "}, 10000);</script>"
-            )
+            refresh_control = '<p id="refresh-results" hidden><a class="secondary" href="/">Refresh results</a></p>'
+            script = """
+                <script>
+                let reviewing = false;
+                const pauseRefresh = () => {
+                    reviewing = true;
+                    document.getElementById("refresh-results").hidden = false;
+                };
+                document.addEventListener("play", event => {
+                    if (event.target instanceof HTMLVideoElement) pauseRefresh();
+                }, true);
+                document.addEventListener("seeking", event => {
+                    if (event.target instanceof HTMLVideoElement) pauseRefresh();
+                }, true);
+                document.addEventListener("input", event => {
+                    if (event.target.closest("form")) pauseRefresh();
+                });
+                setInterval(() => {
+                    if (reviewing || document.activeElement.closest("form, video")) return;
+                    if (location.pathname === "/") location.reload();
+                    else location.replace("/");
+                }, 10000);
+                </script>
+            """
         options = "".join(
             f'<option value="{value}"{" selected" if value == quality else ""}>{title}</option>'
             for value, title in (("720p", "720p HD"), ("1080p", "Up to 1080p Full HD"))
@@ -589,9 +615,11 @@ def create_app(
             "accent-color:#ffc5a6}ol{list-style:none;padding:0;margin:0}li{padding:.7rem 0;"
             "border-top:1px solid #513951}details{margin:.6rem 0}details label{margin:.3rem 0}"
             "details small{padding-left:1.5rem}summary{cursor:pointer;color:#ffd2bf}"
+            "video{display:block;width:100%;aspect-ratio:16/9;max-height:45vh;"
+            "background:#0e0912;border-radius:.6rem;object-fit:contain;margin:.5rem 0 .9rem}"
             "[role=alert]{color:#ffbaa5}</style></head><body><main>"
             "<h1>ClipCast recorder</h1>"
-            f"<p>{active} of {MAX_ACTIVE} recording slots in use</p>{notice}"
+            f"<p>{active} of {MAX_ACTIVE} recording slots in use</p>{notice}{refresh_control}"
             f'<form method="post" action="/record">{hidden}'
             '<label for="channels">Twitch channels</label>'
             f'<input id="channels" name="channels" type="text" value="{form_channels}" '
@@ -686,7 +714,7 @@ def create_app(
                 item.crop = crop
                 item.phase = "hook_queued"
                 Thread(target=run_hook, args=(item,), daemon=True).start()
-        return RedirectResponse("/#recordings", status_code=303)
+        return RedirectResponse(f"/#clip-{key}-{rank}", status_code=303)
 
     @app.post("/jobs/{key}/clips/{rank}/template", dependencies=[Depends(authenticate)])
     def make_template(
@@ -715,7 +743,7 @@ def create_app(
                 Thread(
                     target=run_template, args=(item, template_path(item)), daemon=True
                 ).start()
-        return RedirectResponse("/#recordings", status_code=303)
+        return RedirectResponse(f"/#clip-{key}-{rank}", status_code=303)
 
     def media_response(path: Path, filename: str) -> StreamingResponse:
         file = path.open("rb")
@@ -745,6 +773,30 @@ def create_app(
             item = get_highlight(job, rank)
             return media_response(
                 item.path, f"{job.channel}-{job.key}-highlight-{rank}.mp4"
+            )
+
+    @app.api_route(
+        "/jobs/{key}/clips/{rank}/preview",
+        methods=["GET", "HEAD"],
+        dependencies=[Depends(authenticate)],
+    )
+    def preview_clip(key: str, rank: int) -> FileResponse:
+        with state:
+            item = get_highlight(get_job(key), rank)
+            try:
+                file_status = item.path.stat()
+            except FileNotFoundError as error:
+                raise HTTPException(
+                    status_code=404, detail="This clip is unavailable."
+                ) from error
+            return FileResponse(
+                item.path,
+                media_type="video/mp4",
+                stat_result=file_status,
+                headers={
+                    "Content-Disposition": "inline",
+                    "Cache-Control": "private, no-store",
+                },
             )
 
     @app.get("/jobs/{key}/clips/{rank}/template", dependencies=[Depends(authenticate)])

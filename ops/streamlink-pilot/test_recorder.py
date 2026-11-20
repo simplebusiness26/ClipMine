@@ -133,7 +133,9 @@ def test_five_parallel_captures_and_private_template_export(monkeypatch):
         assert result.count("Make ClipCast version") == 5
         assert "IT WAS GOING WELL" not in result
         assert result.count("Suggest hook first") == 5
-        links = re.findall(r'href="(/jobs/[^/]+/clips/1)"', result)
+        assert result.count('video controls playsinline preload="none"') == 5
+        assert "Download highlight" not in result
+        links = re.findall(r'src="(/jobs/[^/]+/clips/1)/preview"', result)
         assert len(links) == 5
         clix = next(
             link
@@ -146,6 +148,21 @@ def test_five_parallel_captures_and_private_template_export(monkeypatch):
             if client.get(link, auth=AUTH).content == b"second highlight"
         )
         assert client.get(clix).status_code == 401
+        preview = f"{clix}/preview"
+        assert client.get(preview).status_code == 401
+        assert client.head(preview).status_code == 401
+        header = client.head(preview, auth=AUTH)
+        assert header.status_code == 200
+        assert header.content == b""
+        assert header.headers["accept-ranges"] == "bytes"
+        partial = client.get(preview, auth=AUTH, headers={"Range": "bytes=0-3"})
+        assert partial.status_code == 206
+        assert partial.headers["content-type"] == "video/mp4"
+        assert partial.headers["content-disposition"] == "inline"
+        assert partial.headers["content-range"] == "bytes 0-3/14"
+        assert partial.content == b"clix"
+        invalid_range = client.get(preview, auth=AUTH, headers={"Range": "bytes=200-"})
+        assert invalid_range.status_code == 416
         assert client.get(f"{clix}/template", auth=AUTH).status_code == 404
         assert client.post(f"{clix}/hook", data={"token": token}).status_code == 401
         assert (
@@ -216,6 +233,7 @@ def test_five_parallel_captures_and_private_template_export(monkeypatch):
             == 303
         )
         assert client.get(clix, auth=AUTH).status_code == 404
+        assert client.get(preview, auth=AUTH).status_code == 404
         assert client.get(second, auth=AUTH).status_code == 200
 
 

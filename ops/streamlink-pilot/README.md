@@ -15,9 +15,11 @@
    commas. Select **720p HD** or **Up to 1080p Full HD**, confirm permission,
    then tap **Record and find clips**.
 2. Each streamer has a separate ten-minute capture and up to three highlights
-   of about 35 seconds. **Download highlight** saves the original cut with its
-   source framing, picture quality and sound.
-3. Tap **Make ClipCast version** beside a highlight. The Reel is a 720 × 1280 MP4
+   of about 35 seconds. Tap play to watch the original highlight in the browser.
+   Use the player controls to scrub through it. Automatic refresh pauses while
+   you watch or edit if other jobs are running.
+3. Edit **Top hook** just below the player, or use **Suggest hook first**.
+   Tap **Make ClipCast version** when ready. The Reel is a 720 × 1280 MP4
    with full-screen gameplay, the reference GTA 6 ClipCast badge, the opening
    hook banner and cream caption boxes. The original audio plays at its source
    speed. Character art and voice are paused in the current export.
@@ -25,10 +27,10 @@
    relevant dialogue or written narration. Use **Suggest hook first** to review
    and edit it before exporting. The local detector recognizes common subjects
    such as bikes, cars and boats. If it finds too little evidence, the Reel
-   has no automatic hook. You can enter one in **Hook, written narration and framing**.
+   has no automatic hook. Enter your own in **Top hook**.
 5. Leave written narration blank to transcribe the clip's English dialogue
    into timed captions. Enter a short line or two to use your own narration.
-   This panel also controls the portrait crop.
+   Open **Captions and framing** for these options and the portrait crop.
 6. Download the finished **ClipCast Reel**. Save any files you want before
    clearing a recording. Results require the recorder login.
 
