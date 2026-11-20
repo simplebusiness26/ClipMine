@@ -9,11 +9,13 @@
    `clipcast-streamlink-pilot` on the **Free** plan, then deploy.
 4. Open the service and copy the generated `RECORDER_PASSWORD` from its **Environment** tab.
    Open its `onrender.com` URL in your phone's browser and sign in as `recorder` with that password.
-5. While the channel is live, confirm permission and tap **Record and find clips**.
-   Keep the page open while the recorder captures up to ten minutes and checks for highlights.
+5. While the channel is live, choose **720p HD** (default) or **Up to 1080p Full HD**.
+   Confirm permission and tap **Record and find clips**. Keep the page open while
+   the recorder captures up to ten minutes and checks for highlights.
 6. Under **Best bits**, tap **Download clip** for each clip you want. The finished
-   clips are MP4 files at the captured orientation, ready for your edit or template.
-   **Original recording** is available if you want the source file.
+   clips are MP4 files at the captured orientation and resolution. The result
+   shows the actual source resolution because Twitch may offer a lower quality
+   than requested. **Original recording** is available if you want the source file.
 
 [Render dashboard](https://dashboard.render.com/) · [Render free compute limits](https://render.com/docs/free)
 
@@ -30,7 +32,9 @@ stores only chat counts, never chat text or user names.
 ## Pilot limits
 
 Each run begins with a browser tap. An offline channel or file size limit may
-end a capture early. If chat is unreachable or audio analysis fails, the page
+end a capture early. The 720p preset is capped at 500 MiB and the 1080p preset
+at 650 MiB. Captures and cuts copy the source video and audio tracks into MP4
+without scaling or re-encoding. If chat is unreachable or audio analysis fails, the page
 shows the affected signal and uses the available signal to make clips. Twitch
 chat and video delivery can have different latencies, so check the cut before use.
 

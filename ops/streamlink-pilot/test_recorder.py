@@ -35,12 +35,14 @@ def test_private_capture_flow(monkeypatch):
         def progress(self, seconds):
             pass
 
-    def finish_capture(url, output, on_progress):
+    def finish_capture(url, output, on_progress, *, quality, max_bytes):
         assert url == "https://www.twitch.tv/clipcasttest"
+        assert quality.startswith("1080p60,1080p,")
+        assert max_bytes == 650 * app.MIB
         started.set()
         assert release.wait(3)
         output.write_bytes(b"synthetic file")
-        return 601.0
+        return app.Capture(601.0, 1080)
 
     monkeypatch.setattr(app, "capture_mp4", finish_capture)
     monkeypatch.setattr(app, "ChatMonitor", FakeChat)
@@ -57,7 +59,15 @@ def test_private_capture_flow(monkeypatch):
 
         page = client.get("/", auth=AUTH)
         token = re.search(r'name="token" value="([^"]+)"', page.text).group(1)
-        permitted = {"token": token, "confirm": "yes"}
+        assert '<option value="720p" selected>' in page.text
+        assert '<option value="1080p">' in page.text
+        permitted = {"token": token, "confirm": "yes", "quality": "1080p"}
+        assert (
+            client.post(
+                "/record", data={**permitted, "quality": "invalid"}, auth=AUTH
+            ).status_code
+            == 400
+        )
         assert client.post("/record", data=permitted).status_code == 401
         assert (
             client.post("/record", data={"token": token}, auth=AUTH).status_code == 400
@@ -97,6 +107,7 @@ def test_private_capture_flow(monkeypatch):
         ):
             sleep(0.02)
         final = client.get("/", auth=AUTH)
+        assert "1080p source" in final.text
         assert "Best bits" in final.text
         assert "Chat spike" in final.text
         assert "Laughter in stream audio" in final.text
@@ -161,14 +172,18 @@ def test_streamlink_and_ffmpeg_create_ten_minute_mp4(tmp_path: Path):
         try:
             result = tmp_path / "result.mp4"
             actual = app.capture_mp4(
-                f"hls://http://{address}:{port}/sample.m3u8", result
+                f"hls://http://{address}:{port}/sample.m3u8",
+                result,
+                quality="best",
+                max_bytes=500 * app.MIB,
             )
         finally:
             server.shutdown()
             thread.join(timeout=2)
 
     assert result.stat().st_size > 0
-    assert abs(actual - 600) <= 1
+    assert abs(actual.duration - 600) <= 1
+    assert actual.height == 90
     probe = subprocess.run(
         [
             "ffprobe",

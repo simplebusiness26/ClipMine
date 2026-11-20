@@ -1,4 +1,5 @@
 import html
+import json
 import logging
 import math
 import os
@@ -7,6 +8,7 @@ import secrets
 import subprocess
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Lock, Thread
@@ -20,10 +22,25 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from highlights import ChatMonitor, Clip, cut_clip, detect_laughter, select_clips
 
 CAPTURE_SECONDS = 600
-MAX_BYTES = 220 * 1024 * 1024
+MIB = 1024 * 1024
+DEFAULT_QUALITY = "720p"
+HD_STREAMS = "720p60,720p,720p30,480p60,480p,480p30,360p60,360p,360p30"
+QUALITY_OPTIONS = {
+    "720p": (HD_STREAMS, 500 * MIB),
+    "1080p": (
+        "1080p60,1080p,1080p30,936p60,936p,936p30,900p60,900p,900p30," + HD_STREAMS,
+        650 * MIB,
+    ),
+}
 LOGGER = logging.getLogger(__name__)
 BASIC = HTTPBasic(realm="ClipCast recorder")
 MODEL_PATH = Path(__file__).with_name("yamnet.tflite")
+
+
+@dataclass(frozen=True)
+class Capture:
+    duration: float
+    height: int
 
 
 def capture_mp4(
@@ -31,8 +48,11 @@ def capture_mp4(
     output: Path,
     seconds: int = CAPTURE_SECONDS,
     on_progress: Callable[[float], None] | None = None,
-) -> float:
-    """Capture one HLS window and return its verified media duration."""
+    *,
+    quality: str,
+    max_bytes: int,
+) -> Capture:
+    """Capture one HLS window and verify its duration and resolution."""
     streamlink = [
         "streamlink",
         "--stdout",
@@ -47,7 +67,7 @@ def capture_mp4(
         "--stream-segmented-duration",
         str(seconds),
         url,
-        "480p,360p,worst",
+        quality,
     ]
     ffmpeg = [
         "ffmpeg",
@@ -69,7 +89,7 @@ def capture_mp4(
         "-t",
         str(seconds),
         "-fs",
-        str(MAX_BYTES),
+        str(max_bytes - 2 * MIB),
         "-movflags",
         "+faststart",
         str(output),
@@ -113,17 +133,19 @@ def capture_mp4(
                 except subprocess.TimeoutExpired:
                     source.kill()
 
-    if output.stat().st_size > MAX_BYTES:
+    if output.stat().st_size > max_bytes:
         raise ValueError("Capture exceeds its storage limit")
     probe = subprocess.run(
         [
             "ffprobe",
             "-v",
             "error",
+            "-select_streams",
+            "v:0",
             "-show_entries",
-            "format=duration",
+            "format=duration:stream=height",
             "-of",
-            "default=noprint_wrappers=1:nokey=1",
+            "json",
             str(output),
         ],
         check=True,
@@ -131,10 +153,13 @@ def capture_mp4(
         text=True,
         timeout=15,
     )
-    duration = float(probe.stdout.strip())
-    if not math.isfinite(duration) or not 0 < duration <= seconds + 1:
-        raise ValueError("Invalid recording duration")
-    return duration
+    metadata = json.loads(probe.stdout)
+    duration = float(metadata.get("format", {}).get("duration", "nan"))
+    streams = metadata.get("streams", [])
+    height = int(streams[0].get("height", 0)) if streams else 0
+    if not math.isfinite(duration) or not 0 < duration <= seconds + 1 or height <= 0:
+        raise ValueError("Invalid recording duration or resolution")
+    return Capture(duration, height)
 
 
 def report_progress(
@@ -165,7 +190,7 @@ def create_app(
     csrf = secrets.token_urlsafe(32)
     lock = Lock()
     phase = "idle"
-    duration = 0.0
+    capture: Capture | None = None
     clips: list[tuple[Clip, Path]] = []
     signal_status = ""
     directory = TemporaryDirectory(prefix="clipcast-capture-")
@@ -196,15 +221,18 @@ def create_app(
                 status_code=403, detail="Reload the recorder and try again."
             )
 
-    def run_capture() -> None:
-        nonlocal duration, phase, clips, signal_status
+    def run_capture(quality: str) -> None:
+        nonlocal capture, phase, clips, signal_status
+        stream_options, max_bytes = QUALITY_OPTIONS[quality]
         chat = ChatMonitor(channel)
         chat.start()
         try:
-            length = capture_mp4(
+            recorded = capture_mp4(
                 f"https://www.twitch.tv/{channel}",
                 recording,
                 on_progress=chat.progress,
+                quality=stream_options,
+                max_bytes=max_bytes,
             )
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             recording.unlink(missing_ok=True)
@@ -216,7 +244,7 @@ def create_app(
             chat.close()
 
         with lock:
-            duration = length
+            capture = recorded
             phase = "analysing"
 
         audio_status = "Audio checked for laughter."
@@ -242,7 +270,7 @@ def create_app(
             chat_status = "No Twitch chat messages were received during this capture."
 
         results = []
-        candidates = select_clips(length, chat.counts, chat.laughter, audio)
+        candidates = select_clips(recorded.duration, chat.counts, chat.laughter, audio)
         for rank, clip in enumerate(candidates, 1):
             output = recording.with_name(f"highlight-{rank}.mp4")
             try:
@@ -264,12 +292,12 @@ def create_app(
 
     @app.get("/healthz")
     def health() -> dict[str, str]:
-        return {"status": "ok", "mode": "highlights"}
+        return {"status": "ok", "mode": "highlights", "quality_options": "hd"}
 
     @app.get("/", response_class=HTMLResponse, dependencies=[Depends(authenticate)])
     def home() -> HTMLResponse:
         with lock:
-            state, length = phase, duration
+            state, recorded = phase, capture
             matches, signals = list(clips), signal_status
         hidden = f'<input type="hidden" name="token" value="{csrf}">'
         refresh = ""
@@ -281,8 +309,9 @@ def create_app(
                 else "Finding and cutting highlights."
             )
             body = f'<p role="status">{status} This page refreshes automatically.</p>'
-        elif state == "ready":
-            length_text = f"{int(length) // 60}:{int(length) % 60:02d}"
+        elif state == "ready" and recorded:
+            length = int(recorded.duration)
+            length_text = f"{length // 60}:{length % 60:02d}"
             status = "Capture ready" if length >= 595 else "Short capture ready"
             cards = []
             for rank, (clip, _) in enumerate(matches, 1):
@@ -298,7 +327,7 @@ def create_app(
                 else "<p>No strong highlight signals found in this capture.</p>"
             )
             body = (
-                f'<p role="status">{status} · {length_text}</p>'
+                f'<p role="status">{status} · {length_text} · {recorded.height}p source</p>'
                 f"{result}<p>{html.escape(signals)}</p>"
                 "<details><summary>Original recording</summary>"
                 '<a href="/download">Download full recording</a></details>'
@@ -314,6 +343,11 @@ def create_app(
             )
             body = (
                 f'{notice}<form method="post" action="/record">{hidden}'
+                '<label for="quality">Recording quality</label>'
+                '<select id="quality" name="quality">'
+                '<option value="720p" selected>720p HD</option>'
+                '<option value="1080p">Up to 1080p Full HD</option></select>'
+                "<p>Twitch may supply a lower resolution. The result shows what was saved.</p>"
                 '<label><input type="checkbox" name="confirm" value="yes" required> '
                 "I have permission to capture this stream.</label>"
                 '<button type="submit">Record and find clips</button></form>'
@@ -328,6 +362,7 @@ def create_app(
             "background:#ffc5a6;color:#241423;border:0;border-radius:.65rem;"
             "font:inherit;font-weight:650;display:inline-flex;align-items:center;"
             "box-sizing:border-box;margin-top:.75rem}label{display:block}"
+            "select{font:inherit;padding:.5rem;margin-top:.25rem}"
             "</style></head><body><main><h1>ClipCast recorder</h1>"
             f"<p>Twitch channel <strong>{html.escape(channel)}</strong></p>"
             f"{body}</main></body></html>",
@@ -335,18 +370,24 @@ def create_app(
         )
 
     @app.post("/record", dependencies=[Depends(authenticate)])
-    def record(token: str = Form(), confirm: str = Form("")) -> RedirectResponse:
+    def record(
+        token: str = Form(),
+        confirm: str = Form(""),
+        quality: str = Form(DEFAULT_QUALITY),
+    ) -> RedirectResponse:
         nonlocal phase
         authorize_form(token)
         if confirm != "yes":
             raise HTTPException(
                 status_code=400, detail="Confirm permission to record first."
             )
+        if quality not in QUALITY_OPTIONS:
+            raise HTTPException(status_code=400, detail="Choose a recording quality.")
         with lock:
             if phase in ("capturing", "analysing", "ready"):
                 raise HTTPException(status_code=409, detail="A capture already exists.")
             phase = "capturing"
-            Thread(target=run_capture, daemon=True).start()
+            Thread(target=run_capture, args=(quality,), daemon=True).start()
         return RedirectResponse("/", status_code=303)
 
     def media_response(path: Path, filename: str) -> StreamingResponse:
@@ -379,7 +420,7 @@ def create_app(
 
     @app.post("/clear", dependencies=[Depends(authenticate)])
     def clear(token: str = Form()) -> RedirectResponse:
-        nonlocal phase
+        nonlocal capture, phase
         authorize_form(token)
         with lock:
             if phase in ("capturing", "analysing"):
@@ -390,6 +431,7 @@ def create_app(
             for _, output in clips:
                 output.unlink(missing_ok=True)
             clips.clear()
+            capture = None
             phase = "idle"
         return RedirectResponse("/", status_code=303)
 

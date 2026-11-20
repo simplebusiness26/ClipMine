@@ -8,7 +8,9 @@
 Use a separate private-operator web service on Render's Free plan to verify
 one permissioned Twitch capture from a phone. The operator sets one channel
 in deployment configuration and explicitly starts each job. Capture is
-bounded to ten minutes and one temporary MP4 at a time.
+bounded to ten minutes and one temporary source MP4 at a time. The operator
+chooses a 720p or 1080p target. Lower Twitch variants remain available as
+fallbacks and the recorder displays the saved resolution.
 
 The recorder counts messages and laughter reactions in read-only public Twitch
 chat, and scores audible laughter with a local model. FFmpeg cuts the highest
