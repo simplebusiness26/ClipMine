@@ -16,8 +16,9 @@ export async function prepareContentRewardsForm(page, input) {
 
   const open = page.getByRole("button", { name: "Submit clip", exact: true });
   await open.click({ timeout: 12_000 });
-  const field = page.getByRole("textbox", { name: "Submit video link", exact: false })
-    .or(page.getByPlaceholder("Submit video link", { exact: false }));
+  const linkLabel = /^(?:Clip link|Submit video link)$/i;
+  const field = page.getByRole("textbox", { name: linkLabel })
+    .or(page.getByPlaceholder(linkLabel));
   if (Date.now() >= Date.parse(input.deadline)) return "deadline_passed";
   await field.fill(input.reel_url, { timeout: 12_000 });
   if (await field.inputValue() !== input.reel_url) return "form_unavailable";

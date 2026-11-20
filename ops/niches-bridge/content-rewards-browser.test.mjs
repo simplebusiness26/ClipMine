@@ -17,7 +17,7 @@ test("Chromium fills the target campaign form and leaves its acknowledgement and
       await route.fulfill({
         contentType: "text/html",
         body: `<!doctype html><button id="open">Submit clip</button>
-          <dialog><form><label>Submit video link <textarea></textarea></label>
+          <dialog><form><input type="url" aria-label="Clip link">
           <label><input type="checkbox">I have read the requirements</label>
           <button>Submit clip</button></form></dialog>
           <script>
@@ -30,8 +30,8 @@ test("Chromium fills the target campaign form and leaves its acknowledgement and
       });
     });
     assert.equal(await prepareContentRewardsForm(page, input), "form_prepared");
-    assert.equal(await page.locator("textarea").inputValue(), input.reel_url);
-    assert.equal(await page.locator("input").isChecked(), false);
+    assert.equal(await page.getByRole("textbox", { name: "Clip link" }).inputValue(), input.reel_url);
+    assert.equal(await page.getByRole("checkbox").isChecked(), false);
     assert.equal(await page.locator("body").getAttribute("data-submitted"), null);
   } finally {
     await browser.close();
