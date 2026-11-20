@@ -2,3 +2,6 @@ fastapi==0.165.0
 python-multipart==0.0.34
 streamlink==8.6.3
 uvicorn==0.54.0
+ai-edge-litert==2.2.0
+numpy==2.2.6
+websocket-client==1.9.2

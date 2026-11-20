@@ -1,5 +1,6 @@
 import re
 import subprocess
+from collections import Counter
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,7 +19,23 @@ def test_private_capture_flow(monkeypatch):
     started = Event()
     release = Event()
 
-    def finish_capture(url, output):
+    class FakeChat:
+        def __init__(self, channel):
+            assert channel == "clipcasttest"
+            self.connected = True
+            self.counts = Counter({10: 21})
+            self.laughter = Counter({10: 9})
+
+        def start(self):
+            pass
+
+        def close(self):
+            pass
+
+        def progress(self, seconds):
+            pass
+
+    def finish_capture(url, output, on_progress):
         assert url == "https://www.twitch.tv/clipcasttest"
         started.set()
         assert release.wait(3)
@@ -26,6 +43,12 @@ def test_private_capture_flow(monkeypatch):
         return 601.0
 
     monkeypatch.setattr(app, "capture_mp4", finish_capture)
+    monkeypatch.setattr(app, "ChatMonitor", FakeChat)
+    monkeypatch.setattr(app, "detect_laughter", lambda *_: {51: 0.88})
+    monkeypatch.setattr(
+        app, "cut_clip", lambda _, output, clip: output.write_bytes(b"clip")
+    )
+
     with TestClient(app.create_app("clipcasttest", PASSWORD)) as client:
         assert client.get("/healthz").status_code == 200
         assert client.get("/").status_code == 401
@@ -59,7 +82,10 @@ def test_private_capture_flow(monkeypatch):
         )
         try:
             assert started.wait(2)
-            assert "Recording now" in client.get("/", auth=AUTH).text
+            assert (
+                "Recording the stream and watching chat"
+                in client.get("/", auth=AUTH).text
+            )
             assert client.post("/record", data=permitted, auth=AUTH).status_code == 409
         finally:
             release.set()
@@ -70,6 +96,13 @@ def test_private_capture_flow(monkeypatch):
             and monotonic() < deadline
         ):
             sleep(0.02)
+        final = client.get("/", auth=AUTH)
+        assert "Best bits" in final.text
+        assert "Chat spike" in final.text
+        assert "Laughter in stream audio" in final.text
+        assert client.get("/clips/1").status_code == 401
+        assert client.get("/clips/1", auth=AUTH).content == b"clip"
+        assert client.get("/clips/2", auth=AUTH).status_code == 404
         result = client.get("/download", auth=AUTH)
         assert result.status_code == 200
         assert result.content == b"synthetic file"
@@ -78,6 +111,7 @@ def test_private_capture_flow(monkeypatch):
             client.post("/clear", data={"token": token}, auth=AUTH).status_code == 200
         )
         assert client.get("/download", auth=AUTH).status_code == 404
+        assert client.get("/clips/1", auth=AUTH).status_code == 404
 
 
 def test_streamlink_and_ffmpeg_create_ten_minute_mp4(tmp_path: Path):
@@ -152,3 +186,33 @@ def test_streamlink_and_ffmpeg_create_ten_minute_mp4(tmp_path: Path):
         timeout=10,
     )
     assert set(probe.stdout.splitlines()) == {"h264", "aac"}
+
+
+def test_chat_messages_map_to_capture_and_count_laughter():
+    from highlights import ChatMonitor
+
+    chat = ChatMonitor("CLIX")
+    chat.progress(31)
+    now = monotonic()
+    chat.consume("@a=1 :person!p@tmi.twitch.tv PRIVMSG #clix :LMAO 😂", now)
+    chat.consume(":person!p@tmi.twitch.tv PRIVMSG #clix :normal", now)
+    chat.consume(":person!p@tmi.twitch.tv PRIVMSG #other :LMAO", now)
+    assert chat.counts == {5: 2}
+    assert chat.laughter == {5: 1}
+
+
+def test_ranked_clips_merge_similar_windows_and_skip_quiet_content():
+    from highlights import select_clips
+
+    assert not select_clips(600, Counter(), Counter(), {})
+    clips = select_clips(
+        600,
+        Counter({4: 12, 5: 14, 19: 35}),
+        Counter({19: 11}),
+        {22: 0.8, 94: 0.98},
+    )
+    assert len(clips) == 2
+    assert clips[0].start <= 94 < clips[0].end
+    assert clips[1].start <= 22 < clips[1].end
+    assert "Laughter in stream audio" in clips[0].reasons
+    assert "Laugh reactions in chat" in clips[0].reasons

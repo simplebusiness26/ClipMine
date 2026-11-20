@@ -9,20 +9,35 @@
    `clipcast-streamlink-pilot` on the **Free** plan, then deploy.
 4. Open the service and copy the generated `RECORDER_PASSWORD` from its **Environment** tab.
    Open its `onrender.com` URL in your phone's browser and sign in as `recorder` with that password.
-5. While the channel is live, confirm permission and tap **Record up to 10 minutes**.
-   When ready, tap **Download MP4** and import the file into ClipMine. Delete the capture after download.
+5. While the channel is live, confirm permission and tap **Record and find clips**.
+   Keep the page open while the recorder captures up to ten minutes and checks for highlights.
+6. Under **Best bits**, tap **Download clip** for each clip you want. The finished
+   clips are MP4 files at the captured orientation, ready for your edit or template.
+   **Original recording** is available if you want the source file.
 
 [Render dashboard](https://dashboard.render.com/) · [Render free compute limits](https://render.com/docs/free)
 
+## What the recorder uses
+
+The recorder reads the channel's public Twitch chat while Streamlink captures video.
+It counts messages and laugh reactions in short buckets and estimates their times
+against FFmpeg's media clock. A local YAMNet model looks for audible laughter
+after the capture. The recorder ranks matching signals and cuts up to three
+non-overlapping clips of about 35 seconds. It labels why it picked them and
+can return no clips when a recording has no strong highlight signals. It
+stores only chat counts, never chat text or user names.
+
 ## Pilot limits
 
-Each run starts with an explicit browser action. Render uses temporary storage and can sleep
-after idle periods or restart. Download the recording promptly. A stream that goes offline
-or a storage limit can end a capture early. The UI reports a short capture when it has a
-playable MP4, or an error if it has none. Keep the generated password private.
+Each run begins with a browser tap. An offline channel or file size limit may
+end a capture early. If chat is unreachable or audio analysis fails, the page
+shows the affected signal and uses the available signal to make clips. Twitch
+chat and video delivery can have different latencies, so check the cut before use.
 
-Live alerts, Twitch chat and laughter ranking are future milestones. The pilot
-hands off through the existing ClipMine MP4 upload path.
+Render can clear media after inactivity, restart, or redeployment. Download
+the clips you want before tapping **Clear and record again**. Download any
+existing capture before deploying an update. Capture downloads remain private
+to the recorder login.
 
 ## Run tests
 

@@ -10,15 +10,17 @@ one permissioned Twitch capture from a phone. The operator sets one channel
 in deployment configuration and explicitly starts each job. Capture is
 bounded to ten minutes and one temporary MP4 at a time.
 
-The result enters ClipMine via its existing MP4 upload boundary.
-The pilot owns no Niches or social credentials. Render uses disposable disk
-space and the operator downloads or removes the media via an authenticated page.
+The recorder counts messages and laughter reactions in read-only public Twitch
+chat, and scores audible laughter with a local model. FFmpeg cuts the highest
+ranked moments as private short MP4s. The operator downloads clips or original
+media from the recorder page. The recorder owns no Niches or social credentials.
+Render uses disposable disk space.
 
 ## Consequences
 
-A Render restart or idle shutdown can erase the current capture. Cloudflare
-triggers and signal ranking require further development and are evaluated only
-after the pilot is verified with permissioned live video. Existing ClipMine rights,
-media privacy and publishing approval requirements apply.
+A Render restart, redeploy or idle shutdown can erase the current capture.
+Chat-to-video timing is estimated and should be confirmed in the exported
+clips. Starts are manual. The operator must already have the rights to
+record. The recorder does not post to connected platforms.
 
 [Deployment instructions](../../ops/streamlink-pilot/README.md)
