@@ -5,26 +5,24 @@
 
 ## Decision
 
-Use a private-operator web service on Render Free. The operator sets a default
-Twitch handle in deployment configuration and explicitly starts captures from
-the page. A run per channel is bounded to ten minutes and up to 1080p. The
-recorder permits two simultaneous source captures and up to three retained
-recordings. Each capture has separate chat counts, findings and download paths.
+Use one private-operator web service on Render Free. An operator chooses up to
+five channels and starts a capture of up to ten minutes for each. Streamlink
+shares the Python process with separate HTTP sessions and bounded HLS buffers.
+FFmpeg stream-copies audio and video. Each recording has independent chat counts,
+audio analysis, highlights and download paths. Up to six recordings can be
+retained on temporary disk when sufficient space is available.
 
-The recorder counts activity and laugh reactions in read-only public Twitch
-chat, and scores audible laughter locally. FFmpeg cuts the highest ranked
-moments as private short MP4s. The operator may also render any selected clip
-with the standing Scoop template. The approved voice is prepared as short
-tracks for the bundled scripts, keeping inference memory and service costs
-within the free deployment constraints. The recorder serializes audio analysis
-and branded encoding and shows when either is waiting or working.
+The current branded export uses the user's ClipCast logo badge, hook and caption
+treatment. Captions come from local English transcription or operator-provided
+narration. The original audio stays in place. Character art and speech are
+paused. The original clip and branded version are both downloadable.
 
 ## Consequences
 
-Render uses disposable disk space. A restart, redeploy or idle shutdown can
-erase the current captures. Chat-to-video timing is approximate. An operator
-must already hold the rights to record and edit the stream. Original
-highlights and portrait renders are available through the recorder login.
-The service owns no Niches or social credentials.
+The recorder serializes transcription, laughter analysis and branding on the
+512 MB Free instance. Render can erase local media after a restart, redeploy or
+idle shutdown. Chat-to-video timing and automatic captions are approximate.
+The operator must have the right to capture and edit the source. No social
+credentials or publishing actions are included.
 
 [Deployment instructions](../../ops/streamlink-pilot/README.md)

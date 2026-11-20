@@ -15,8 +15,8 @@ PASSWORD = "synthetic-test-password-only"
 AUTH = ("recorder", PASSWORD)
 
 
-def test_private_parallel_captures_and_scoop_export(monkeypatch):
-    started = {"clix": Event(), "second": Event()}
+def test_five_parallel_captures_and_private_template_export(monkeypatch):
+    started = {name: Event() for name in ("clix", "second", "third", "fourth", "fifth")}
     release = Event()
 
     class FakeChat:
@@ -44,11 +44,13 @@ def test_private_parallel_captures_and_scoop_export(monkeypatch):
         output.write_bytes(channel.encode())
         return app.Capture(601, 1080)
 
-    def finish_scoop(source, output, script, crop):
+    def finish_template(source, output, hook, narration, crop):
         assert source.read_bytes() == b"clix highlight"
-        assert script == "chat-laugh"
+        assert hook == "ROLL THAT BACK"
+        assert narration == "Four bikes.\nOne late arrival."
         assert crop == "right"
         output.write_bytes(b"branded clip")
+        return "Written narration included."
 
     monkeypatch.setattr(app, "capture_mp4", finish_capture)
     monkeypatch.setattr(app, "ChatMonitor", FakeChat)
@@ -60,10 +62,13 @@ def test_private_parallel_captures_and_scoop_export(monkeypatch):
             source.read_bytes() + b" highlight"
         ),
     )
-    monkeypatch.setattr(app, "render_scoop", finish_scoop)
+    monkeypatch.setattr(app, "render_template", finish_template)
+    monkeypatch.setattr(
+        app, "disk_usage", lambda _: type("Disk", (), {"free": 8 * 1024**3})()
+    )
 
     with TestClient(app.create_app("clix", PASSWORD)) as client:
-        assert client.get("/healthz").json()["capture_slots"] == 2
+        assert client.get("/healthz").json()["capture_slots"] == 5
         assert client.get("/").status_code == 401
         assert client.get("/", auth=("recorder", "wrong")).status_code == 401
 
@@ -75,10 +80,13 @@ def test_private_parallel_captures_and_scoop_export(monkeypatch):
             "token": token,
             "confirm": "yes",
             "quality": "1080p",
-            "channels": "@Clix, second",
+            "channels": "@Clix, second, third, fourth, fifth",
         }
         assert client.post("/record", data=permitted).status_code == 401
-        for invalid in ("https://example.test", "clix, second, third"):
+        for invalid in (
+            "https://example.test",
+            "clix, second, third, fourth, fifth, sixth",
+        ):
             assert client.post(
                 "/record", data={**permitted, "channels": invalid}, auth=AUTH
             ).status_code in (400, 409)
@@ -96,9 +104,8 @@ def test_private_parallel_captures_and_scoop_export(monkeypatch):
                 ).status_code
                 == 303
             )
-            assert started["clix"].wait(2)
-            assert started["second"].wait(2)
-            assert "2 of 2 recording slots in use" in client.get("/", auth=AUTH).text
+            assert all(event.wait(2) for event in started.values())
+            assert "5 of 5 recording slots in use" in client.get("/", auth=AUTH).text
             assert client.post("/record", data=permitted, auth=AUTH).status_code == 409
         finally:
             release.set()
@@ -106,25 +113,34 @@ def test_private_parallel_captures_and_scoop_export(monkeypatch):
         deadline = monotonic() + 2
         while monotonic() < deadline:
             result = client.get("/", auth=AUTH).text
-            if result.count("Capture ready") == 2:
+            if result.count("Capture ready") == 5:
                 break
             sleep(0.02)
-        assert result.count("1080p source") == 2
-        assert result.count("Make Scoop version") == 2
+        assert result.count("1080p source") == 5
+        assert result.count("Make ClipCast version") == 5
         links = re.findall(r'href="(/jobs/[^/]+/clips/1)"', result)
-        assert len(links) == 2
+        assert len(links) == 5
         clix = next(
             link
             for link in links
             if client.get(link, auth=AUTH).content.startswith(b"clix")
         )
-        second = next(link for link in links if link != clix)
+        second = next(
+            link
+            for link in links
+            if client.get(link, auth=AUTH).content == b"second highlight"
+        )
         assert client.get(clix).status_code == 401
-        assert client.get(f"{clix}/scoop", auth=AUTH).status_code == 404
+        assert client.get(f"{clix}/template", auth=AUTH).status_code == 404
         assert (
             client.post(
-                f"{clix}/scoop",
-                data={"token": token, "script": "chat-laugh", "crop": "right"},
+                f"{clix}/template",
+                data={
+                    "token": token,
+                    "hook": "ROLL THAT BACK",
+                    "narration": "Four bikes.\nOne late arrival.",
+                    "crop": "right",
+                },
                 auth=AUTH,
                 follow_redirects=False,
             ).status_code
@@ -133,12 +149,12 @@ def test_private_parallel_captures_and_scoop_export(monkeypatch):
 
         deadline = monotonic() + 2
         while monotonic() < deadline:
-            branded = client.get(f"{clix}/scoop", auth=AUTH)
+            branded = client.get(f"{clix}/template", auth=AUTH)
             if branded.status_code == 200:
                 break
             sleep(0.02)
         assert branded.content == b"branded clip"
-        assert client.get(f"{clix}/scoop").status_code == 401
+        assert client.get(f"{clix}/template").status_code == 401
         assert client.get(clix, auth=AUTH).content == b"clix highlight"
         assert client.get(second, auth=AUTH).content == b"second highlight"
         root = clix.rsplit("/clips", 1)[0]

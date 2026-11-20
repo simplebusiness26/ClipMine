@@ -6,3 +6,4 @@ ai-edge-litert==2.2.0
 numpy==2.2.6
 websocket-client==1.9.2
 Pillow==13.0.0
+pywhispercpp==1.5.1

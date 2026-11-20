@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from shutil import rmtree
+from shutil import copyfileobj, disk_usage, rmtree
 from tempfile import TemporaryDirectory
 from threading import Lock, Thread
 from typing import Annotated, BinaryIO
@@ -19,9 +19,19 @@ from zipfile import BadZipFile
 from fastapi import Depends, FastAPI, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from streamlink import Streamlink
+from streamlink.exceptions import StreamlinkError
+from streamlink.options import Options
 
+from clipcast_template.render import (
+    CROP,
+    DEFAULT_HOOK,
+    HOOK_CHOICES,
+    HOOK_LIMIT,
+    NARRATION_LIMIT,
+    render_template,
+)
 from highlights import ChatMonitor, Clip, cut_clip, detect_laughter, select_clips
-from scoop.render import CROP, SCRIPT_CHOICES, choose_script, render_scoop
 
 CAPTURE_SECONDS = 600
 MIB = 1024 * 1024
@@ -55,22 +65,6 @@ def capture_mp4(
     max_bytes: int,
 ) -> Capture:
     """Capture one HLS window and verify its duration and resolution."""
-    streamlink = [
-        "streamlink",
-        "--stdout",
-        "--stream-types",
-        "hls",
-        "--twitch-supported-codecs",
-        "h264",
-        "--http-timeout",
-        "15",
-        "--stream-timeout",
-        "20",
-        "--stream-segmented-duration",
-        str(seconds),
-        url,
-        quality,
-    ]
     ffmpeg = [
         "ffmpeg",
         "-nostdin",
@@ -80,6 +74,8 @@ def capture_mp4(
         "-progress",
         "pipe:1",
         "-nostats",
+        "-threads",
+        "1",
         "-i",
         "pipe:0",
         "-map",
@@ -96,44 +92,34 @@ def capture_mp4(
         "+faststart",
         str(output),
     ]
-    # The FFmpeg reader can finish first when a duration or size limit is reached.
     with subprocess.Popen(
-        streamlink,
+        ffmpeg,
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
-    ) as source:
+    ) as encoder:
+        assert encoder.stdin is not None and encoder.stdout is not None
+        feeder = Thread(
+            target=feed_stream, args=(url, quality, seconds, encoder.stdin), daemon=True
+        )
+        progress = Thread(
+            target=report_progress,
+            args=(encoder.stdout, on_progress),
+            daemon=True,
+        )
+        feeder.start()
+        progress.start()
         try:
-            with subprocess.Popen(
-                ffmpeg,
-                stdin=source.stdout,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-            ) as encoder:
-                source.stdout.close()
-                progress = Thread(
-                    target=report_progress,
-                    args=(encoder.stdout, on_progress),
-                    daemon=True,
-                )
-                progress.start()
-                try:
-                    code = encoder.wait(timeout=seconds + 65)
-                except subprocess.TimeoutExpired:
-                    encoder.kill()
-                    encoder.wait()
-                    raise
-                finally:
-                    progress.join()
-                if code:
-                    raise subprocess.CalledProcessError(code, "ffmpeg")
+            code = encoder.wait(timeout=seconds + 65)
+        except subprocess.TimeoutExpired:
+            encoder.kill()
+            encoder.wait()
+            raise
         finally:
-            if source.poll() is None:
-                source.terminate()
-                try:
-                    source.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    source.kill()
+            feeder.join(timeout=25)
+            progress.join()
+        if code:
+            raise subprocess.CalledProcessError(code, "ffmpeg")
 
     if output.stat().st_size > max_bytes:
         raise ValueError("Capture exceeds its storage limit")
@@ -164,11 +150,45 @@ def capture_mp4(
     return Capture(duration, height)
 
 
+def feed_stream(url: str, quality: str, seconds: int, sink: BinaryIO) -> None:
+    # Share the Streamlink library across recording jobs. Each channel still gets
+    # its own HTTP session, Twitch selection and bounded HLS ring buffer.
+    try:
+        with sink:
+            session = Streamlink(
+                {
+                    "http-timeout": 15.0,
+                    "stream-timeout": 20.0,
+                    "stream-segmented-duration": float(seconds),
+                    "ringbuffer-size": 4 * MIB,
+                    "stream-segment-threads": 1,
+                }
+            )
+            with session.http:
+                streams = session.streams(
+                    url,
+                    options=Options({"supported-codecs": ["h264"]}),
+                    stream_types=["hls"],
+                )
+                available = next(
+                    (streams[name] for name in quality.split(",") if name in streams),
+                    None,
+                )
+                if available is None:
+                    raise ValueError("No requested HLS video quality is available")
+                with available.open() as stream:
+                    copyfileobj(stream, sink, length=65536)
+    except BrokenPipeError:
+        return  # FFmpeg completed the duration or size limit.
+    except (OSError, ValueError, StreamlinkError) as error:
+        LOGGER.info("Stream ended (%s)", type(error).__name__)
+
+
 def report_progress(
-    lines: Iterator[str], callback: Callable[[float], None] | None
+    lines: Iterator[bytes], callback: Callable[[float], None] | None
 ) -> None:
     for line in lines:
-        key, _, value = line.strip().partition("=")
+        key, _, value = line.decode("ascii", "replace").strip().partition("=")
         if callback and key == "out_time_us" and value.lstrip("-").isdigit():
             callback(int(value) / 1_000_000)
 
@@ -179,8 +199,9 @@ def download_chunks(file: BinaryIO) -> Iterator[bytes]:
             yield chunk
 
 
-MAX_ACTIVE = 2
-MAX_RUNS = 3
+MAX_ACTIVE = 5
+MAX_RUNS = 6
+CAPTURE_HEADROOM = 192 * MIB
 HANDLE = re.compile(r"[a-z0-9_]{3,25}", re.ASCII)
 BUSY = {"capturing", "analysing"}
 
@@ -190,8 +211,10 @@ class Highlight:
     clip: Clip
     path: Path
     phase: str = ""
-    script: str = ""
+    hook: str = DEFAULT_HOOK
+    narration: str = ""
     crop: str = "center"
+    caption_status: str = ""
 
 
 @dataclass
@@ -199,6 +222,7 @@ class Recording:
     key: str
     channel: str
     path: Path
+    byte_cap: int
     phase: str = "capturing"
     capture: Capture | None = None
     highlights: list[Highlight] = field(default_factory=list)
@@ -225,7 +249,7 @@ def create_app(
 ) -> FastAPI:
     default_channels = channels_from_input(channel)
     if len(default_channels) > MAX_ACTIVE:
-        raise ValueError("TWITCH_CHANNEL can prefill up to two usernames")
+        raise ValueError("TWITCH_CHANNEL can prefill up to five usernames")
     if len(password) < 20 or not password.isascii():
         raise ValueError("RECORDER_PASSWORD must be at least 20 ASCII characters")
 
@@ -326,9 +350,7 @@ def create_app(
                     output.unlink(missing_ok=True)
                     LOGGER.warning("Highlight cut failed (%s)", type(error).__name__)
                     continue
-                results.append(
-                    Highlight(clip, output, script=choose_script(clip.reasons))
-                )
+                results.append(Highlight(clip, output))
             if not results and candidates:
                 audio_status += (
                     " Clip export failed. The original recording is still available."
@@ -339,21 +361,37 @@ def create_app(
             job.signals = f"{chat_status} {audio_status}"
             job.phase = "ready"
 
-    def run_scoop(highlight: Highlight, output: Path, script: str, crop: str) -> None:
+    def run_template(highlight: Highlight, output: Path) -> None:
         phase = "ready"
+        caption_status = ""
         candidate = output.with_suffix(".pending.mp4")
         try:
             with processor:
                 with state:
                     highlight.phase = "rendering"
-                render_scoop(highlight.path, candidate, script, crop)
+                caption_status = render_template(
+                    highlight.path,
+                    candidate,
+                    highlight.hook,
+                    highlight.narration,
+                    highlight.crop,
+                )
                 candidate.replace(output)
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
             candidate.unlink(missing_ok=True)
-            LOGGER.warning("Scoop export failed (%s)", type(error).__name__)
+            LOGGER.warning("Template export failed (%s)", type(error).__name__)
             phase = "failed"
         with state:
+            if phase == "ready":
+                highlight.caption_status = caption_status
             highlight.phase = phase
+
+    def storage_reserved(job: Recording) -> int:
+        try:
+            size = job.path.stat().st_size
+        except FileNotFoundError:
+            size = 0
+        return max(0, job.byte_cap - size) + CAPTURE_HEADROOM
 
     def get_job(key: str) -> Recording:
         job = jobs.get(key)
@@ -368,8 +406,8 @@ def create_app(
             raise HTTPException(status_code=404, detail="This clip is unavailable.")
         return job.highlights[rank - 1]
 
-    def scoop_path(highlight: Highlight) -> Path:
-        return highlight.path.with_name(f"scoop-{highlight.path.name}")
+    def template_path(highlight: Highlight) -> Path:
+        return highlight.path.with_name(f"clipcast-{highlight.path.name}")
 
     @app.get("/healthz")
     def health() -> dict[str, str | int]:
@@ -378,7 +416,7 @@ def create_app(
             "mode": "highlights",
             "quality_options": "hd",
             "capture_slots": MAX_ACTIVE,
-            "scoop": "standing",
+            "template": "text-only",
         }
 
     hidden = f'<input type="hidden" name="token" value="{csrf}">'
@@ -406,37 +444,43 @@ def create_app(
             reasons = " · ".join(clip.reasons)
             stamp = f"{clip.start // 60}:{clip.start % 60:02d}"
             base = f"/jobs/{job.key}/clips/{rank}"
-            scoop_status = {
-                "queued": '<p role="status">Scoop is waiting to render.</p>',
-                "rendering": '<p role="status">Making the Scoop version…</p>',
-                "failed": "<p>Scoop export failed. Your original highlight is ready.</p>",
+            export_status = {
+                "queued": '<p role="status">Waiting to render the ClipCast version.</p>',
+                "rendering": '<p role="status">Making the ClipCast version…</p>',
+                "failed": "<p>The template export failed. Your highlight is still available.</p>",
             }.get(highlight.phase, "")
-            has_scoop = scoop_path(highlight).is_file()
-            if has_scoop:
-                scoop_status += f'<a href="{base}/scoop">Download Scoop MP4</a>'
-            scoop_form = ""
+            has_export = template_path(highlight).is_file()
+            if has_export:
+                export_status += f'<a href="{base}/template">Download ClipCast Reel</a>'
+                if highlight.caption_status:
+                    export_status += f"<p>{html.escape(highlight.caption_status)}</p>"
+            template_form = ""
             if highlight.phase not in ("queued", "rendering"):
-                scripts = []
-                for key, (name, hook, punchline) in SCRIPT_CHOICES.items():
-                    selected = " checked" if key == highlight.script else ""
-                    scripts.append(
-                        f'<label><input type="radio" name="script" value="{key}"{selected}> '
-                        f"<strong>{html.escape(name)}</strong><small>{html.escape(hook)} "
-                        f"{html.escape(punchline)}</small></label>"
-                    )
                 framing = []
-                for key, name in (
+                for key, title in (
                     ("center", "Centre"),
                     ("left", "Left"),
                     ("right", "Right"),
                 ):
                     selected = " selected" if key == highlight.crop else ""
-                    framing.append(f'<option value="{key}"{selected}>{name}</option>')
-                action = "Redo Scoop version" if has_scoop else "Make Scoop version"
-                scoop_form = (
-                    f'<form method="post" action="{base}/scoop">{hidden}'
-                    "<details><summary>Scoop lines and framing</summary>"
-                    f"{''.join(scripts)}"
+                    framing.append(f'<option value="{key}"{selected}>{title}</option>')
+                options = "".join(
+                    f'<option value="{html.escape(title, quote=True)}">'
+                    for title in HOOK_CHOICES
+                )
+                action = (
+                    "Redo ClipCast version" if has_export else "Make ClipCast version"
+                )
+                template_form = (
+                    f'<form method="post" action="{base}/template">{hidden}'
+                    "<details><summary>Hook, written narration and framing</summary>"
+                    f'<label>Top hook <input type="text" name="hook" list="hooks-{job.key}-{rank}" '
+                    f'maxlength="{HOOK_LIMIT}" value="{html.escape(highlight.hook, quote=True)}"></label>'
+                    f'<datalist id="hooks-{job.key}-{rank}">{options}</datalist>'
+                    f'<label>Written narration <textarea name="narration" rows="2" '
+                    f'maxlength="{NARRATION_LIMIT}" placeholder="Four bikes.&#10;One late arrival.">'
+                    f"{html.escape(highlight.narration)}</textarea></label>"
+                    "<small>Leave blank for timed English captions from the clip audio.</small>"
                     '<label>Gameplay framing <select name="crop">'
                     f"{''.join(framing)}</select></label></details>"
                     f'<button type="submit">{action}</button></form>'
@@ -444,7 +488,7 @@ def create_app(
             cards.append(
                 f"<li><strong>Clip {rank} · {stamp}</strong><p>{html.escape(reasons)}</p>"
                 f'<a class="secondary" href="{base}">Download highlight</a>'
-                f"{scoop_status}{scoop_form}</li>"
+                f"{export_status}{template_form}</li>"
             )
         result = (
             f"<h3>Best bits</h3><ol>{''.join(cards)}</ol>"
@@ -499,9 +543,9 @@ def create_app(
             "font-weight:650;display:inline-flex;align-items:center;text-decoration:none;"
             "box-sizing:border-box;margin:.3rem .25rem .3rem 0}button:disabled{opacity:.5}"
             ".secondary{background:#49324d;color:#fff4ed}label,small{display:block}"
-            "input[type=text],select{font:inherit;padding:.48rem;margin:.15rem 0 .6rem;"
+            "input[type=text],textarea,select{font:inherit;padding:.48rem;margin:.15rem 0 .6rem;"
             "border:1px solid #896c89;border-radius:.35rem;max-width:100%;box-sizing:border-box}"
-            "input[type=text]{display:block;width:100%}input[type=checkbox],input[type=radio]{"
+            "input[type=text],textarea{display:block;width:100%}input[type=checkbox],input[type=radio]{"
             "accent-color:#ffc5a6}ol{list-style:none;padding:0;margin:0}li{padding:.7rem 0;"
             "border-top:1px solid #513951}details{margin:.6rem 0}details label{margin:.3rem 0}"
             "details small{padding-left:1.5rem}summary{cursor:pointer;color:#ffd2bf}"
@@ -511,9 +555,9 @@ def create_app(
             f'<form method="post" action="/record">{hidden}'
             '<label for="channels">Twitch channels</label>'
             f'<input id="channels" name="channels" type="text" value="{form_channels}" '
-            'placeholder="clix, secondchannel" maxlength="64" autocomplete="off" '
+            'placeholder="clix, secondchannel" maxlength="160" autocomplete="off" '
             'autocapitalize="none" spellcheck="false" required>'
-            "<small>Enter up to two live usernames, separated by a comma.</small>"
+            "<small>Enter up to five live usernames, separated by a comma.</small>"
             f'<label for="quality">Recording quality</label><select id="quality" '
             f'name="quality">{options}</select>'
             '<label><input type="checkbox" name="confirm" value="yes" required> '
@@ -534,7 +578,7 @@ def create_app(
         token: str = Form(),
         confirm: str = Form(""),
         quality: str = Form(DEFAULT_QUALITY),
-        channels: str = Form("", max_length=64),
+        channels: str = Form("", max_length=160),
     ):
         nonlocal selected_channels, selected_quality
         authorize_form(token)
@@ -548,7 +592,14 @@ def create_app(
             return show_home(str(error), 400)
 
         error_message = ""
+        _, byte_cap = QUALITY_OPTIONS[quality]
         with state:
+            remaining = sum(
+                storage_reserved(job)
+                for job in jobs.values()
+                if job.phase == "capturing"
+            )
+            needed = remaining + len(requested) * (byte_cap + CAPTURE_HEADROOM)
             in_progress = {job.channel for job in jobs.values() if job.phase in BUSY}
             if in_progress.intersection(requested):
                 error_message = (
@@ -556,46 +607,48 @@ def create_app(
                 )
             elif len(requested) + len(in_progress) > MAX_ACTIVE:
                 error_message = (
-                    "Two recordings can run at a time. Try again when a slot is free."
+                    "Five recordings can run at a time. Try again when a slot is free."
                 )
             elif len(requested) + len(jobs) > MAX_RUNS:
                 error_message = "Download and clear a finished recording to make room."
+            elif disk_usage(work.name).free < needed:
+                error_message = "There is not enough temporary storage. Save and clear an older recording."
             else:
                 selected_channels, selected_quality = requested, quality
                 for name in requested:
                     key = secrets.token_hex(8)
                     folder = Path(work.name) / key
                     folder.mkdir()
-                    job = Recording(key, name, folder / "capture.mp4")
+                    job = Recording(key, name, folder / "capture.mp4", byte_cap)
                     jobs[key] = job
                     Thread(target=run_capture, args=(job, quality), daemon=True).start()
         if error_message:
             return show_home(error_message, 409)
         return RedirectResponse("/", status_code=303)
 
-    @app.post("/jobs/{key}/clips/{rank}/scoop", dependencies=[Depends(authenticate)])
-    def make_scoop(
+    @app.post("/jobs/{key}/clips/{rank}/template", dependencies=[Depends(authenticate)])
+    def make_template(
         key: str,
         rank: int,
         token: str = Form(),
-        script: str = Form(""),
+        hook: str = Form("", max_length=HOOK_LIMIT),
+        narration: str = Form("", max_length=NARRATION_LIMIT),
         crop: str = Form("center"),
     ):
         authorize_form(token)
-        if (script and script not in SCRIPT_CHOICES) or crop not in CROP:
-            raise HTTPException(
-                status_code=400, detail="Choose a Scoop script and framing."
-            )
+        if crop not in CROP:
+            return show_home("Choose left, centre or right framing.", 400)
         with state:
             item = get_highlight(get_job(key), rank)
             if item.phase not in ("queued", "rendering"):
-                item.script = script or item.script
+                item.hook = " ".join(hook.split()).strip() or DEFAULT_HOOK
+                item.narration = "\n".join(
+                    " ".join(line.split()) for line in narration.splitlines()
+                ).strip()
                 item.crop = crop
                 item.phase = "queued"
                 Thread(
-                    target=run_scoop,
-                    args=(item, scoop_path(item), item.script, crop),
-                    daemon=True,
+                    target=run_template, args=(item, template_path(item)), daemon=True
                 ).start()
         return RedirectResponse("/#recordings", status_code=303)
 
@@ -629,17 +682,17 @@ def create_app(
                 item.path, f"{job.channel}-{job.key}-highlight-{rank}.mp4"
             )
 
-    @app.get("/jobs/{key}/clips/{rank}/scoop", dependencies=[Depends(authenticate)])
-    def download_scoop(key: str, rank: int) -> StreamingResponse:
+    @app.get("/jobs/{key}/clips/{rank}/template", dependencies=[Depends(authenticate)])
+    def download_template(key: str, rank: int) -> StreamingResponse:
         with state:
             job = get_job(key)
             item = get_highlight(job, rank)
-            path = scoop_path(item)
+            path = template_path(item)
             if not path.is_file():
                 raise HTTPException(
-                    status_code=404, detail="The Scoop version is not ready."
+                    status_code=404, detail="The ClipCast version is not ready."
                 )
-            return media_response(path, f"{job.channel}-{job.key}-scoop-{rank}.mp4")
+            return media_response(path, f"{job.channel}-{job.key}-clipcast-{rank}.mp4")
 
     @app.post("/jobs/{key}/clear", dependencies=[Depends(authenticate)])
     def clear(key: str, token: str = Form()) -> RedirectResponse:
