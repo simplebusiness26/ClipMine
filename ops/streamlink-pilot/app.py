@@ -25,11 +25,10 @@ from streamlink.options import Options
 
 from clipcast_template.render import (
     CROP,
-    DEFAULT_HOOK,
-    HOOK_CHOICES,
     HOOK_LIMIT,
     NARRATION_LIMIT,
     render_template,
+    suggest_template_hook,
 )
 from highlights import ChatMonitor, Clip, cut_clip, detect_laughter, select_clips
 
@@ -204,6 +203,7 @@ MAX_RUNS = 6
 CAPTURE_HEADROOM = 192 * MIB
 HANDLE = re.compile(r"[a-z0-9_]{3,25}", re.ASCII)
 BUSY = {"capturing", "analysing"}
+TEMPLATE_BUSY = {"queued", "rendering", "hook_queued", "suggesting"}
 
 
 @dataclass
@@ -211,7 +211,8 @@ class Highlight:
     clip: Clip
     path: Path
     phase: str = ""
-    hook: str = DEFAULT_HOOK
+    hook: str = ""
+    hook_status: str = ""
     narration: str = ""
     crop: str = "center"
     caption_status: str = ""
@@ -363,13 +364,12 @@ def create_app(
 
     def run_template(highlight: Highlight, output: Path) -> None:
         phase = "ready"
-        caption_status = ""
         candidate = output.with_suffix(".pending.mp4")
         try:
             with processor:
                 with state:
                     highlight.phase = "rendering"
-                caption_status = render_template(
+                result = render_template(
                     highlight.path,
                     candidate,
                     highlight.hook,
@@ -383,8 +383,41 @@ def create_app(
             phase = "failed"
         with state:
             if phase == "ready":
-                highlight.caption_status = caption_status
+                highlight.caption_status = result.caption_status
+                if not highlight.hook:
+                    highlight.hook = result.hook.text
+                    highlight.hook_status = (
+                        f"Hook suggested from {result.hook.source}."
+                        if result.hook.text
+                        else "No clear hook found. You can add one."
+                    )
             highlight.phase = phase
+
+    def run_hook(highlight: Highlight) -> None:
+        try:
+            with processor:
+                with state:
+                    highlight.phase = "suggesting"
+                suggestion = suggest_template_hook(
+                    highlight.path, highlight.narration, highlight.crop
+                )
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+            LOGGER.warning("Hook suggestion failed (%s)", type(error).__name__)
+            with state:
+                highlight.hook_status = (
+                    "Hook analysis was unavailable. You can add your own."
+                )
+        else:
+            with state:
+                highlight.hook = suggestion.text
+                highlight.hook_status = (
+                    f"Hook suggested from {suggestion.source}."
+                    if suggestion.text
+                    else "No clear hook found. You can add one."
+                )
+        finally:
+            with state:
+                highlight.phase = ""
 
     def storage_reserved(job: Recording) -> int:
         try:
@@ -417,6 +450,7 @@ def create_app(
             "quality_options": "hd",
             "capture_slots": MAX_ACTIVE,
             "template": "text-only",
+            "hooks": "clip-aware",
         }
 
     hidden = f'<input type="hidden" name="token" value="{csrf}">'
@@ -448,6 +482,8 @@ def create_app(
                 "queued": '<p role="status">Waiting to render the ClipCast version.</p>',
                 "rendering": '<p role="status">Making the ClipCast version…</p>',
                 "failed": "<p>The template export failed. Your highlight is still available.</p>",
+                "hook_queued": '<p role="status">Waiting to look at the clip.</p>',
+                "suggesting": '<p role="status">Looking for a clip-specific hook…</p>',
             }.get(highlight.phase, "")
             has_export = template_path(highlight).is_file()
             if has_export:
@@ -455,7 +491,7 @@ def create_app(
                 if highlight.caption_status:
                     export_status += f"<p>{html.escape(highlight.caption_status)}</p>"
             template_form = ""
-            if highlight.phase not in ("queued", "rendering"):
+            if highlight.phase not in TEMPLATE_BUSY:
                 framing = []
                 for key, title in (
                     ("center", "Centre"),
@@ -464,19 +500,23 @@ def create_app(
                 ):
                     selected = " selected" if key == highlight.crop else ""
                     framing.append(f'<option value="{key}"{selected}>{title}</option>')
-                options = "".join(
-                    f'<option value="{html.escape(title, quote=True)}">'
-                    for title in HOOK_CHOICES
+                hook_status = (
+                    f"<small>{html.escape(highlight.hook_status)}</small>"
+                    if highlight.hook_status
+                    else ""
                 )
+                details = "<details open>" if highlight.hook_status else "<details>"
                 action = (
                     "Redo ClipCast version" if has_export else "Make ClipCast version"
                 )
                 template_form = (
                     f'<form method="post" action="{base}/template">{hidden}'
-                    "<details><summary>Hook, written narration and framing</summary>"
-                    f'<label>Top hook <input type="text" name="hook" list="hooks-{job.key}-{rank}" '
-                    f'maxlength="{HOOK_LIMIT}" value="{html.escape(highlight.hook, quote=True)}"></label>'
-                    f'<datalist id="hooks-{job.key}-{rank}">{options}</datalist>'
+                    f"{details}<summary>Hook, written narration and framing</summary>"
+                    f'<label>Top hook <input type="text" name="hook" maxlength="{HOOK_LIMIT}" '
+                    f'placeholder="Generate from this clip" value="{html.escape(highlight.hook, quote=True)}"></label>'
+                    "<small>Leave blank to make a hook from this clip when you export.</small>"
+                    f'{hook_status}<button class="secondary" type="submit" '
+                    f'formaction="{base}/hook">Suggest hook first</button>'
                     f'<label>Written narration <textarea name="narration" rows="2" '
                     f'maxlength="{NARRATION_LIMIT}" placeholder="Four bikes.&#10;One late arrival.">'
                     f"{html.escape(highlight.narration)}</textarea></label>"
@@ -495,7 +535,7 @@ def create_app(
             if cards
             else "<p>No strong highlight signals found in this capture.</p>"
         )
-        if any(item.phase in ("queued", "rendering") for item in job.highlights):
+        if any(item.phase in TEMPLATE_BUSY for item in job.highlights):
             actions = ""
         return (
             f"<section><h2>{channel_name}</h2><p>Capture ready · {length_text} · "
@@ -510,7 +550,7 @@ def create_app(
         with state:
             active = sum(job.phase in BUSY for job in jobs.values())
             refresh = bool(active) or any(
-                item.phase in ("queued", "rendering")
+                item.phase in TEMPLATE_BUSY
                 for job in jobs.values()
                 for item in job.highlights
             )
@@ -626,6 +666,28 @@ def create_app(
             return show_home(error_message, 409)
         return RedirectResponse("/", status_code=303)
 
+    @app.post("/jobs/{key}/clips/{rank}/hook", dependencies=[Depends(authenticate)])
+    def preview_hook(
+        key: str,
+        rank: int,
+        token: str = Form(),
+        narration: str = Form("", max_length=NARRATION_LIMIT),
+        crop: str = Form("center"),
+    ):
+        authorize_form(token)
+        if crop not in CROP:
+            return show_home("Choose left, centre or right framing.", 400)
+        with state:
+            item = get_highlight(get_job(key), rank)
+            if item.phase not in TEMPLATE_BUSY:
+                item.narration = "\n".join(
+                    " ".join(line.split()) for line in narration.splitlines()
+                ).strip()
+                item.crop = crop
+                item.phase = "hook_queued"
+                Thread(target=run_hook, args=(item,), daemon=True).start()
+        return RedirectResponse("/#recordings", status_code=303)
+
     @app.post("/jobs/{key}/clips/{rank}/template", dependencies=[Depends(authenticate)])
     def make_template(
         key: str,
@@ -640,8 +702,11 @@ def create_app(
             return show_home("Choose left, centre or right framing.", 400)
         with state:
             item = get_highlight(get_job(key), rank)
-            if item.phase not in ("queued", "rendering"):
-                item.hook = " ".join(hook.split()).strip() or DEFAULT_HOOK
+            if item.phase not in TEMPLATE_BUSY:
+                cleaned_hook = " ".join(hook.split())
+                if cleaned_hook != item.hook:
+                    item.hook_status = ""
+                item.hook = cleaned_hook
                 item.narration = "\n".join(
                     " ".join(line.split()) for line in narration.splitlines()
                 ).strip()
@@ -700,7 +765,7 @@ def create_app(
         with state:
             job = get_job(key)
             if job.phase in BUSY or any(
-                item.phase in ("queued", "rendering") for item in job.highlights
+                item.phase in TEMPLATE_BUSY for item in job.highlights
             ):
                 raise HTTPException(
                     status_code=409, detail="This recording is still processing."

@@ -5,17 +5,18 @@ import logging
 import math
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from PIL import Image, ImageDraw, ImageFont
 
+from clipcast_template.hooks import HookSuggestion, suggest_hook
+
 ASSETS = Path(__file__).resolve().parent / "assets"
 FONT_DIR = Path("/usr/share/fonts/truetype/dejavu")
 WIDTH, HEIGHT, FPS = 720, 1280, 30
 CROP = {"left": "0.16", "center": "0.50", "right": "0.84"}
-DEFAULT_HOOK = "IT WAS GOING WELL"
-HOOK_CHOICES = (DEFAULT_HOOK, "ROLL THAT BACK", "HERE'S WHAT HAPPENED")
 HOOK_LIMIT = 64
 NARRATION_LIMIT = 110
 CREAM = (255, 240, 216, 255)
@@ -55,6 +56,9 @@ def draw_hook(text: str, output: Path) -> None:
     canvas = Image.new("RGBA", (WIDTH, 70))
     draw = ImageDraw.Draw(canvas)
     text = " ".join(text.upper().split())
+    if not text:
+        canvas.save(output)
+        return
     font_path = FONT_DIR / "DejaVuSans-BoldOblique.ttf"
     size = 33
     font = ImageFont.truetype(str(font_path), size)
@@ -172,39 +176,77 @@ def caption_timeline(path: Path, cues: list, duration: float) -> None:
         playlist.write(f"file '{blank.name}'\n")
 
 
+@dataclass(frozen=True)
+class TemplateResult:
+    caption_status: str
+    hook: HookSuggestion
+
+
+def portrait_crop(crop: str) -> str:
+    return (
+        "crop=w='min(iw,ih*9/16)':h='min(ih,iw*16/9)':"
+        f"x='(iw-ow)*{CROP[crop]}':y='(ih-oh)*0.5'"
+    )
+
+
+def transcript_context(
+    source: Path, scratch: Path, has_audio: bool
+) -> tuple[list, str]:
+    if not has_audio:
+        return (
+            [],
+            "No speech track was found. Add written narration if you want text here.",
+        )
+    try:
+        cues = auto_captions(source, scratch)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        LOGGER.warning("Transcript unavailable (%s)", type(error).__name__)
+        return [], "Automatic captions were unavailable. You can add written narration."
+    return cues, (
+        "Automatic English captions included. Check names and dialogue."
+        if cues
+        else "No clear speech was detected. You can add written narration."
+    )
+
+
+def suggest_template_hook(source: Path, narration: str, crop: str) -> HookSuggestion:
+    duration, has_audio = probe_clip(source)
+    with TemporaryDirectory(prefix="hook-", dir=source.parent) as temp:
+        dialogue = (
+            [narration]
+            if narration
+            else [
+                text
+                for _, _, text in transcript_context(source, Path(temp), has_audio)[0]
+            ]
+        )
+        return suggest_hook(source, duration, portrait_crop(crop), dialogue)
+
+
 def render_template(
     source: Path, output: Path, hook: str, narration: str, crop: str
-) -> str:
+) -> TemplateResult:
     duration, has_audio = probe_clip(source)
     with TemporaryDirectory(prefix="template-", dir=output.parent) as temp:
         scratch = Path(temp)
-        hook_image = scratch / "hook.png"
-        draw_hook(hook, hook_image)
-        cues = []
-        status = (
-            "No speech track was found. Add written narration if you want text here."
-        )
         if narration:
             cues = [(0.0, duration + 0.04, narration)]
             status = "Written narration included."
-        elif has_audio:
-            try:
-                cues = auto_captions(source, scratch)
-                status = (
-                    "Automatic English captions included. Check names and dialogue."
-                    if cues
-                    else "No clear speech was detected. You can add written narration."
-                )
-            except (OSError, ValueError, subprocess.SubprocessError) as error:
-                LOGGER.warning("Transcript unavailable (%s)", type(error).__name__)
-                status = "Automatic captions were unavailable. You can add written narration."
-
+        else:
+            cues, status = transcript_context(source, scratch, has_audio)
+        selected = (
+            HookSuggestion(hook)
+            if hook
+            else suggest_hook(
+                source, duration, portrait_crop(crop), [text for _, _, text in cues]
+            )
+        )
+        hook_image = scratch / "hook.png"
+        draw_hook(selected.text, hook_image)
         timeline = scratch / "captions.ffconcat"
         caption_timeline(timeline, cues, duration)
         game = (
-            "setpts=PTS-STARTPTS,"
-            "crop=w='min(iw,ih*9/16)':h='min(ih,iw*16/9)':"
-            f"x='(iw-ow)*{CROP[crop]}':y='(ih-oh)*0.5',"
+            f"setpts=PTS-STARTPTS,{portrait_crop(crop)},"
             f"scale={WIDTH}:{HEIGHT}:flags=bicubic,setsar=1,fps={FPS}"
         )
         graph = (
@@ -266,4 +308,4 @@ def render_template(
         )
     if not output.stat().st_size:
         raise ValueError("Template export produced no file")
-    return status
+    return TemplateResult(status, selected)

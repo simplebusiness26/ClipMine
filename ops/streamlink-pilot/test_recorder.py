@@ -10,6 +10,8 @@ from time import monotonic, sleep
 from fastapi.testclient import TestClient
 
 import app
+from clipcast_template.hooks import HookSuggestion
+from clipcast_template.render import TemplateResult
 
 PASSWORD = "synthetic-test-password-only"
 AUTH = ("recorder", PASSWORD)
@@ -45,12 +47,18 @@ def test_five_parallel_captures_and_private_template_export(monkeypatch):
         return app.Capture(601, 1080)
 
     def finish_template(source, output, hook, narration, crop):
+        if source.read_bytes() == b"second highlight":
+            assert hook == ""
+            output.write_bytes(b"auto branded")
+            return TemplateResult(
+                "No clear speech.", HookSuggestion("WATCH THE BOAT", "video frames")
+            )
         assert source.read_bytes() == b"clix highlight"
         assert hook == "ROLL THAT BACK"
         assert narration == "Four bikes.\nOne late arrival."
         assert crop == "right"
         output.write_bytes(b"branded clip")
-        return "Written narration included."
+        return TemplateResult("Written narration included.", HookSuggestion(hook))
 
     monkeypatch.setattr(app, "capture_mp4", finish_capture)
     monkeypatch.setattr(app, "ChatMonitor", FakeChat)
@@ -63,6 +71,11 @@ def test_five_parallel_captures_and_private_template_export(monkeypatch):
         ),
     )
     monkeypatch.setattr(app, "render_template", finish_template)
+    monkeypatch.setattr(
+        app,
+        "suggest_template_hook",
+        lambda *_: HookSuggestion("WATCH THE CAR UP FRONT", "video frames"),
+    )
     monkeypatch.setattr(
         app, "disk_usage", lambda _: type("Disk", (), {"free": 8 * 1024**3})()
     )
@@ -118,6 +131,8 @@ def test_five_parallel_captures_and_private_template_export(monkeypatch):
             sleep(0.02)
         assert result.count("1080p source") == 5
         assert result.count("Make ClipCast version") == 5
+        assert "IT WAS GOING WELL" not in result
+        assert result.count("Suggest hook first") == 5
         links = re.findall(r'href="(/jobs/[^/]+/clips/1)"', result)
         assert len(links) == 5
         clix = next(
@@ -131,6 +146,21 @@ def test_five_parallel_captures_and_private_template_export(monkeypatch):
             if client.get(link, auth=AUTH).content == b"second highlight"
         )
         assert client.get(clix).status_code == 401
+        assert client.get(f"{clix}/template", auth=AUTH).status_code == 404
+        assert client.post(f"{clix}/hook", data={"token": token}).status_code == 401
+        assert (
+            client.post(
+                f"{clix}/hook", data={"token": token}, auth=AUTH, follow_redirects=False
+            ).status_code
+            == 303
+        )
+        deadline = monotonic() + 2
+        while monotonic() < deadline:
+            result = client.get("/", auth=AUTH).text
+            if 'value="WATCH THE CAR UP FRONT"' in result:
+                break
+            sleep(0.02)
+        assert 'value="WATCH THE CAR UP FRONT"' in result
         assert client.get(f"{clix}/template", auth=AUTH).status_code == 404
         assert (
             client.post(
@@ -154,6 +184,23 @@ def test_five_parallel_captures_and_private_template_export(monkeypatch):
                 break
             sleep(0.02)
         assert branded.content == b"branded clip"
+        assert (
+            client.post(
+                f"{second}/template",
+                data={"token": token},
+                auth=AUTH,
+                follow_redirects=False,
+            ).status_code
+            == 303
+        )
+        deadline = monotonic() + 2
+        while monotonic() < deadline:
+            result = client.get("/", auth=AUTH).text
+            if 'value="WATCH THE BOAT"' in result:
+                break
+            sleep(0.02)
+        assert 'value="WATCH THE BOAT"' in result
+        assert client.get(f"{second}/template", auth=AUTH).content == b"auto branded"
         assert client.get(f"{clix}/template").status_code == 401
         assert client.get(clix, auth=AUTH).content == b"clix highlight"
         assert client.get(second, auth=AUTH).content == b"second highlight"

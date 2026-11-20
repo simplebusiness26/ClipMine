@@ -14,7 +14,9 @@ retained on temporary disk when sufficient space is available.
 
 The current branded export uses the user's ClipCast logo badge, hook and caption
 treatment. Captions come from local English transcription or operator-provided
-narration. The original audio stays in place. Character art and speech are
+narration. A blank hook is drafted from portrait-frame object detections
+and relevant words when there is enough evidence. Hook suggestions can be
+reviewed and edited before export. The original audio stays in place. Character art and speech are
 paused. The original clip and branded version are both downloadable.
 
 ## Consequences

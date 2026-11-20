@@ -47,7 +47,7 @@ def test_template_keeps_audio_and_duration_and_draws_text(
     status = render.render_template(
         source, destination, "IT WAS GOING WELL", narration, "center"
     )
-    assert status.startswith(
+    assert status.caption_status.startswith(
         "Written narration" if written else "Automatic English captions"
     )
 

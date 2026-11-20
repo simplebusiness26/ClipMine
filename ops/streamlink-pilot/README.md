@@ -21,11 +21,15 @@
    with full-screen gameplay, the reference GTA 6 ClipCast badge, the opening
    hook banner and cream caption boxes. The original audio plays at its source
    speed. Character art and voice are paused in the current export.
-4. **Hook, written narration and framing** lets you change the hook and move
-   the portrait crop. Leave written narration blank to transcribe the clip's
-   English dialogue into timed captions. Enter a short line or two to use your
-   own written narration. The export reports whether the transcript found speech.
-5. Download the finished **ClipCast Reel**. Save any files you want before
+4. Leave **Top hook** blank to generate a title from sampled video frames and
+   relevant dialogue or written narration. Use **Suggest hook first** to review
+   and edit it before exporting. The local detector recognizes common subjects
+   such as bikes, cars and boats. If it finds too little evidence, the Reel
+   has no automatic hook. You can enter one in **Hook, written narration and framing**.
+5. Leave written narration blank to transcribe the clip's English dialogue
+   into timed captions. Enter a short line or two to use your own narration.
+   This panel also controls the portrait crop.
+6. Download the finished **ClipCast Reel**. Save any files you want before
    clearing a recording. Results require the recorder login.
 
 [Render dashboard](https://dashboard.render.com/) · [Render free compute limits](https://render.com/docs/free)
@@ -52,3 +56,5 @@ Install `requirements.txt`, `httpx` and `pytest`, plus FFmpeg, FFprobe and the
 DejaVu Sans bold and bold oblique fonts. Run `pytest -q`. The packaged model
 for local transcription is `ggml-tiny.en-q5_1.bin`. Set
 `CLIPCAST_TRANSCRIPT_MODEL` to its path when working outside the Docker image.
+The vision model is EfficientDet-Lite0. Set `CLIPCAST_OBJECT_MODEL` to its
+local `.tflite` path when running outside the image.
