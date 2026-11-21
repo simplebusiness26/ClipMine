@@ -13,12 +13,14 @@
 
 1. Enter up to five live Twitch usernames, separated by commas. Pick **720p HD**
    or **Up to 1080p Full HD**, confirm permission, and tap **Record and find clips**.
-2. Keep the run tab open while ClipCast records, analyses the sources, and saves
-   its picks. It selects a maximum of ten clips total across the run. Action
-   sounds, strong gameplay movement, speech cues, laughter and chat can all
-   contribute. Timing follows dialogue and pauses where enough evidence is
-   available. Longer exchanges can run past 60 or 90 seconds.
-3. Once every selected clip is saved in the browser, the review page opens
+2. Keep the run tab open while ClipCast records, checks each channel, and saves
+   finished clips as they become available. A queued channel shows that it is
+   waiting for its turn. **Watch clips saved so far** opens a separate review
+   tab while work continues. It selects at most ten clips total across the run.
+   Action sounds, gameplay movement, short speech windows, laughter and chat
+   can all contribute. Timing follows dialogue and pauses where enough
+   evidence is available. Longer exchanges can run past 60 or 90 seconds.
+3. Once every selected clip is saved in the browser, the full review page opens
    automatically. It has no auto-refresh. Watch the clips, edit **Top hook** or
    use **Suggest hook first**, and tap **Make ClipCast version** when ready.
    Hook text and framing choices save to the browser as you edit.
@@ -47,7 +49,9 @@ when the operator requests a new hook or Reel.
 
 Five channels can capture in parallel with independent HLS buffers. Footage
 analysis, cut creation, hook checks and branded exports are serialised on the
-Free instance. Each raw source is limited to ten minutes and 500 MiB (720p) or
+Free instance. Highlight speech analysis samples short windows across each
+recording with a 62-second process limit and retains completed windows.
+Selected clips still receive the usual transcription during Reel rendering. Each raw source is limited to ten minutes and 500 MiB (720p) or
 650 MiB (1080p). An offline channel or size limit can end the capture early.
 Twitch chat can lag the broadcast. Action and story cues are best-effort, and
 automatic transcript words and facecam framing may need review. ClipCast

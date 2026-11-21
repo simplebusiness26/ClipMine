@@ -101,3 +101,24 @@ def test_template_keeps_audio_and_duration_and_draws_text(
     assert has_narration("1.5")
     assert has_narration("0.5") is written
     assert has_narration("2.5") is written
+
+
+def test_recording_scan_keeps_whisper_windows_when_worker_times_out(
+    tmp_path, monkeypatch
+):
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append((command, kwargs))
+        if command[0] == "ffmpeg":
+            return subprocess.CompletedProcess(command, 0)
+        raise subprocess.TimeoutExpired(
+            command, kwargs["timeout"], output=b'[[3,5,"Story starts."]]\n[[15,'
+        )
+
+    monkeypatch.setattr(render.subprocess, "run", run)
+    assert render.auto_captions(
+        tmp_path / "capture.mp4", tmp_path, long_source=True
+    ) == [[3, 5, "Story starts."]]
+    assert commands[1][0][-1] == "--scan-recording"
+    assert commands[1][1]["timeout"] == 62

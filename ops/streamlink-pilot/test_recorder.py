@@ -21,6 +21,7 @@ AUTH = ("recorder", PASSWORD)
 def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
     started = {name: Event() for name in ("clix", "second", "third", "fourth", "fifth")}
     release = Event()
+    release_first = Event()
 
     class FakeChat:
         def __init__(self, channel):
@@ -42,7 +43,7 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
         assert quality.startswith("1080p60,1080p,")
         assert max_bytes == 650 * app.MIB
         started[channel].set()
-        assert release.wait(3)
+        assert (release_first if channel == "clix" else release).wait(8)
         output.write_bytes(channel.encode())
         return app.Capture(600, 1080)
 
@@ -106,6 +107,20 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
             assert client.get(monitor + "/manifest").status_code == 401
             result = client.get(monitor + "/manifest", auth=AUTH).json()
             assert not result["complete"] and len(result["channels"]) == 5
+            release_first.set()
+            deadline = monotonic() + 3
+            while monotonic() < deadline:
+                result = client.get(monitor + "/manifest", auth=AUTH).json()
+                if len(result["clips"]) == 2:
+                    break
+                sleep(0.03)
+            assert not result["complete"] and len(result["clips"]) == 2
+            assert {clip["channel"] for clip in result["clips"]} == {"clix"}
+            first_ids = {clip["id"] for clip in result["clips"]}
+            assert (
+                client.get(result["clips"][0]["url"], auth=AUTH).content
+                == b"clix highlight"
+            )
             assert (
                 client.post(
                     monitor + "/saved", data={"token": token}, auth=AUTH
@@ -123,6 +138,7 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
             sleep(0.03)
         assert result["complete"]
         assert len(result["clips"]) == 10 and len(cuts) == 10
+        assert first_ids <= {clip["id"] for clip in result["clips"]}
         assert len({clip["channel"] for clip in result["clips"]}) == 5
         preview = result["clips"][0]["url"]
         assert client.get(preview).status_code == 401

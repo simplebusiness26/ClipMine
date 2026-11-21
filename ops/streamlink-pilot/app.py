@@ -222,7 +222,7 @@ MAX_ACTIVE = 5
 MAX_RUNS = 6
 CAPTURE_HEADROOM = 192 * MIB
 HANDLE = re.compile(r"[a-z0-9_]{3,25}", re.ASCII)
-BUSY = {"capturing", "analysing", "ranked", "cutting"}
+BUSY = {"capturing", "queued", "analysing", "ranked", "cutting"}
 ARCHIVE_EDIT_MAX_BYTES = 192 * MIB
 ARCHIVE_EDIT_MAX_JOBS = 3
 TEMPLATE_BUSY = {"queued", "rendering", "hook_queued", "suggesting"}
@@ -253,6 +253,7 @@ class Recording:
     candidates: list[Clip] = field(default_factory=list)
     signals: str = ""
     run: str = ""
+    detail: str = ""
 
 
 @dataclass
@@ -353,11 +354,14 @@ def create_app(
 
         with state:
             job.capture = recorded
-            job.phase = "analysing"
+            job.phase = "queued"
 
         # Serialize audio analysis and branded encodes on Render's small free instance.
         audio_status = "Audio checked for laughter and action."
         with processor:
+            with state:
+                job.phase = "analysing"
+                job.detail = "Checking laughter and action"
             try:
                 sounds = detect_sound(job.path, model)
                 audio, actions = sounds.laughter, sounds.action
@@ -376,6 +380,8 @@ def create_app(
                 audio_status = "Audio analysis was unavailable."
 
             speech = []
+            with state:
+                job.detail = "Checking dialogue for story beats"
             try:
                 with TemporaryDirectory(prefix="scan-", dir=job.path.parent) as scan:
                     speech = auto_captions(job.path, Path(scan), long_source=True)
@@ -388,6 +394,8 @@ def create_app(
                 LOGGER.info(
                     "Recording transcript unavailable (%s)", type(error).__name__
                 )
+            with state:
+                job.detail = "Checking gameplay movement"
             try:
                 motion = detect_motion(job.path)
             except (
@@ -418,18 +426,42 @@ def create_app(
                 action=actions,
                 motion=motion,
             )
-        with state:
-            job.candidates = candidates
-            job.signals = f"{chat_status} {audio_status}"
-            job.phase = "ranked"
+            with state:
+                job.detail = "Cutting the first highlights"
+                # Early slots are split across channels. Remaining slots are
+                # filled from the best candidates once every channel is checked.
+                share = MAX_CLIPS // len(runs[job.run].jobs)
+            remaining = []
+            for clip in candidates:
+                if len(job.highlights) >= share:
+                    remaining.append(clip)
+                else:
+                    append_highlight(job, clip)
+            with state:
+                job.candidates = remaining
+                job.signals = f"{chat_status} {audio_status}"
+                job.phase = "ranked"
+                job.detail = ""
         prepare_run(job.run)
+
+    def append_highlight(job: Recording, clip: Clip) -> bool:
+        output = job.path.with_name(f"highlight-{len(job.highlights) + 1}.mp4")
+        try:
+            cut_clip(job.path, output, clip)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            output.unlink(missing_ok=True)
+            LOGGER.warning("Highlight cut failed (%s)", type(error).__name__)
+            return False
+        with state:
+            job.highlights.append(Highlight(clip, output))
+        return True
 
     def prepare_run(run_key: str) -> None:
         with state:
             run = runs[run_key]
             batch = [jobs[key] for key in run.jobs]
             if run.finalizing or any(
-                job.phase in {"capturing", "analysing"} for job in batch
+                job.phase in {"capturing", "queued", "analysing"} for job in batch
             ):
                 return
             run.finalizing = True
@@ -443,21 +475,12 @@ def create_app(
             ((job, clip) for job in batch for clip in job.candidates),
             key=lambda entry: (-entry[1].score, entry[1].start),
         )
-        count = 0
+        count = sum(len(job.highlights) for job in batch)
         with processor:
             for job, clip in candidates:
                 if count == MAX_CLIPS:
                     break
-                output = job.path.with_name(f"highlight-{len(job.highlights) + 1}.mp4")
-                try:
-                    cut_clip(job.path, output, clip)
-                except (OSError, ValueError, subprocess.SubprocessError) as error:
-                    output.unlink(missing_ok=True)
-                    LOGGER.warning("Highlight cut failed (%s)", type(error).__name__)
-                    continue
-                with state:
-                    job.highlights.append(Highlight(clip, output))
-                count += 1
+                count += append_highlight(job, clip)
         with state:
             for job in batch:
                 if job.phase == "cutting":
@@ -555,6 +578,7 @@ def create_app(
             "template": "gameplay-first",
             "saved_runs": "browser",
             "clip_cap_per_run": MAX_CLIPS,
+            "batch_progress": "progressive",
             "hooks": "clip-aware",
             "previews": "inline",
         }
@@ -774,31 +798,30 @@ def create_app(
             run = get_run(key)
             batch = [jobs[job] for job in run.jobs if job in jobs]
             complete = all(job.phase not in BUSY for job in batch)
-            clips = []
-            if complete:
-                ranked = sorted(
-                    (
-                        (job, rank, item)
-                        for job in batch
-                        for rank, item in enumerate(job.highlights, 1)
-                    ),
-                    key=lambda entry: (-entry[2].clip.score, entry[2].clip.start),
-                )[:MAX_CLIPS]
-                clips = [
-                    {
-                        "id": f"{job.key}-{rank}",
-                        "channel": job.channel,
-                        "seconds": round(item.clip.end - item.clip.start, 1),
-                        "reasons": item.clip.reasons,
-                        "bytes": item.path.stat().st_size,
-                        "url": f"/jobs/{job.key}/clips/{rank}/preview",
-                    }
-                    for job, rank, item in ranked
-                ]
+            ranked = sorted(
+                (
+                    (job, rank, item)
+                    for job in batch
+                    for rank, item in enumerate(job.highlights, 1)
+                ),
+                key=lambda entry: (-entry[2].clip.score, entry[2].clip.start),
+            )[:MAX_CLIPS]
+            clips = [
+                {
+                    "id": f"{job.key}-{rank}",
+                    "channel": job.channel,
+                    "seconds": round(item.clip.end - item.clip.start, 1),
+                    "reasons": item.clip.reasons,
+                    "bytes": item.path.stat().st_size,
+                    "url": f"/jobs/{job.key}/clips/{rank}/preview",
+                }
+                for job, rank, item in ranked
+            ]
             statuses = {
                 "capturing": "Recording",
+                "queued": "Recorded. Waiting for its turn",
                 "analysing": "Checking footage for highlights",
-                "ranked": "Highlights found. Waiting for other streams",
+                "ranked": "Checked. Waiting for the rest of the batch",
                 "cutting": "Preparing your best clips",
                 "failed": "No playable recording",
                 "ready": "Processed",
@@ -809,7 +832,7 @@ def create_app(
                 "complete": complete,
                 "clips": clips,
                 "channels": [
-                    {"name": job.channel, "status": statuses[job.phase]}
+                    {"name": job.channel, "status": job.detail or statuses[job.phase]}
                     for job in batch
                 ],
             }

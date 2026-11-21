@@ -64,7 +64,9 @@ async function response(url, options) {
     const result = await fetch(url, options);
     if (!result.ok) {
         const message = await result.json().catch(() => ({}));
-        throw new Error(typeof message.detail === "string" ? message.detail : "The recorder could not complete the request.");
+        const error = new Error(typeof message.detail === "string" ? message.detail : "The recorder could not complete the request.");
+        error.status = result.status;
+        throw error;
     }
     return result;
 }
@@ -74,58 +76,95 @@ const mediaKey = (run, clip) => run + "/" + clip;
 const exportKey = id => "export/" + id;
 const labelDate = value => new Date(value).toLocaleString([], {dateStyle: "medium", timeStyle: "short"});
 
+function saveSnapshot(archive, run) {
+    return new Promise((resolve, reject) => {
+        const transaction = archive.transaction("runs", "readwrite");
+        const table = transaction.objectStore("runs");
+        const existing = table.get(run.id);
+        existing.onsuccess = () => {
+            const saved = existing.result;
+            if (saved?.complete) return;
+            const current = run.clips.map(({url, ...clip}) => clip);
+            const clips = new Map((saved?.clips || []).map(clip => [clip.id, clip]));
+            for (const clip of current) clips.set(clip.id, clip);
+            table.put({...run, clips: run.complete ? current : [...clips.values()]});
+        };
+        transaction.oncomplete = () => resolve();
+        transaction.onabort = () => reject(transaction.error);
+        transaction.onerror = () => reject(transaction.error);
+    });
+}
+
 async function capture(archive) {
     const old = await read(archive, "runs", runId);
-    if (old) {
+    if (old?.complete) {
         location.replace(runUrl(runId));
         return;
     }
+    const savedIds = new Set((old?.clips || []).map(clip => clip.id));
+    const openSaved = link("Watch clips saved so far", runUrl(runId), "secondary");
+    openSaved.target = "_blank";
+    openSaved.rel = "noopener";
+    openSaved.hidden = savedIds.size === 0;
     const progress = node("progress");
     progress.hidden = true;
     const channelList = node("div");
-    content.replaceChildren(progress, channelList);
+    content.replaceChildren(openSaved, progress, channelList);
 
-    let run;
+    let failures = 0;
     for (;;) {
-        run = await (await response("/runs/" + encodeURIComponent(runId) + "/manifest")).json();
+        let run;
+        try {
+            run = await (await response("/runs/" + encodeURIComponent(runId) + "/manifest")).json();
+            failures = 0;
+        } catch (error) {
+            if ([401, 403, 404].includes(error.status) || ++failures >= 4) throw error;
+            announce("Connection interrupted. Checking the run again…");
+            await delay(5000);
+            continue;
+        }
         channelList.replaceChildren(...run.channels.map(channel => {
             const card = node("article");
             card.append(node("strong", channel.name), node("p", channel.status, "muted"));
             return card;
         }));
-        if (run.complete) break;
-        announce("Recording or processing your streams…");
+        progress.max = Math.max(run.clips.length, 1);
+        progress.value = savedIds.size;
+        progress.hidden = run.clips.length === 0;
+        const transferred = [];
+        for (const clip of run.clips) {
+            if (!savedIds.has(clip.id)) {
+                announce("Saving a finished clip on this device…");
+                const key = mediaKey(run.id, clip.id);
+                let file = await read(archive, "media", key);
+                if (file?.size !== clip.bytes) {
+                    file = await (await response(clip.url)).blob();
+                    if (file.size !== clip.bytes) throw new Error("A clip did not finish transferring. Try saving this run again.");
+                    await write(archive, "media", file, key);
+                }
+                savedIds.add(clip.id);
+                progress.value = savedIds.size;
+                await saveSnapshot(archive, {...run, complete: false, clips: [...transferred, clip]});
+                openSaved.hidden = false;
+            }
+            transferred.push(clip);
+        }
+        if (run.complete) {
+            await saveSnapshot(archive, run);
+            // The archive is committed even if the recorder restarts during cleanup.
+            void navigator.storage?.persist?.().catch(() => false);
+            try {
+                await response("/runs/" + encodeURIComponent(runId) + "/saved", {
+                    method: "POST", body: new URLSearchParams({token}),
+                    signal: AbortSignal.timeout(3000)
+                });
+            } catch (_) {}
+            location.replace(runUrl(run.id));
+            return;
+        }
+        announce(savedIds.size ? savedIds.size + " clips saved. Checking the remaining streams…" : "Recording or processing your streams…");
         await delay(5000);
     }
-
-    // Each completed transaction can be reused if the page reloads mid-save.
-    progress.max = Math.max(run.clips.length, 1);
-    progress.value = 0;
-    progress.hidden = false;
-    for (const clip of run.clips) {
-        announce("Saving clip " + (progress.value + 1) + " of " + run.clips.length + " on this device…");
-        const key = mediaKey(run.id, clip.id);
-        let file = await read(archive, "media", key);
-        if (file?.size !== clip.bytes) {
-            file = await (await response(clip.url)).blob();
-            if (file.size !== clip.bytes) throw new Error("A clip did not finish transferring. Try saving this run again.");
-            await write(archive, "media", file, key);
-        }
-        progress.value += 1;
-    }
-    for (const clip of run.clips) delete clip.url;
-    await write(archive, "runs", run);
-    // Storage persistence is a request. Some mobile browsers may decline it.
-    void navigator.storage?.persist?.().catch(() => false);
-    try {
-        await response("/runs/" + encodeURIComponent(runId) + "/saved", {
-            method: "POST", body: new URLSearchParams({token}),
-            signal: AbortSignal.timeout(3000)
-        });
-    } catch (_) {
-        // The archive is already committed. A recorder restart cannot undo it.
-    }
-    location.replace(runUrl(run.id));
 }
 
 async function archiveIndex(archive) {
@@ -292,6 +331,10 @@ async function review(archive) {
         return;
     }
     announce("Saved on this device · " + labelDate(run.created_at));
+    if (!run.complete) {
+        content.append(node("p", "This run was still processing when these clips were saved."),
+            link("Check run for more clips", "/runs/" + encodeURIComponent(runId), "secondary"));
+    }
     if (run.clips.length === 0) content.append(node("p", "No strong highlights were found in this run."));
     let rank = 0;
     const sections = new Map();

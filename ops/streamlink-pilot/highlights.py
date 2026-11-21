@@ -156,7 +156,9 @@ class SoundSignals:
     action: dict[int, float]
 
 
-def detect_sound(recording: Path, model: Path) -> SoundSignals:
+def detect_sound(
+    recording: Path, model: Path, *, scan_budget: float = 28
+) -> SoundSignals:
     """Score one second of mono audio at a time. Keys are media offsets."""
     with ZipFile(model) as metadata:
         labels = metadata.read("yamnet_label_list.txt").decode().splitlines()
@@ -191,9 +193,10 @@ def detect_sound(recording: Path, model: Path) -> SoundSignals:
         check=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
-        timeout=55,
+        timeout=24,
     ).stdout
     samples = np.frombuffer(waveform, dtype="<f4")
+    deadline = monotonic() + scan_budget
     interpreter = Interpreter(model_path=str(model), num_threads=1)
     interpreter.allocate_tensors()
     (input_tensor,) = interpreter.get_input_details()
@@ -201,14 +204,34 @@ def detect_sound(recording: Path, model: Path) -> SoundSignals:
     frame_size = int(np.prod(input_tensor["shape"]))
     scores = {}
     action = {}
-    for offset in range(0, len(samples) - frame_size + 1, AUDIO_RATE):
+    last = (len(samples) - frame_size) // AUDIO_RATE
+    if last < 0:
+        return SoundSignals(scores, action)
+    # Probe the whole timeline at low density and prioritise loud changes.
+    spacing = max(1, (last + 95) // 95)
+    uniform = list(range(0, last + 1, spacing))
+    seconds = uniform[::3]
+    if last:
+        signal = samples[: last * AUDIO_RATE].reshape(last, AUDIO_RATE)
+        peaks = np.max(np.abs(signal), axis=1)
+        attacks = peaks - np.r_[0.0, peaks[:-1]]
+        seconds.extend(
+            int(index)
+            for index in np.argsort(attacks)[-55:][::-1]
+            if attacks[index] > 0.05
+        )
+    seconds.extend(uniform[1::3])
+    seconds.extend(uniform[2::3])
+    for second in dict.fromkeys(seconds):
+        if monotonic() >= deadline:
+            break
+        offset = second * AUDIO_RATE
         frame = samples[offset : offset + frame_size].reshape(input_tensor["shape"])
         if float(np.max(np.abs(frame))) < 0.015:
             continue
         interpreter.set_tensor(input_tensor["index"], frame)
         interpreter.invoke()
         values = interpreter.get_tensor(output_tensor["index"]).reshape(-1)
-        second = offset // AUDIO_RATE
         scores[second] = float(np.max(values[indices]))
         if action_indices:
             action[second] = float(np.max(values[action_indices]))
@@ -267,7 +290,7 @@ def detect_motion(recording: Path) -> dict[int, float]:
         ],
         check=True,
         capture_output=True,
-        timeout=100,
+        timeout=22,
     )
     frames = np.frombuffer(result.stdout, dtype=np.uint8).reshape(-1, 36, 64)
     if len(frames) < 4:

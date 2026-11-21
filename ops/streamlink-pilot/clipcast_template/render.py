@@ -144,16 +144,27 @@ def auto_captions(source: Path, scratch: Path, *, long_source: bool = False) -> 
         ],
         check=True,
         capture_output=True,
-        timeout=90 if long_source else 40,
+        timeout=24 if long_source else 40,
     )
-    result = subprocess.run(
-        [sys.executable, "-m", "clipcast_template.transcript", str(audio)],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=720 if long_source else 300,
-    )
-    return json.loads(result.stdout)
+    command = [sys.executable, "-m", "clipcast_template.transcript", str(audio)]
+    if not long_source:
+        result = subprocess.run(
+            command, check=True, capture_output=True, text=True, timeout=300
+        )
+        return json.loads(result.stdout)
+    command.append("--scan-recording")
+    try:
+        raw = subprocess.run(
+            command, check=True, capture_output=True, timeout=62
+        ).stdout
+    except subprocess.TimeoutExpired as error:
+        raw = error.stdout or b""
+        LOGGER.info("Speech scan reached its budget. Keeping completed windows.")
+    cues = []
+    for entry in raw.splitlines(keepends=True):
+        if entry.endswith(b"\n"):
+            cues.extend(json.loads(entry))
+    return sorted(cues)
 
 
 def caption_timeline(path: Path, cues: list, duration: float) -> None:
