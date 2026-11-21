@@ -1,15 +1,26 @@
 import json
 import subprocess
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from clipcast_template import render
 
 
-@pytest.mark.parametrize("written", [True, False])
+@pytest.mark.parametrize(
+    ("written", "template"),
+    [
+        (True, render.DEFAULT_TEMPLATE),
+        (False, render.DEFAULT_TEMPLATE),
+        (True, render.CUSTOM_CHANNEL_VI_TEMPLATE),
+        (True, render.CUSTOM_GTA_CLIPCAST_TEMPLATE),
+        *((True, template) for template in render.CHANNEL_VI_TEMPLATES),
+    ],
+)
 def test_template_keeps_audio_and_duration_and_draws_text(
-    tmp_path: Path, written, monkeypatch
+    tmp_path: Path, written, template, monkeypatch
 ):
     source = tmp_path / "highlight.mp4"
     destination = tmp_path / "branded.mp4"
@@ -45,8 +56,10 @@ def test_template_keeps_audio_and_duration_and_draws_text(
     )
     narration = "Four bikes.\nOne late arrival." if written else ""
     status = render.render_template(
-        source, destination, "IT WAS GOING WELL", narration, "center"
+        source, destination, "CUSTOM HOOK", narration, "center", template=template
     )
+    title = render.CHANNEL_VI_TEMPLATES.get(template, "Custom Hook")
+    assert status.hook.text == title.upper()
     assert status.caption_status.startswith(
         "Written narration" if written else "Automatic English captions"
     )
@@ -72,6 +85,10 @@ def test_template_keeps_audio_and_duration_and_draws_text(
     assert audio["codec_name"] == "aac"
     assert 2.95 <= float(video["duration"]) <= 3.05
     assert abs(float(video["duration"]) - float(audio["duration"])) < 0.05
+    channel_vi = (
+        template == render.CUSTOM_CHANNEL_VI_TEMPLATE
+        or template in render.CHANNEL_VI_TEMPLATES
+    )
 
     def has_narration(timestamp: str) -> bool:
         frame = subprocess.check_output(
@@ -87,7 +104,7 @@ def test_template_keeps_audio_and_duration_and_draws_text(
                 "-frames:v",
                 "1",
                 "-vf",
-                "crop=2:2:38:896",
+                "crop=2:2:55:970" if channel_vi else "crop=2:2:38:896",
                 "-pix_fmt",
                 "rgb24",
                 "-f",
@@ -101,6 +118,47 @@ def test_template_keeps_audio_and_duration_and_draws_text(
     assert has_narration("1.5")
     assert has_narration("0.5") is written
     assert has_narration("2.5") is written
+    if template != render.DEFAULT_TEMPLATE:
+        raw = subprocess.check_output(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-ss",
+                "2.5",
+                "-i",
+                str(destination),
+                "-frames:v",
+                "1",
+                "-c:v",
+                "png",
+                "-threads",
+                "1",
+                "-f",
+                "image2pipe",
+                "pipe:1",
+            ],
+            timeout=10,
+        )
+        with Image.open(BytesIO(raw)).convert("RGB") as frame:
+            if channel_vi:
+                r, g, b = frame.getpixel((350, 550))
+                assert b > 180 and r < 55 and g < 55
+                logo = frame.crop((36, 154, 175, 283)).get_flattened_data()
+                assert sum(r > 85 and b > 125 for r, _, b in logo) > 60
+                panel = frame.crop((49, 840, 350, 920)).get_flattened_data()
+                assert sum(r > 190 and g > 175 and b > 175 for r, g, b in panel) > 60
+                bottom = frame.crop((460, 1010, 630, 1260)).get_flattened_data()
+                assert not any(r > 150 and r > b + 40 for r, _, b in bottom)
+                return
+            for area in (
+                (28, 62, 125, 157),
+                (28, 166, 240, 228),
+                (460, 1010, 630, 1260),
+            ):
+                pixels = frame.crop(area).get_flattened_data()
+                assert sum(red > blue + 35 for red, _, blue in pixels) > 60
 
 
 def test_recording_scan_keeps_whisper_windows_when_worker_times_out(
@@ -122,3 +180,31 @@ def test_recording_scan_keeps_whisper_windows_when_worker_times_out(
     ) == [[3, 5, "Story starts."]]
     assert commands[1][0][-1] == "--scan-recording"
     assert commands[1][1]["timeout"] == 62
+
+
+@pytest.mark.parametrize(
+    ("template", "position"),
+    [
+        (render.CUSTOM_CHANNEL_VI_TEMPLATE, (64, 400)),
+        (render.CUSTOM_GTA_CLIPCAST_TEMPLATE, (16, 455)),
+    ],
+)
+def test_brand_keeps_source_corner_overlay_with_protected_frame(tmp_path, template, position):
+    source = tmp_path / "source.mp4"
+    reel = tmp_path / "reel.mp4"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+        "color=blue:s=320x180:r=30,drawbox=x=0:y=0:w=32:h=32:color=yellow:t=fill",
+        "-t", "1", "-c:v", "libx264", "-threads", "1", str(source),
+    ], check=True, timeout=15)
+    render.render_template(
+        source, reel, "THE GETAWAY", "", "center", template=template,
+        cached_cues=[], preserve_source_frame=True,
+    )
+    x, y = position
+    corner = subprocess.check_output([
+        "ffmpeg", "-v", "error", "-ss", "0.1", "-i", str(reel), "-frames:v", "1",
+        "-vf", f"crop=2:2:{x}:{y}", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1",
+    ], timeout=12)
+    red, green, blue = corner[:3]
+    assert red > 170 and green > 170 and blue < 70

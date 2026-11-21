@@ -1,4 +1,4 @@
-"""Compose the Gameplay First ClipCast layout with the source audio."""
+"""Compose ClipCast Reel layouts with the source audio."""
 
 import json
 import logging
@@ -20,6 +20,20 @@ WIDTH, HEIGHT, FPS = 720, 1280, 30
 CROP = {"left": "0.16", "center": "0.50", "right": "0.84"}
 HOOK_LIMIT = 64
 NARRATION_LIMIT = 110
+DEFAULT_TEMPLATE = "gameplay-first"
+CUSTOM_CHANNEL_VI_TEMPLATE = "channel-vi-custom"
+CUSTOM_GTA_CLIPCAST_TEMPLATE = "gta-clipcast-custom"
+CHANNEL_VI_TEMPLATES = {
+    "it-was-going-well": "It Was Going Well",
+    "roll-that-back": "Roll That Back",
+    "scoop-was-there": "Scoop Was There",
+}
+REEL_TEMPLATES = {
+    DEFAULT_TEMPLATE: "Gameplay First",
+    CUSTOM_CHANNEL_VI_TEMPLATE: "Channel VI · Custom headline",
+    CUSTOM_GTA_CLIPCAST_TEMPLATE: "GTA ClipCast · Custom headline",
+    **{key: f"Channel VI · {label}" for key, label in CHANNEL_VI_TEMPLATES.items()},
+}
 CREAM = (255, 240, 216, 255)
 PLUM = (39, 11, 41, 255)
 PINK = (237, 45, 118, 255)
@@ -75,6 +89,32 @@ def draw_hook(text: str, output: Path) -> None:
     canvas.save(output)
 
 
+def channel_vi_frame(text: str, output: Path) -> None:
+    with Image.open(ASSETS / "channel-vi-reel-frame.png") as asset:
+        frame = asset.convert("RGBA").resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
+    headline = " ".join(text.upper().split())
+    if headline:
+        font_path = Path("/usr/share/fonts/truetype/open-sans/OpenSans-CondBold.ttf")
+        if not font_path.is_file():
+            font_path = FONT_DIR / "DejaVuSansCondensed-Bold.ttf"
+        font = ImageFont.truetype(str(font_path), 31)
+        lines = fit_caption(headline, font, 610)
+        panel = Image.new("RGBA", frame.size)
+        draw = ImageDraw.Draw(panel)
+        x, y = 49, 840
+        width = math.ceil(max(font.getlength(line) for line in lines)) + 30
+        height = 14 + 32 * len(lines)
+        draw.rounded_rectangle(
+            (x, y, x + width, y + height), radius=11,
+            fill=(36, 20, 51, 246), outline=(226, 178, 246, 165),
+        )
+        draw.rounded_rectangle((x + 3, y + 11, x + 7, y + height - 11), radius=2, fill="#fd94aa")
+        for index, line in enumerate(lines):
+            draw.text((x + 17, y + 8 + 32 * index), line, font=font, fill="#fffafa", anchor="lt")
+        frame.alpha_composite(panel)
+    frame.save(output)
+
+
 def fit_caption(text: str, font: ImageFont.FreeTypeFont, limit: int) -> list[str]:
     rows = []
     for paragraph in text.splitlines():
@@ -99,21 +139,21 @@ def fit_caption(text: str, font: ImageFont.FreeTypeFont, limit: int) -> list[str
     return rows
 
 
-def draw_caption(text: str, output: Path) -> None:
+def draw_caption(text: str, output: Path, max_text_width: int = 520) -> None:
     canvas = Image.new("RGBA", (WIDTH, 144))
     if text:
         draw = ImageDraw.Draw(canvas)
         path = FONT_DIR / "DejaVuSans-Bold.ttf"
         size = 33
         font = ImageFont.truetype(str(path), size)
-        rows = fit_caption(text, font, 520)
+        rows = fit_caption(text, font, max_text_width)
         if len(text.splitlines()) > 3:
             text = " ".join(text.split())
-            rows = fit_caption(text, font, 520)
+            rows = fit_caption(text, font, max_text_width)
         while len(rows) > 3 and size > 18:
             size -= 1
             font = ImageFont.truetype(str(path), size)
-            rows = fit_caption(text, font, 520)
+            rows = fit_caption(text, font, max_text_width)
         for index, row in enumerate(rows[:3]):
             y = index * (size + 8)
             width = math.ceil(font.getlength(row)) + 18
@@ -167,7 +207,9 @@ def auto_captions(source: Path, scratch: Path, *, long_source: bool = False) -> 
     return sorted(cues)
 
 
-def caption_timeline(path: Path, cues: list, duration: float) -> None:
+def caption_timeline(
+    path: Path, cues: list, duration: float, max_text_width: int = 520
+) -> None:
     blank = path.with_name("blank.png")
     draw_caption("", blank)
     cursor = 0.0
@@ -182,7 +224,7 @@ def caption_timeline(path: Path, cues: list, duration: float) -> None:
             if start - cursor >= 0.039:
                 playlist.write(f"file '{blank.name}'\nduration {start - cursor:.5f}\n")
             caption = path.with_name(f"caption-{index}.png")
-            draw_caption(text, caption)
+            draw_caption(text, caption, max_text_width)
             playlist.write(f"file '{caption.name}'\nduration {end - start:.5f}\n")
             cursor = end
         playlist.write(f"file '{blank.name}'\n")
@@ -221,8 +263,12 @@ def transcript_context(
     )
 
 
-def suggest_template_hook(source: Path, narration: str, crop: str) -> HookSuggestion:
+def suggest_template_hook(
+    source: Path, narration: str, crop: str, *, cached_cues: list | None = None
+) -> HookSuggestion:
     duration, has_audio = probe_clip(source)
+    if cached_cues is not None and not narration:
+        return suggest_hook(source, duration, portrait_crop(crop), [text for _, _, text in cached_cues])
     with TemporaryDirectory(prefix="hook-", dir=source.parent) as temp:
         dialogue = (
             [narration]
@@ -273,52 +319,100 @@ def render_template(
     narration: str,
     crop: str,
     cam: str = "auto",
+    template: str = DEFAULT_TEMPLATE,
+    *,
+    cached_cues: list | None = None,
+    preserve_source_frame: bool = False,
 ) -> TemplateResult:
+    if template not in REEL_TEMPLATES:
+        raise ValueError("Unknown Reel template")
+    custom_headline = template in {CUSTOM_CHANNEL_VI_TEMPLATE, CUSTOM_GTA_CLIPCAST_TEMPLATE}
+    headline = CHANNEL_VI_TEMPLATES.get("roll-that-back" if custom_headline else template)
     duration, has_audio = probe_clip(source)
     with TemporaryDirectory(prefix="template-", dir=output.parent) as temp:
         scratch = Path(temp)
         if narration:
             cues = [(0.0, duration + 0.04, narration)]
             status = "Written narration included."
+        elif cached_cues is not None:
+            cues = cached_cues
+            status = "Automatic English captions included." if cues else "No clear speech was detected."
         else:
             cues, status = transcript_context(source, scratch, has_audio)
-        selected = (
-            HookSuggestion(hook)
-            if hook
-            else suggest_hook(
+        if headline and not (custom_headline and hook):
+            selected = HookSuggestion(headline.upper())
+        elif hook:
+            selected = HookSuggestion(hook)
+        else:
+            selected = suggest_hook(
                 source, duration, portrait_crop(crop), [text for _, _, text in cues]
             )
-        )
-        hook_image = scratch / "hook.png"
-        draw_hook(selected.text, hook_image)
         timeline = scratch / "captions.ffconcat"
-        caption_timeline(timeline, cues, duration)
-        camera = facecam_crop(source, duration, cam)
-        top = CAM_HEIGHT if camera else 0
-        game = (
-            f"{portrait_crop(crop, HEIGHT - top)},"
-            f"scale={WIDTH}:{HEIGHT - top}:flags=bicubic,setsar=1"
-        )
-        if camera:
-            layout = (
-                "[0:v]setpts=PTS-STARTPTS,fps=30,split=2[rawgame][rawcam];"
-                f"[rawgame]{game}[game];[rawcam]{camera},setsar=1[cam];"
-                "[cam][game]vstack=inputs=2[base];"
+        caption_timeline(timeline, cues, duration, 350 if headline else 520)
+        captions_input = ["-f", "concat", "-safe", "1", "-i", str(timeline)]
+        if template == CUSTOM_CHANNEL_VI_TEMPLATE or template in CHANNEL_VI_TEMPLATES:
+            art = scratch / "channel-vi.png"
+            channel_vi_frame(selected.text, art)
+            layers = ["-i", str(art), *captions_input]
+            frame = (
+                "scale=608:426:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+                "pad=640:460:(ow-iw)/2:(oh-ih)/2"
+                if preserve_source_frame
+                else (
+                    "scale=640:460:force_original_aspect_ratio=increase:flags=bicubic,"
+                    f"crop=640:460:x=(iw-ow)*{CROP[crop]}"
+                )
+            )
+            graph = (
+                f"[0:v]setpts=PTS-STARTPTS,fps=30,{frame},"
+                f"setsar=1,pad={WIDTH}:{HEIGHT}:40:328[base];"
+                "[base][1:v]overlay[branded];[branded][2:v]overlay=x=49:y=958[out]"
+            )
+        elif template == CUSTOM_GTA_CLIPCAST_TEMPLATE:
+            layout, _ = gameplay_layout(source, duration, crop, cam, preserve_source_frame)
+            art = ASSETS / "gta-clipcast-roll-that-back.png"
+            if hook:
+                hook_image = scratch / "hook.png"
+                draw_hook(selected.text, hook_image)
+                with Image.open(art) as image, Image.open(hook_image) as title:
+                    # Replace the stock headline in the GTA ClipCast artwork.
+                    image.paste((0, 0, 0, 0), (0, 245, image.width, 360))
+                    branded = image.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
+                    branded.alpha_composite(title, (26, 165))
+                    art = scratch / "brand.png"
+                    branded.save(art)
+            layers = ["-i", str(art), *captions_input]
+            graph = (
+                f"{layout}[1:v]scale={WIDTH}:{HEIGHT}:flags=lanczos[art];"
+                "[base][art]overlay[branded];[branded][2:v]overlay=x=32:y=884[out]"
             )
         else:
-            layout = f"[0:v]setpts=PTS-STARTPTS,fps=30,{game}[base];"
-        wink = scratch / "scoop-wink.png"
-        draw_scoop_wink(wink)
-        wink_start = min(3.1, duration * 0.48)
-        wink_window = f"between(t,{wink_start:.2f},{wink_start + 0.45:.2f})"
-        graph = (
-            f"{layout}[base][1:v]overlay=x=29:y={top + 55}[logo];"
-            f"[logo][2:v]overlay=x=26:y={top + 132}:enable='lt(t,4)'[hook];"
-            "[hook][3:v]overlay=x=32:y=884[text];"
-            "[4:v]scale=-1:235:flags=lanczos[scoop];[5:v]scale=-1:235:flags=lanczos[wink];"
-            f"[text][scoop]overlay=x=W-w-59:y=H-h-87:enable='not({wink_window})'[stood];"
-            f"[stood][wink]overlay=x=W-w-59:y=H-h-87:enable='{wink_window}'[out]"
-        )
+            layout, top = gameplay_layout(source, duration, crop, cam, preserve_source_frame)
+            hook_image = scratch / "hook.png"
+            draw_hook(selected.text, hook_image)
+            wink = scratch / "scoop-wink.png"
+            draw_scoop_wink(wink)
+            wink_start = min(3.1, duration * 0.48)
+            wink_window = f"between(t,{wink_start:.2f},{wink_start + 0.45:.2f})"
+            layers = [
+                "-i",
+                str(ASSETS / "brand-badge.png"),
+                "-i",
+                str(hook_image),
+                *captions_input,
+                "-i",
+                str(ASSETS / "scoop-stand.png"),
+                "-i",
+                str(wink),
+            ]
+            graph = (
+                f"{layout}[base][1:v]overlay=x=29:y={top + 55}[logo];"
+                f"[logo][2:v]overlay=x=26:y={top + 132}:enable='lt(t,4)'[hook];"
+                "[hook][3:v]overlay=x=32:y=884[text];"
+                "[4:v]scale=-1:235:flags=lanczos[scoop];[5:v]scale=-1:235:flags=lanczos[wink];"
+                f"[text][scoop]overlay=x=W-w-59:y=H-h-87:enable='not({wink_window})'[stood];"
+                f"[stood][wink]overlay=x=W-w-59:y=H-h-87:enable='{wink_window}'[out]"
+            )
         subprocess.run(
             [
                 "ffmpeg",
@@ -330,20 +424,7 @@ def render_template(
                 "1",
                 "-i",
                 str(source),
-                "-i",
-                str(ASSETS / "brand-badge.png"),
-                "-i",
-                str(hook_image),
-                "-f",
-                "concat",
-                "-safe",
-                "1",
-                "-i",
-                str(timeline),
-                "-i",
-                str(ASSETS / "scoop-stand.png"),
-                "-i",
-                str(wink),
+                *layers,
                 "-filter_complex_threads",
                 "1",
                 "-filter_complex",
@@ -377,3 +458,27 @@ def render_template(
     if not output.stat().st_size:
         raise ValueError("Template export produced no file")
     return TemplateResult(status, selected)
+
+
+def gameplay_layout(
+    source: Path, duration: float, crop: str, cam: str, preserve_source_frame: bool = False
+) -> tuple[str, int]:
+    if preserve_source_frame:
+        return (
+            "[0:v]setpts=PTS-STARTPTS,fps=30,"
+            f"scale={WIDTH}:480:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+            f"setsar=1,pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2[base];"
+        ), 0
+    camera = facecam_crop(source, duration, cam)
+    top = CAM_HEIGHT if camera else 0
+    game = (
+        f"{portrait_crop(crop, HEIGHT - top)},"
+        f"scale={WIDTH}:{HEIGHT - top}:flags=bicubic,setsar=1"
+    )
+    if camera:
+        return (
+            "[0:v]setpts=PTS-STARTPTS,fps=30,split=2[rawgame][rawcam];"
+            f"[rawgame]{game}[game];[rawcam]{camera},setsar=1[cam];"
+            "[cam][game]vstack=inputs=2[base];"
+        ), top
+    return f"[0:v]setpts=PTS-STARTPTS,fps=30,{game}[base];", top

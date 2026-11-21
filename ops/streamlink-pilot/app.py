@@ -7,17 +7,18 @@ import re
 import secrets
 import subprocess
 from collections.abc import AsyncIterator, Callable, Iterator
-from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from contextlib import ExitStack, asynccontextmanager
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from shutil import copyfileobj, disk_usage, rmtree
-from tempfile import TemporaryDirectory
-from threading import Lock, Thread
+from tempfile import TemporaryDirectory, TemporaryFile
+from threading import Event, Lock, Thread
 from time import monotonic
 from typing import Annotated, BinaryIO
 from urllib.parse import unquote
-from zipfile import BadZipFile
+from zipfile import BadZipFile, ZipFile
 
 from fastapi import (
     Depends,
@@ -47,8 +48,12 @@ from streamlink.options import Options
 from clipcast_template.facecam import FACECAM_OPTIONS
 from clipcast_template.render import (
     CROP,
+    CUSTOM_CHANNEL_VI_TEMPLATE,
+    CUSTOM_GTA_CLIPCAST_TEMPLATE,
+    DEFAULT_TEMPLATE,
     HOOK_LIMIT,
     NARRATION_LIMIT,
+    REEL_TEMPLATES,
     auto_captions,
     probe_clip,
     render_template,
@@ -56,6 +61,7 @@ from clipcast_template.render import (
 )
 from highlights import (
     MAX_CLIPS,
+    MAX_HIGHLIGHT_SECONDS,
     ChatMonitor,
     Clip,
     cut_clip,
@@ -66,6 +72,10 @@ from highlights import (
 from saved_views import SCRIPT, saved_page
 
 CAPTURE_SECONDS = 600
+BRAND_REEL_TEMPLATES = {
+    "channel-vi": CUSTOM_CHANNEL_VI_TEMPLATE,
+    "gta-clipcast": CUSTOM_GTA_CLIPCAST_TEMPLATE,
+}
 MIB = 1024 * 1024
 DEFAULT_QUALITY = "720p"
 HD_STREAMS = "720p60,720p,720p30,480p60,480p,480p30,360p60,360p,360p30"
@@ -78,6 +88,20 @@ QUALITY_OPTIONS = {
 }
 LOGGER = logging.getLogger(__name__)
 BASIC = HTTPBasic(realm="ClipCast recorder")
+ACCESS_COOKIE = "clipcast_access"
+ACCESS_LINK_PAGE = """<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open ClipCast</title></head><body><p id="status">Opening ClipCast…</p>
+<script>
+const token = location.hash.slice(1);
+history.replaceState(null, '', location.pathname);
+fetch('/open', {method: 'POST', body: new URLSearchParams({token})}).then(response => {
+    if (!response.ok) throw new Error('ClipCast access failed');
+    location.replace('/');
+}).catch(() => {
+    document.getElementById('status').textContent = 'Open ClipCast using your private link.';
+});
+</script><noscript>Enable JavaScript and reopen your ClipCast link.</noscript></body></html>"""
 MODEL_PATH = Path(__file__).with_name("yamnet.tflite")
 
 
@@ -85,6 +109,24 @@ MODEL_PATH = Path(__file__).with_name("yamnet.tflite")
 class Capture:
     duration: float
     height: int
+
+
+class CampaignCategoryError(ValueError):
+    pass
+
+
+def verify_twitch_category(url: str, required: str) -> str:
+    session = Streamlink({"http-timeout": 12.0})
+    with session.http:
+        try:
+            _, plugin, resolved = session.resolve_url_no_redirect(url)
+            channel = plugin(session, resolved)
+            actual, stream_id = channel.get_category(), channel.get_id()
+        except (OSError, StreamlinkError) as error:
+            raise CampaignCategoryError(f"Could not verify the live {required} category.") from error
+    if not actual or not stream_id or actual.casefold() != required.casefold():
+        raise CampaignCategoryError(f"Waiting for a verified {required} livestream.")
+    return stream_id
 
 
 def capture_mp4(
@@ -233,6 +275,9 @@ def download_chunks(file: BinaryIO) -> Iterator[bytes]:
 
 MAX_ACTIVE = 5
 MAX_RUNS = 6
+DEFAULT_CONTINUOUS_HIGHLIGHTS = 3
+MAX_CONTINUOUS_HIGHLIGHTS = 5
+CONTINUOUS_RETRY_SECONDS = 60
 CAPTURE_HEADROOM = 192 * MIB
 HANDLE = re.compile(r"[a-z0-9_]{3,25}", re.ASCII)
 BUSY = {"capturing", "queued", "analysing", "ranked", "cutting"}
@@ -260,9 +305,18 @@ class Highlight:
     crop: str = "center"
     caption_status: str = ""
     cam: str = "auto"
+    template: str = DEFAULT_TEMPLATE
     edit_request: str = ""
     edit_kind: str = ""
     edit_revision: int = 0
+    transcript: list | None = None
+    duration: float | None = None
+    brand_reels: dict[str, "Highlight"] = field(default_factory=dict)
+    brand_request: str = ""
+    resolved_revision: int | None = None
+    skip_reason: str = ""
+    downloaded_revision: int | None = None
+    downloaded_brands: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -278,6 +332,18 @@ class Recording:
     signals: str = ""
     run: str = ""
     detail: str = ""
+    capture_finished: Event = field(default_factory=Event)
+
+
+@dataclass(frozen=True)
+class CampaignBrief:
+    name: str
+    brief: str
+    min_seconds: int | None
+    max_seconds: int | None
+    required_category: str = ""
+    preserve_source_frame: bool = False
+    require_custom_hook: bool = False
 
 
 @dataclass
@@ -287,6 +353,17 @@ class Run:
     jobs: list[str] = field(default_factory=list)
     finalizing: bool = False
     saved_revision: str | None = None
+    continuous: bool = False
+    campaign: CampaignBrief | None = None
+
+
+@dataclass
+class ContinuousCapture:
+    channel: str
+    quality: str
+    campaign: CampaignBrief | None = None
+    stop: Event = field(default_factory=Event)
+    status: str = "Starting"
 
 
 @dataclass
@@ -304,6 +381,7 @@ class EditOptions(BaseModel):
     narration: str = Field(default="", max_length=NARRATION_LIMIT)
     crop: str = "center"
     cam: str = "auto"
+    template: str = DEFAULT_TEMPLATE
 
 
 class UploadOptions(EditOptions):
@@ -312,6 +390,34 @@ class UploadOptions(EditOptions):
 
 class RunEditOptions(EditOptions):
     request_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+
+class BrandReelOptions(BaseModel):
+    channel_vi_hook: str = Field(default="", max_length=HOOK_LIMIT)
+    gta_clipcast_hook: str = Field(default="", max_length=HOOK_LIMIT)
+    request_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+
+class CampaignSettings(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    brief: str = Field(min_length=1, max_length=12000)
+    min_seconds: int | None = Field(default=None, ge=1, le=MAX_HIGHLIGHT_SECONDS)
+    max_seconds: int | None = Field(default=None, ge=1, le=MAX_HIGHLIGHT_SECONDS)
+    required_category: str = Field(default="", max_length=120)
+    preserve_source_frame: bool = False
+    require_custom_hook: bool = False
+
+    def brief_for_run(self) -> CampaignBrief:
+        name, brief = self.name.strip(), self.brief.strip()
+        if not name or not brief:
+            raise ValueError("Add both the campaign name and its brief.")
+        if self.min_seconds is not None and self.max_seconds is not None:
+            if self.min_seconds > self.max_seconds:
+                raise ValueError("The minimum duration must be at most the maximum.")
+        return CampaignBrief(
+            name, brief, self.min_seconds, self.max_seconds, self.required_category.strip(),
+            self.preserve_source_frame, self.require_custom_hook,
+        )
 
 
 def channels_from_input(names: str) -> list[str]:
@@ -331,12 +437,23 @@ def create_app(
     channel: str,
     password: str,
     model: Path = MODEL_PATH,
+    *,
+    locked_campaign: CampaignBrief | None = None,
+    continuous_highlight_limit: int = DEFAULT_CONTINUOUS_HIGHLIGHTS,
+    access_link_hash: str = "",
+    public_access: bool = False,
 ) -> FastAPI:
     default_channels = channels_from_input(channel)
     if len(default_channels) > MAX_ACTIVE:
         raise ValueError("TWITCH_CHANNEL can prefill up to five usernames")
-    if len(password) < 20 or not password.isascii():
+    if locked_campaign and len(default_channels) != 1:
+        raise ValueError("A locked campaign requires one TWITCH_CHANNEL")
+    if access_link_hash and re.fullmatch(r"[0-9a-f]{64}", access_link_hash) is None:
+        raise ValueError("RECORDER_ACCESS_LINK_HASH must be a lowercase SHA-256 hex digest")
+    if not public_access and not access_link_hash and (len(password) < 20 or not password.isascii()):
         raise ValueError("RECORDER_PASSWORD must be at least 20 ASCII characters")
+    if not 1 <= continuous_highlight_limit <= MAX_CONTINUOUS_HIGHLIGHTS:
+        raise ValueError("CLIPCAST_HIGHLIGHTS_PER_WINDOW must be between 1 and 5")
 
     csrf = secrets.token_urlsafe(32)
     state = Lock()
@@ -347,25 +464,54 @@ def create_app(
     edits: dict[str, ArchiveEdit] = {}
     selected_channels = default_channels
     selected_quality = DEFAULT_QUALITY
+    continuous: ContinuousCapture | None = None
+    shutting_down = Event()
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         try:
             yield
         finally:
+            shutting_down.set()
+            if continuous:
+                continuous.stop.set()
             work.cleanup()
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
-    def authenticate(
-        credentials: Annotated[HTTPBasicCredentials, Depends(BASIC)],
-    ) -> None:
+    def valid_access_link(token: str) -> bool:
+        return (
+            re.fullmatch(r"[A-Za-z0-9_-]{43}", token) is not None
+            and secrets.compare_digest(sha256(token.encode("ascii")).hexdigest(), access_link_hash)
+        )
+
+    async def authenticate(request: Request) -> None:
+        if public_access:
+            return
+        if access_link_hash:
+            if not valid_access_link(request.cookies.get(ACCESS_COOKIE, "")):
+                raise HTTPException(status_code=403, detail="Open ClipCast using your private link.")
+            return
+        credentials: HTTPBasicCredentials = await BASIC(request)
         valid_password = secrets.compare_digest(credentials.password, password)
         if credentials.username != "recorder" or not valid_password:
             raise HTTPException(
                 status_code=401,
                 headers={"WWW-Authenticate": 'Basic realm="ClipCast recorder"'},
             )
+
+    if access_link_hash:
+        @app.get("/open", response_class=HTMLResponse)
+        def open_access_link() -> HTMLResponse:
+            return HTMLResponse(ACCESS_LINK_PAGE, headers={"Cache-Control": "no-store"})
+
+        @app.post("/open", status_code=204)
+        def accept_access_link(token: str = Form("", max_length=43)) -> Response:
+            if not valid_access_link(token):
+                raise HTTPException(status_code=403, detail="Open ClipCast using your private link.")
+            response = Response(status_code=204, headers={"Cache-Control": "no-store"})
+            response.set_cookie(ACCESS_COOKIE, token, secure=True, httponly=True, samesite="lax")
+            return response
 
     def authorize_form(token: str) -> None:
         if not secrets.compare_digest(token.encode("utf-8"), csrf.encode("ascii")):
@@ -375,29 +521,43 @@ def create_app(
 
     def run_capture(job: Recording, quality: str) -> None:
         stream_options, max_bytes = QUALITY_OPTIONS[quality]
+        with state:
+            campaign = runs[job.run].campaign
+        category = campaign.required_category if campaign else ""
+        url = f"https://www.twitch.tv/{job.channel}"
         chat = ChatMonitor(job.channel)
-        chat.start()
+        chat_started = False
         try:
+            stream_id = verify_twitch_category(url, category) if category else ""
+            chat.start()
+            chat_started = True
             recorded = capture_mp4(
-                f"https://www.twitch.tv/{job.channel}",
+                url,
                 job.path,
                 on_progress=chat.progress,
                 quality=stream_options,
                 max_bytes=max_bytes,
             )
+            if category and verify_twitch_category(url, category) != stream_id:
+                raise CampaignCategoryError("The livestream changed during capture.")
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             job.path.unlink(missing_ok=True)
             LOGGER.warning("Capture failed (%s)", type(error).__name__)
             with state:
                 job.phase = "failed"
+                if isinstance(error, CampaignCategoryError):
+                    job.detail = str(error)
+                job.capture_finished.set()
             prepare_run(job.run)
             return
         finally:
-            chat.close()
+            if chat_started:
+                chat.close()
 
         with state:
             job.capture = recorded
             job.phase = "queued"
+            job.capture_finished.set()
 
         # Serialize audio analysis and branded encodes on Render's small free instance.
         audio_status = "Audio checked for laughter and action."
@@ -473,30 +633,66 @@ def create_app(
                 job.detail = "Cutting the first highlights"
                 # Early slots are split across channels. Remaining slots are
                 # filled from the best candidates once every channel is checked.
-                share = MAX_CLIPS // len(runs[job.run].jobs)
+                run = runs[job.run]
+                share = MAX_CLIPS // len(run.jobs)
             remaining = []
-            for clip in candidates:
-                if len(job.highlights) >= share:
-                    remaining.append(clip)
-                else:
-                    append_highlight(job, clip)
+            if run.continuous:
+                for clip in candidates:
+                    if len(job.highlights) >= continuous_highlight_limit:
+                        break
+                    if "Dialogue may continue past the cut" not in clip.reasons:
+                        append_highlight(job, clip, transcribe=True, campaign=run.campaign)
+            else:
+                for clip in candidates:
+                    if len(job.highlights) >= share:
+                        remaining.append(clip)
+                    else:
+                        append_highlight(job, clip)
             with state:
                 job.candidates = remaining
                 job.signals = f"{chat_status} {audio_status}"
                 job.phase = "ranked"
-                job.detail = ""
+                job.detail = (
+                    "No highlight met the campaign duration and ending checks."
+                    if run.campaign and not job.highlights
+                    else ""
+                )
         prepare_run(job.run)
 
-    def append_highlight(job: Recording, clip: Clip) -> bool:
+    def append_highlight(
+        job: Recording,
+        clip: Clip,
+        *,
+        transcribe: bool = False,
+        campaign: CampaignBrief | None = None,
+    ) -> bool:
         output = job.path.with_name(f"highlight-{len(job.highlights) + 1}.mp4")
+        duration = None
         try:
             cut_clip(job.path, output, clip)
+            if campaign and (campaign.min_seconds is not None or campaign.max_seconds is not None):
+                duration, _ = probe_clip(output)
+                if not (campaign.min_seconds or 0) <= duration <= (
+                    campaign.max_seconds or float("inf")
+                ):
+                    output.unlink(missing_ok=True)
+                    return False
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             output.unlink(missing_ok=True)
             LOGGER.warning("Highlight cut failed (%s)", type(error).__name__)
             return False
+        transcript = None
+        if transcribe:
+            try:
+                with TemporaryDirectory(prefix="transcript-", dir=output.parent) as scan:
+                    transcript = auto_captions(output, Path(scan))
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+                LOGGER.info("Highlight transcript unavailable (%s)", type(error).__name__)
+        template = CUSTOM_CHANNEL_VI_TEMPLATE if transcribe else DEFAULT_TEMPLATE
         with state:
-            job.highlights.append(Highlight(clip, output))
+            job.highlights.append(
+                Highlight(clip, output, transcript=transcript, template=template, duration=duration)
+            )
         return True
 
     def prepare_run(run_key: str) -> None:
@@ -524,19 +720,62 @@ def create_app(
                 if count == MAX_CLIPS:
                     break
                 count += append_highlight(job, clip)
+        automatic = []
         with state:
             for job in batch:
                 if job.phase == "cutting":
                     job.phase = "ready"
+                    run = runs[job.run]
+                    if run.continuous:
+                        for item in job.highlights:
+                            item.phase = "hook_queued"
+                            automatic.append((item, run.campaign))
                 job.candidates.clear()
+        for item, campaign in automatic:
+            render_automatic_pair(item, campaign)
 
-    def run_template(highlight: Highlight, output: Path) -> None:
+    def render_automatic_pair(item: Highlight, campaign: CampaignBrief | None) -> None:
+        hook = ""
+        source = ""
+        try:
+            with processor:
+                with state:
+                    item.phase = "suggesting"
+                suggestion = suggest_template_hook(
+                    item.path, "", item.crop, cached_cues=item.transcript or [],
+                )
+                hook, source = suggestion.text, suggestion.source
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+            LOGGER.info("Automatic Reel hook unavailable (%s)", type(error).__name__)
+        if not hook:
+            if "Laugh reactions in chat" in item.clip.reasons:
+                hook = "THIS HAD CHAT LAUGHING"
+            elif "Chat spike" in item.clip.reasons:
+                hook = "WATCH WHAT GOT CHAT TALKING"
+            elif "Laughter in stream audio" in item.clip.reasons:
+                hook = "WAIT FOR THE LAUGH"
+            source = "highlight signals"
+        with state:
+            item.phase = ""
+            if not hook and campaign and campaign.require_custom_hook:
+                item.skip_reason = "ClipCast could not find a specific hook supported by the clip."
+                item.resolved_revision = item.edit_revision
+                return
+            item.hook = hook or "WATCH HOW THIS PLAYS OUT"
+            item.hook_status = f"Hook selected from {source}." if hook else "Used a neutral hook."
+            renders = prepare_brand_reels(item, dict.fromkeys(BRAND_REEL_TEMPLATES, item.hook))
+        render_brand_reels(renders)
+
+    def run_template(highlight: Highlight, output: Path, *, reuse_transcript: bool = False) -> None:
         phase = "ready"
         candidate = output.with_suffix(".pending.mp4")
         try:
             with processor:
                 with state:
                     highlight.phase = "rendering"
+                caption_options = {"cached_cues": highlight.transcript or []} if reuse_transcript else {}
+                if locked_campaign and locked_campaign.preserve_source_frame:
+                    caption_options["preserve_source_frame"] = True
                 result = render_template(
                     highlight.path,
                     candidate,
@@ -544,6 +783,8 @@ def create_app(
                     highlight.narration,
                     highlight.crop,
                     highlight.cam,
+                    highlight.template,
+                    **caption_options,
                 )
                 candidate.replace(output)
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
@@ -553,7 +794,7 @@ def create_app(
         with state:
             if phase == "ready":
                 highlight.caption_status = result.caption_status
-                if not highlight.hook:
+                if not highlight.hook and highlight.template == DEFAULT_TEMPLATE:
                     highlight.hook = result.hook.text
                     highlight.hook_status = (
                         f"Hook suggested from {result.hook.source}."
@@ -617,11 +858,13 @@ def create_app(
             "status": "ok",
             "mode": "highlights",
             "quality_options": "hd",
-            "capture_slots": MAX_ACTIVE,
-            "template": "gameplay-first",
+            "capture_slots": 1 if locked_campaign else MAX_ACTIVE,
+            "template": DEFAULT_TEMPLATE,
+            "channel_vi_templates": len(REEL_TEMPLATES) - 1,
             "saved_runs": "browser",
             "background_review": "server",
             "clip_cap_per_run": MAX_CLIPS,
+            "clip_cap_per_continuous_window": continuous_highlight_limit,
             "batch_progress": "progressive",
             "reel_upload": "chunked",
             "phone_upload_resume": "enabled",
@@ -629,6 +872,11 @@ def create_app(
             "reel_download": "direct",
             "hooks": "clip-aware",
             "previews": "inline",
+            "continuous_capture": "supported",
+            "branded_reel_pair": "supported",
+            "branded_reel_bundle": "supported",
+            "automatic_reels": "supported",
+            "campaign_lock": "enabled" if locked_campaign else "optional",
         }
 
     hidden = f'<input type="hidden" name="token" value="{csrf}">'
@@ -636,7 +884,23 @@ def create_app(
     def show_home(error: str = "", status: int = 200) -> HTMLResponse:
         # This handler is also used with a fixed message for invalid form submissions.
         with state:
-            active = sum(job.phase in BUSY for job in jobs.values())
+            active = sum(
+                job.phase == "capturing" if locked_campaign else job.phase in BUSY
+                for job in jobs.values()
+            )
+            continuous_status = ""
+            if continuous:
+                label = "Stopping after this capture" if continuous.stop.is_set() else continuous.status
+                campaign_label = (
+                    f" · {html.escape(continuous.campaign.name)}" if continuous.campaign else ""
+                )
+                continuous_status = (
+                    f"<p>Continuous recording for @{html.escape(continuous.channel)} · "
+                    f"{html.escape(label)}{campaign_label}</p>"
+                    f'<form method="post" action="/continuous/stop">{hidden}'
+                    '<button class="secondary" type="submit">Stop after this capture</button>'
+                    "</form>"
+                )
             cards = "".join(
                 f'<p><a class="secondary" href="/runs/{run.key}">Open recording run</a> '
                 f"{html.escape(', '.join(jobs[key].channel for key in run.jobs if key in jobs))}</p>"
@@ -648,6 +912,36 @@ def create_app(
         options = "".join(
             f'<option value="{value}"{" selected" if value == quality else ""}>{title}</option>'
             for value, title in (("720p", "720p HD"), ("1080p", "Up to 1080p Full HD"))
+        )
+        if locked_campaign:
+            campaign_fields = (
+                f"<p><strong>Locked campaign</strong> · {html.escape(locked_campaign.name)}</p>"
+                '<details><summary>View locked brief</summary>'
+                f'<p style="white-space:pre-wrap">{html.escape(locked_campaign.brief)}</p></details>'
+            )
+            recording_button = ""
+            slots = 1
+        else:
+            campaign_fields = (
+                "<details><summary>Campaign brief and clip length</summary>"
+                '<label for="campaign">Campaign name</label>'
+                '<input id="campaign" name="campaign_name" type="text" maxlength="120">'
+                '<label for="brief">Campaign brief</label>'
+                '<textarea id="brief" name="campaign_brief" rows="5" maxlength="12000"></textarea>'
+                '<label for="min-seconds">Minimum clip seconds</label>'
+                f'<input id="min-seconds" name="min_seconds" type="number" min="1" max="{MAX_HIGHLIGHT_SECONDS}">'
+                '<label for="max-seconds">Maximum clip seconds</label>'
+                f'<input id="max-seconds" name="max_seconds" type="number" min="1" max="{MAX_HIGHLIGHT_SECONDS}">'
+                "</details>"
+            )
+            disabled = " disabled" if active >= MAX_ACTIVE else ""
+            recording_button = f'<button type="submit"{disabled}>Record and find clips</button>'
+            slots = MAX_ACTIVE
+        form_action = "/continuous/start" if locked_campaign else "/record"
+        readonly = " readonly" if locked_campaign else ""
+        channel_hint = (
+            "This worker is assigned to one Twitch channel."
+            if locked_campaign else "Enter one Twitch username for continuous recording."
         )
         return HTMLResponse(
             '<!doctype html><html lang="en"><head><meta charset="utf-8">'
@@ -673,19 +967,23 @@ def create_app(
             "[role=alert]{color:#ffbaa5}</style></head><body><main>"
             "<h1>ClipCast recorder</h1>"
             '<a class="secondary" href="/saved">Saved clips</a>'
-            f"<p>{active} of {MAX_ACTIVE} recording slots in use</p>{notice}"
-            f'<form method="post" action="/record">{hidden}'
+            f"<p>{active} of {slots} recording slots in use</p>{notice}"
+            f'<form method="post" action="{form_action}">{hidden}'
             '<label for="channels">Twitch channels</label>'
             f'<input id="channels" name="channels" type="text" value="{form_channels}" '
             'placeholder="clix, secondchannel" maxlength="160" autocomplete="off" '
-            'autocapitalize="none" spellcheck="false" required>'
-            "<small>Enter up to five live usernames, separated by a comma.</small>"
+            f'autocapitalize="none" spellcheck="false" required{readonly}>'
+            f"<small>{channel_hint}</small>"
             f'<label for="quality">Recording quality</label><select id="quality" '
             f'name="quality">{options}</select>'
             '<label><input type="checkbox" name="confirm" value="yes" required> '
             "I have permission to capture these streams.</label>"
-            f'<button type="submit"{" disabled" if active >= MAX_ACTIVE else ""}>'
-            "Record and find clips</button></form>"
+            f"{recording_button}{campaign_fields}"
+            '<button class="secondary" type="submit" formaction="/continuous/start">'
+            "Record consecutive 10-minute windows</button>"
+            "<small>Continuous recording takes one username. Windows without a highlight "
+            "and windows whose Reel has been delivered can be cleared when space is needed.</small>"
+            f"</form>{continuous_status}"
             f'<div id="recordings">{cards}</div></main></body></html>',
             status_code=status,
             headers={"Cache-Control": "private, no-store", "X-Frame-Options": "DENY"},
@@ -704,6 +1002,8 @@ def create_app(
     ):
         nonlocal selected_channels, selected_quality
         authorize_form(token)
+        if locked_campaign:
+            return show_home("Use continuous recording for this locked campaign.", 409)
         if confirm != "yes":
             return show_home("Confirm permission to record first.", 400)
         if quality not in QUALITY_OPTIONS:
@@ -713,17 +1013,11 @@ def create_app(
         except ValueError as error:
             return show_home(str(error), 400)
 
-        error_message = ""
-        _, byte_cap = QUALITY_OPTIONS[quality]
         with state:
-            remaining = sum(
-                storage_reserved(job)
-                for job in jobs.values()
-                if job.phase == "capturing"
-            )
-            needed = remaining + len(requested) * (byte_cap + CAPTURE_HEADROOM)
             in_progress = {job.channel for job in jobs.values() if job.phase in BUSY}
-            if in_progress.intersection(requested):
+            if continuous:
+                error_message = "Stop continuous recording before starting a manual capture."
+            elif in_progress.intersection(requested):
                 error_message = (
                     "One of those channels already has a recording in progress."
                 )
@@ -732,31 +1026,137 @@ def create_app(
                     "Five recordings can run at a time. Try again when a slot is free."
                 )
             else:
-                reclaim_saved_runs(len(requested), needed)
-                if len(requested) + len(jobs) > MAX_RUNS:
-                    error_message = (
-                        "Save an older finished run to this device to make room."
-                    )
-                elif disk_usage(work.name).free < needed:
-                    error_message = "The recorder is low on space. Save an older finished run to this device."
+                error_message = capture_capacity(len(requested), quality)
             if not error_message:
                 selected_channels, selected_quality = requested, quality
-                run_key = secrets.token_hex(8)
-                run = Run(run_key, datetime.now(UTC).isoformat())
-                runs[run_key] = run
-                for name in requested:
-                    key = secrets.token_hex(8)
-                    folder = Path(work.name) / key
-                    folder.mkdir()
-                    job = Recording(
-                        key, name, folder / "capture.mp4", byte_cap, run=run_key
-                    )
-                    jobs[key] = job
-                    run.jobs.append(key)
-                    Thread(target=run_capture, args=(job, quality), daemon=True).start()
+                run = start_recording(requested, quality)
         if error_message:
             return show_home(error_message, 409)
-        return RedirectResponse(f"/runs/{run_key}", status_code=303)
+        return RedirectResponse(f"/runs/{run.key}", status_code=303)
+
+    def capture_capacity(incoming: int, quality: str) -> str:
+        _, byte_cap = QUALITY_OPTIONS[quality]
+        remaining = sum(
+            storage_reserved(job) for job in jobs.values() if job.phase == "capturing"
+        )
+        needed = remaining + incoming * (byte_cap + CAPTURE_HEADROOM)
+        reclaim_saved_runs(incoming, needed)
+        if incoming + len(jobs) > MAX_RUNS:
+            return "Waiting for older runs to finish or be saved or delivered."
+        if disk_usage(work.name).free < needed:
+            return "The recorder is low on space. Save an older finished run to this device."
+        return ""
+
+    def start_recording(
+        requested: list[str],
+        quality: str,
+        *,
+        repeat: bool = False,
+        campaign: CampaignBrief | None = None,
+    ) -> Run:
+        _, byte_cap = QUALITY_OPTIONS[quality]
+        run = Run(
+            secrets.token_hex(8), datetime.now(UTC).isoformat(), continuous=repeat,
+            campaign=campaign,
+        )
+        runs[run.key] = run
+        for name in requested:
+            key = secrets.token_hex(8)
+            folder = Path(work.name) / key
+            folder.mkdir()
+            job = Recording(key, name, folder / "capture.mp4", byte_cap, run=run.key)
+            jobs[key] = job
+            run.jobs.append(key)
+            Thread(target=run_capture, args=(job, quality), daemon=True).start()
+        return run
+
+    def run_continuously(session: ContinuousCapture) -> None:
+        nonlocal continuous
+        try:
+            while not session.stop.is_set():
+                with state:
+                    if session.stop.is_set():
+                        return
+                    error = capture_capacity(1, session.quality)
+                    session.status = error or "Recording a 10-minute window"
+                    if not error:
+                        run = start_recording(
+                            [session.channel], session.quality,
+                            repeat=True, campaign=session.campaign,
+                        )
+                        job = jobs[run.jobs[0]]
+                if error:
+                    session.stop.wait(CONTINUOUS_RETRY_SECONDS)
+                    continue
+                while not job.capture_finished.wait(0.5):
+                    if shutting_down.is_set():
+                        return
+                if job.capture is None or job.capture.duration < CAPTURE_SECONDS / 2:
+                    with state:
+                        session.status = job.detail or "Stream unavailable or interrupted. Retrying shortly."
+                    session.stop.wait(CONTINUOUS_RETRY_SECONDS)
+        finally:
+            with state:
+                if continuous is session:
+                    continuous = None
+
+    @app.post("/continuous/start", dependencies=[Depends(authenticate)], response_model=None)
+    def start_continuous(
+        token: str = Form(),
+        confirm: str = Form(""),
+        quality: str = Form(DEFAULT_QUALITY),
+        channels: str = Form("", max_length=160),
+        campaign_name: str = Form("", max_length=120),
+        campaign_brief: str = Form("", max_length=12000),
+        min_seconds: int | None = Form(None, ge=1, le=MAX_HIGHLIGHT_SECONDS),
+        max_seconds: int | None = Form(None, ge=1, le=MAX_HIGHLIGHT_SECONDS),
+    ):
+        nonlocal continuous
+        authorize_form(token)
+        if confirm != "yes" or quality not in QUALITY_OPTIONS:
+            return show_home("Confirm permission and choose a recording quality.", 400)
+        try:
+            requested = channels_from_input(channels) if channels else default_channels
+        except ValueError as error:
+            return show_home(str(error), 400)
+        if len(requested) != 1:
+            return show_home("Enter one Twitch username for continuous recording.", 400)
+        if locked_campaign and requested != default_channels:
+            return show_home("This worker is locked to a different Twitch username.", 409)
+        campaign = locked_campaign
+        name, brief = campaign_name.strip(), campaign_brief.strip()
+        if name or brief or min_seconds is not None or max_seconds is not None:
+            try:
+                campaign = CampaignSettings(
+                    name=name, brief=brief, min_seconds=min_seconds, max_seconds=max_seconds,
+                    **({
+                        "required_category": locked_campaign.required_category,
+                        "preserve_source_frame": locked_campaign.preserve_source_frame,
+                        "require_custom_hook": locked_campaign.require_custom_hook,
+                    } if locked_campaign else {}),
+                ).brief_for_run()
+            except ValidationError:
+                return show_home("Add both the campaign name and its brief.", 400)
+            except ValueError as error:
+                return show_home(str(error), 400)
+            if locked_campaign and campaign != locked_campaign:
+                return show_home("This worker already has a locked campaign brief.", 409)
+        with state:
+            available = not continuous and all(job.phase != "capturing" for job in jobs.values())
+            if available:
+                continuous = ContinuousCapture(requested[0], quality, campaign)
+                Thread(target=run_continuously, args=(continuous,), daemon=True).start()
+        if not available:
+            return show_home("Stop the active session or wait for a recording slot.", 409)
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/continuous/stop", dependencies=[Depends(authenticate)])
+    def stop_continuous(token: str = Form()) -> RedirectResponse:
+        authorize_form(token)
+        with state:
+            if continuous:
+                continuous.stop.set()
+        return RedirectResponse("/", status_code=303)
 
     @app.post("/jobs/{key}/clips/{rank}/hook", dependencies=[Depends(authenticate)])
     def preview_hook(
@@ -772,7 +1172,7 @@ def create_app(
         with state:
             job = get_job(key)
             item = get_highlight(job, rank)
-            if item.phase not in TEMPLATE_BUSY:
+            if not highlight_is_busy(item):
                 item.narration = "\n".join(
                     " ".join(line.split()) for line in narration.splitlines()
                 ).strip()
@@ -791,14 +1191,17 @@ def create_app(
         hook: str = Form("", max_length=HOOK_LIMIT),
         narration: str = Form("", max_length=NARRATION_LIMIT),
         crop: str = Form("center"),
+        template: str = Form(DEFAULT_TEMPLATE),
     ):
         authorize_form(token)
         if crop not in CROP:
             return show_home("Choose left, centre or right framing.", 400)
+        if template not in REEL_TEMPLATES:
+            return show_home("Choose an available Reel template.", 400)
         with state:
             job = get_job(key)
             item = get_highlight(job, rank)
-            if item.phase not in TEMPLATE_BUSY:
+            if not highlight_is_busy(item):
                 cleaned_hook = " ".join(hook.split())
                 if cleaned_hook != item.hook:
                     item.hook_status = ""
@@ -807,6 +1210,7 @@ def create_app(
                     " ".join(line.split()) for line in narration.splitlines()
                 ).strip()
                 item.crop = crop
+                item.template = template
                 item.edit_kind = "reel"
                 item.edit_revision += 1
                 item.phase = "queued"
@@ -831,11 +1235,19 @@ def create_app(
             for item in job.highlights
         )
 
+    def highlight_revision(key: str, rank: int, item: Highlight) -> str:
+        return f"{key}-{rank}:{item.edit_revision}"
+
     def run_is_busy(batch: list[Recording]) -> bool:
         return any(
             job.phase in BUSY
-            or any(clip.phase in TEMPLATE_BUSY for clip in job.highlights)
+            or any(highlight_is_busy(clip) for clip in job.highlights)
             for job in batch
+        )
+
+    def highlight_is_busy(item: Highlight) -> bool:
+        return item.phase in TEMPLATE_BUSY or any(
+            reel.phase in TEMPLATE_BUSY for reel in item.brand_reels.values()
         )
 
     def reclaim_saved_runs(incoming: int, needed: int) -> None:
@@ -846,7 +1258,15 @@ def create_app(
             ):
                 return
             batch = [jobs[key] for key in run.jobs if key in jobs]
-            if run_is_busy(batch) or run.saved_revision != run_revision(batch):
+            if run_is_busy(batch):
+                continue
+            if run.continuous:
+                if not run.finalizing or any(
+                    item.resolved_revision != item.edit_revision
+                    for job in batch for item in job.highlights
+                ):
+                    continue
+            elif run.saved_revision != run_revision(batch):
                 continue
             for job in batch:
                 rmtree(job.path.parent)
@@ -859,6 +1279,134 @@ def create_app(
             "kind": item.edit_kind,
             "url": f"{base}/template" if template_path(item).is_file() else "",
         }
+
+    def brand_reel_path(item: Highlight, brand: str) -> Path:
+        return item.path.with_name(f"{item.path.stem}-{brand}.mp4")
+
+    def brand_reels_status(item: Highlight, base: str) -> dict:
+        result = {}
+        skip_reason = item.skip_reason if item.resolved_revision == item.edit_revision else ""
+        for brand, template in BRAND_REEL_TEMPLATES.items():
+            reel = item.brand_reels.get(brand)
+            phase = "skipped" if skip_reason else reel.phase if reel else item.phase or "waiting"
+            url = ""
+            if phase == "ready" and brand_reel_path(item, brand).is_file():
+                url = f"{base}/reels/{brand}"
+            result[brand] = {
+                "label": REEL_TEMPLATES[template].split(" · ")[0],
+                "phase": phase,
+                "download_url": url,
+                "hook": reel.hook if reel else "",
+                "skip_reason": skip_reason,
+            }
+        return result
+
+    @app.get("/continuous/queue", dependencies=[Depends(authenticate)])
+    def continuous_queue(response: Response) -> dict:
+        response.headers["Cache-Control"] = "private, no-store"
+        with state:
+            waiting = []
+            for run in runs.values():
+                if not run.continuous:
+                    continue
+                job = jobs[run.jobs[0]]
+                if job.phase != "ready" or not job.highlights:
+                    continue
+                for rank, item in enumerate(job.highlights, 1):
+                    if item.resolved_revision != item.edit_revision:
+                        waiting.append(queued_highlight(run, job, rank, item))
+            return {
+                "channel": continuous.channel if continuous else None,
+                "status": continuous.status if continuous else "Stopped",
+                "locked_campaign": (
+                    {"channel": default_channels[0], **asdict(locked_campaign)}
+                    if locked_campaign else None
+                ),
+                "token": csrf,
+                "highlights": waiting,
+            }
+
+    def queued_highlight(run: Run, job: Recording, rank: int, item: Highlight) -> dict:
+        base = f"/jobs/{job.key}/clips/{rank}"
+        return {
+            "id": f"{job.key}-{rank}",
+            "channel": job.channel,
+            "created_at": run.created_at,
+            "clip_seconds": (
+                item.duration if item.duration is not None
+                else round(item.clip.end - item.clip.start, 1)
+            ),
+            "campaign": asdict(run.campaign) if run.campaign else None,
+            "reasons": item.clip.reasons,
+            "transcript": item.transcript,
+            "run_url": f"/runs/{run.key}",
+            "preview_url": f"{base}/preview",
+            "edit_url": f"{base}/edit",
+            "reels_url": f"{base}/reels",
+            "bundle_url": f"{base}/reels/download",
+            "reels": brand_reels_status(item, base),
+            "delivery_url": f"/continuous/{job.key}/delivered?rank={rank}",
+            "skip_url": f"/continuous/{job.key}/skipped?rank={rank}",
+            "template": CUSTOM_CHANNEL_VI_TEMPLATE,
+            "revision": highlight_revision(job.key, rank, item),
+            "edit": run_edit_status(item, base),
+        }
+
+    @app.post(
+        "/continuous/{key}/delivered",
+        dependencies=[Depends(authenticate)],
+        status_code=204,
+    )
+    def acknowledge_delivery(
+        key: str, revision: str = Form(), token: str = Form(), rank: int = 1,
+    ) -> Response:
+        authorize_form(token)
+        with state:
+            job = get_job(key)
+            run = get_run(job.run)
+            if not run.continuous:
+                raise HTTPException(404, "This is not a continuous recording.")
+            item = get_highlight(job, rank)
+            reels = brand_reels_status(item, "")
+            if (
+                revision != highlight_revision(key, rank, item)
+                or not all(reel["download_url"] for reel in reels.values())
+            ):
+                raise HTTPException(409, "Download both current finished Reels first.")
+            item.resolved_revision = item.edit_revision
+            item.skip_reason = ""
+        return Response(status_code=204)
+
+    @app.post(
+        "/continuous/{key}/skipped",
+        dependencies=[Depends(authenticate)],
+        status_code=204,
+    )
+    def skip_campaign_highlight(
+        key: str,
+        revision: str = Form(),
+        token: str = Form(),
+        reason: str = Form(min_length=1, max_length=300),
+        rank: int = 1,
+    ) -> Response:
+        authorize_form(token)
+        reason = reason.strip()
+        if not reason:
+            raise HTTPException(400, "Add the campaign requirement this clip missed.")
+        with state:
+            job = get_job(key)
+            run = get_run(job.run)
+            if not run.continuous or not run.campaign:
+                raise HTTPException(404, "This is not a campaign highlight.")
+            item = get_highlight(job, rank)
+            if (
+                job.phase != "ready" or highlight_is_busy(item)
+                or revision != highlight_revision(key, rank, item)
+            ):
+                raise HTTPException(409, "Refresh to check the current highlight.")
+            item.resolved_revision = item.edit_revision
+            item.skip_reason = reason
+        return Response(status_code=204)
 
     @app.post(
         "/jobs/{key}/clips/{rank}/edit",
@@ -878,7 +1426,7 @@ def create_app(
             base = f"/jobs/{key}/clips/{rank}"
             if item.edit_request == options.request_id:
                 return run_edit_status(item, base)
-            if item.phase in TEMPLATE_BUSY:
+            if highlight_is_busy(item):
                 raise HTTPException(409, "ClipCast is already working on this clip.")
             item.edit_request = options.request_id
             item.edit_kind = options.kind
@@ -890,6 +1438,7 @@ def create_app(
             ).strip()
             item.crop = options.crop
             item.cam = options.cam
+            item.template = options.template
             queue_edit(options.kind, item)
             return run_edit_status(item, base)
 
@@ -898,6 +1447,136 @@ def create_app(
         with state:
             item = get_highlight(get_job(key), rank)
             return run_edit_status(item, f"/jobs/{key}/clips/{rank}")
+
+    @app.post(
+        "/jobs/{key}/clips/{rank}/reels", dependencies=[Depends(authenticate)], status_code=202
+    )
+    def queue_brand_reels(
+        key: str, rank: int, options: BrandReelOptions,
+        x_clipcast_token: Annotated[str, Header()],
+    ) -> dict:
+        authorize_form(x_clipcast_token)
+        hooks = {
+            "channel-vi": " ".join(options.channel_vi_hook.split()),
+            "gta-clipcast": " ".join(options.gta_clipcast_hook.split()),
+        }
+        base = f"/jobs/{key}/clips/{rank}"
+        with state:
+            job = get_job(key)
+            run = get_run(job.run)
+            if job.phase != "ready" or not run.continuous:
+                raise HTTPException(409, "Wait for the continuous recording's highlight to be ready.")
+            if run.campaign and run.campaign.require_custom_hook and not all(hooks.values()):
+                raise HTTPException(400, "Add a headline to each Reel for this campaign.")
+            item = get_highlight(job, rank)
+            if item.brand_request == options.request_id:
+                return brand_reels_status(item, base)
+            if highlight_is_busy(item):
+                raise HTTPException(409, "ClipCast is already working on this clip.")
+            item.brand_request = options.request_id
+            pending = prepare_brand_reels(item, hooks)
+            if pending:
+                Thread(target=render_brand_reels, args=(pending,), daemon=True).start()
+            return brand_reels_status(item, base)
+
+    def prepare_brand_reels(item: Highlight, hooks: dict[str, str]) -> list[tuple[Highlight, Path]]:
+        pending = []
+        for brand, hook in hooks.items():
+            reel = item.brand_reels.get(brand)
+            path = brand_reel_path(item, brand)
+            if reel and reel.phase == "ready" and reel.hook == hook and path.is_file():
+                continue
+            reel = Highlight(
+                item.clip, item.path, phase="queued", hook=hook, cam=item.cam,
+                crop=item.crop, template=BRAND_REEL_TEMPLATES[brand],
+                transcript=item.transcript,
+            )
+            item.brand_reels[brand] = reel
+            pending.append((reel, path))
+        if pending:
+            item.edit_revision += 1
+            item.skip_reason = ""
+        return pending
+
+    def render_brand_reels(pending: list[tuple[Highlight, Path]]) -> None:
+        for reel, path in pending:
+            run_template(reel, path, reuse_transcript=True)
+
+    @app.get("/jobs/{key}/clips/{rank}/reels", dependencies=[Depends(authenticate)])
+    def get_brand_reels(key: str, rank: int, response: Response) -> dict:
+        response.headers["Cache-Control"] = "private, no-store"
+        with state:
+            item = get_highlight(get_job(key), rank)
+            return brand_reels_status(item, f"/jobs/{key}/clips/{rank}")
+
+    def branded_download_chunks(
+        file: BinaryIO, item: Highlight, revision: int, brands: tuple[str, ...],
+    ) -> Iterator[bytes]:
+        yield from download_chunks(file)
+        with state:
+            if item.edit_revision != revision:
+                return
+            if item.downloaded_revision != revision:
+                item.downloaded_revision = revision
+                item.downloaded_brands.clear()
+            item.downloaded_brands.update(brands)
+            if item.downloaded_brands == BRAND_REEL_TEMPLATES.keys():
+                item.resolved_revision = revision
+                item.skip_reason = ""
+
+    @app.get("/jobs/{key}/clips/{rank}/reels/download", dependencies=[Depends(authenticate)])
+    def download_reel_bundle(key: str, rank: int) -> StreamingResponse:
+        with ExitStack() as sources:
+            with state:
+                job = get_job(key)
+                item = get_highlight(job, rank)
+                reels = brand_reels_status(item, "")
+                if not all(reel["download_url"] for reel in reels.values()):
+                    raise HTTPException(409, "Both Reels need to finish before downloading.")
+                stem = f"{job.channel}-{job.key}-{rank}"
+                revision = item.edit_revision
+                files = {
+                    f"{stem}-{brand}.mp4": sources.enter_context(
+                        brand_reel_path(item, brand).open("rb")
+                    )
+                    for brand in BRAND_REEL_TEMPLATES
+                }
+            bundle = TemporaryFile(dir=work.name)
+            try:
+                with ZipFile(bundle, "w") as archive:
+                    for name, source in files.items():
+                        with archive.open(name, "w") as entry:
+                            copyfileobj(source, entry)
+                length = bundle.tell()
+                bundle.seek(0)
+            except OSError as error:
+                bundle.close()
+                raise HTTPException(507, "ClipCast could not prepare the ZIP download.") from error
+            return StreamingResponse(
+                branded_download_chunks(bundle, item, revision, tuple(BRAND_REEL_TEMPLATES)),
+                media_type="application/zip",
+                headers={
+                    "Content-Length": str(length),
+                    "Content-Disposition": f'attachment; filename="{stem}-both-reels.zip"',
+                    "Cache-Control": "private, no-store",
+                },
+            )
+
+    @app.get("/jobs/{key}/clips/{rank}/reels/{brand}", dependencies=[Depends(authenticate)])
+    def download_brand_reel(key: str, rank: int, brand: str) -> StreamingResponse:
+        if brand not in BRAND_REEL_TEMPLATES:
+            raise HTTPException(404, "Unknown Reel brand.")
+        with state:
+            job = get_job(key)
+            item = get_highlight(job, rank)
+            reel = item.brand_reels.get(brand)
+            path = brand_reel_path(item, brand)
+            if not reel or reel.phase != "ready" or not path.is_file():
+                raise HTTPException(404, "This branded Reel is not ready.")
+            return media_response(
+                path, f"{job.channel}-{job.key}-{rank}-{brand}.mp4",
+                delivery=(item, item.edit_revision, brand),
+            )
 
     @app.get("/saved-clips.js", dependencies=[Depends(authenticate)])
     def archive_script() -> FileResponse:
@@ -947,6 +1626,18 @@ def create_app(
                     "url": f"/jobs/{job.key}/clips/{rank}/preview",
                     "edit_url": f"/jobs/{job.key}/clips/{rank}/edit",
                     "edit": run_edit_status(item, f"/jobs/{job.key}/clips/{rank}"),
+                    "reels": brand_reels_status(item, f"/jobs/{job.key}/clips/{rank}")
+                    if run.continuous else {},
+                    **({
+                        "automatic_reels": True,
+                        "transcript": item.transcript,
+                        "skip_reason": (
+                            item.skip_reason
+                            if item.resolved_revision == item.edit_revision else ""
+                        ),
+                        "reels_url": f"/jobs/{job.key}/clips/{rank}/reels",
+                        "bundle_url": f"/jobs/{job.key}/clips/{rank}/reels/download",
+                    } if run.continuous and job.phase == "ready" else {}),
                 }
                 for job, rank, item in ranked
             ]
@@ -1001,6 +1692,7 @@ def create_app(
             options.kind not in {"hook", "reel"}
             or options.crop not in CROP
             or options.cam not in FACECAM_OPTIONS
+            or options.template not in REEL_TEMPLATES
         ):
             raise HTTPException(400, "Check your clip options.")
 
@@ -1062,6 +1754,7 @@ def create_app(
                 ).strip(),
                 crop=options.crop,
                 cam=options.cam,
+                template=options.template,
             )
             if upload_id:
                 item.phase = "uploading"
@@ -1220,10 +1913,16 @@ def create_app(
         narration: str = Form("", max_length=NARRATION_LIMIT),
         crop: str = Form("center"),
         cam: str = Form("auto"),
+        template: str = Form(DEFAULT_TEMPLATE),
     ) -> dict:
         authorize_form(token)
         options = EditOptions(
-            kind=kind, hook=hook, narration=narration, crop=crop, cam=cam
+            kind=kind,
+            hook=hook,
+            narration=narration,
+            crop=crop,
+            cam=cam,
+            template=template,
         )
         key, item = reserve_edit(options, video.size or 0)
         try:
@@ -1277,11 +1976,18 @@ def create_app(
                 headers={"Cache-Control": "private, no-store"},
             )
 
-    def media_response(path: Path, filename: str) -> StreamingResponse:
+    def media_response(
+        path: Path, filename: str, *, delivery: tuple[Highlight, int, str] | None = None
+    ) -> StreamingResponse:
         file = path.open("rb")
         length = os.fstat(file.fileno()).st_size
+        if delivery:
+            highlight, revision, brand = delivery
+            chunks = branded_download_chunks(file, highlight, revision, (brand,))
+        else:
+            chunks = download_chunks(file)
         return StreamingResponse(
-            download_chunks(file),
+            chunks,
             media_type="video/mp4",
             headers={
                 "Content-Length": str(length),
@@ -1357,9 +2063,7 @@ def create_app(
         authorize_form(token)
         with state:
             job = get_job(key)
-            if job.phase in BUSY or any(
-                item.phase in TEMPLATE_BUSY for item in job.highlights
-            ):
+            if run_is_busy([job]):
                 raise HTTPException(
                     status_code=409, detail="This recording is still processing."
                 )
@@ -1374,6 +2078,18 @@ def create_app(
 
 
 def create_render_app() -> FastAPI:
+    configured_campaign = os.environ.get("CLIPCAST_CAMPAIGN", "")
     return create_app(
-        os.environ.get("TWITCH_CHANNEL", ""), os.environ.get("RECORDER_PASSWORD", "")
+        os.environ.get("TWITCH_CHANNEL", ""),
+        os.environ.get("RECORDER_PASSWORD", ""),
+        locked_campaign=(
+            CampaignSettings.model_validate_json(configured_campaign).brief_for_run()
+            if configured_campaign else None
+        ),
+        continuous_highlight_limit=int(
+            os.environ.get("CLIPCAST_HIGHLIGHTS_PER_WINDOW", DEFAULT_CONTINUOUS_HIGHLIGHTS)
+        ),
+        access_link_hash=os.environ.get("RECORDER_ACCESS_LINK_HASH", ""),
+        # Public access applies only to the deployed KreekCraft recorder.
+        public_access=os.environ.get("RENDER_SERVICE_ID") == "srv-dc0rj449v7es739o9tvg",
     )

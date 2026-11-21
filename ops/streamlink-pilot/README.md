@@ -9,6 +9,14 @@
 4. Open the service's **Environment** tab for the generated `RECORDER_PASSWORD`.
    Visit the service URL and sign in as `recorder` with that password.
 
+For a passwordless worker, generate a private key with `secrets.token_urlsafe(32)`
+and set `RECORDER_ACCESS_LINK_HASH` in the service environment to the lowercase
+SHA-256 hex digest of that key. Share `https://YOUR-HOST/open#YOUR-KEY` privately
+with the operator. Opening it sets an HTTPS-only session cookie. The link can be
+reopened if the browser clears its session. Only store the digest in hosting
+configuration. Remove the unused `RECORDER_PASSWORD` from that worker. Changing
+the digest revokes the previous link and any sessions opened with it.
+
 ## Record, review and export
 
 1. Enter up to five live Twitch usernames, separated by commas. Pick **720p HD**
@@ -28,6 +36,9 @@
 4. The Gameplay First template uses a slim top camera strip when a steady corner
    facecam is detected. The gameplay fills the rest of the frame, with Scoop
    standing at the bottom right and making one brief wink and head tilt.
+   Under **Reel template**, choose **It Was Going Well**, **Roll That Back** or
+   **Scoop Was There** for a Channel VI design with a fixed headline and Scoop
+   artwork. The selected template is saved with the clip draft.
    Under **Captions and framing**, choose the facecam corner manually or turn
    the camera off, reposition the gameplay crop, or type written narration.
 5. Download the finished 720 × 1280 Reel. **Save run to this device** copies
@@ -36,6 +47,70 @@
    optional transfer.
 
 [Render dashboard](https://dashboard.render.com/) · [Render free compute limits](https://render.com/docs/free)
+
+## Consecutive captures and automatic Reels
+
+Enter one authorised Twitch username, select **720p HD**, confirm permission,
+and choose **Record consecutive 10-minute windows**. ClipCast starts the next
+capture as soon as the preceding one is saved. Captures reconnect to Twitch at
+the boundary, so a reconnect can cause a gap or overlap. Analysis runs
+independently and still uses chat reactions, audio, dialogue and gameplay.
+Each window offers up to three distinct highlights with natural endings by
+default. Set `CLIPCAST_HIGHLIGHTS_PER_WINDOW` to a number from 1 to 5 to adjust
+the cap. A window without a suitable highlight is skipped. If the stream is unavailable,
+ClipCast retries after one minute. **Stop after this capture** lets the current
+window finish and stops new ones.
+
+For campaign work, expand **Campaign brief and clip length** and enter the
+name and brief. If the campaign has a duration limit, enter it in seconds.
+ClipCast checks the cut media's actual duration before queuing a highlight.
+The brief is attached to each window, even when you switch campaigns after
+the current capture closes. It stays on the private recorder. Review the other
+rules against the finished export. The current portrait render is 720 × 1280.
+
+To dedicate an instance to a single campaign, set its `TWITCH_CHANNEL` to one
+Twitch username and set `CLIPCAST_CAMPAIGN` in the host's environment. For example:
+
+```json
+{"name":"Campaign name","brief":"Campaign requirements","min_seconds":30,"max_seconds":60}
+```
+
+The duration bounds are optional. The worker displays the configured brief
+read-only and rejects other accounts, other briefs and batch recording. Each
+new capture uses the configured brief, including after an app restart. To run
+another campaign at the same time, deploy another instance with its own
+`TWITCH_CHANNEL`, `CLIPCAST_CAMPAIGN` and password. The lock does not resume a
+capture after a host restart.
+
+Optional `required_category` checks the Twitch game category at both ends of
+each capture. `preserve_source_frame` fits the whole input picture into each
+branded layout, with headlines and captions outside it so source overlays
+can survive reframing. Review the actual finished Reel for logo legibility
+and verify the content against the brief. Set `require_custom_hook` to require
+non-empty headlines for both branded exports.
+
+ClipCast transcribes the highlight and chooses a short on-screen hook from
+spoken details. If the transcript offers no useful hook, ClipCast can use
+recognised objects or a recorded chat or laughter signal. A campaign that
+requires a specific hook skips footage without enough evidence to support one.
+Analysis and rendering run locally on the recorder's compute.
+
+ClipCast automatically renders a **Channel VI** and a **GTA ClipCast** Reel
+for each selected highlight. Channel VI uses the purple gradient and fitted
+headline panel. The GTA ClipCast layout carries Scoop. Both 720 × 1280 outputs
+reuse the same source and dialogue captions and are encoded in sequence.
+
+Reopen the recording run to download either finished MP4 or choose
+**Download both Reels** for one ZIP. If an encode fails, **Retry render**
+uses the existing hook and keeps any successful export. The recorder marks
+an export pair as delivered after streaming the whole ZIP or both MP4s.
+
+If processing falls behind and reaches the recorder's storage limit, capture
+pauses until there is room. Finished deliveries and windows with no highlights
+can be reclaimed when needed. Save source footage separately if you want to keep
+it. A recorder restart clears the in-memory session and queue, so start the
+session again after a restart. Run the recorder on a host that stays awake for
+continuous use. Render Free is suitable for a smoke test while it is awake.
 
 ## Storage, privacy and capacity
 

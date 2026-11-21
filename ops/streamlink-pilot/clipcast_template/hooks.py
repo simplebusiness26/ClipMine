@@ -53,6 +53,18 @@ SPOKEN_EVENTS = (
         "WHO SHOWED UP LATE?",
     ),
     (r"\b(?:mission failed|we failed the mission)\b", "THAT MISSION DIDN'T GO TO PLAN"),
+    (
+        r"\b(?:i|we|they|he|she) (?:just )?lost (?:the|my|our|his|her) getaway (?:car|vehicle)\b",
+        "THERE GOES THE GETAWAY CAR",
+    ),
+    (
+        r"\b(?:i|we|they|he|she) (?:just )?(?:escaped|lost the cops|got away)\b",
+        "HOW DID THEY GET AWAY WITH THAT?",
+    ),
+    (
+        r"\b(?:the|my|our) (?:car|truck|bike) (?:just )?exploded\b",
+        "THAT ESCALATED FAST",
+    ),
 )
 CRASH = re.compile(r"\b(?:i|we|he|she|they) (?:just )?(?:crashed|wrecked)\b")
 CHASE = re.compile(
@@ -248,6 +260,9 @@ def choose_hook(frames: list[list[Detection]], dialogue: list[str]) -> HookSugge
 def suggest_hook(
     source: Path, duration: float, crop_filter: str, dialogue: list[str]
 ) -> HookSuggestion:
+    from_dialogue = choose_hook([], dialogue)
+    if from_dialogue.text:
+        return from_dialogue
     frames = []
     try:
         frames = detect_objects(

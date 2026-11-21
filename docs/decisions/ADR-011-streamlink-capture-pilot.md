@@ -37,4 +37,26 @@ budget and keep completed windows if a scan runs out of time. Face
 detection, dialogue timing and highlight ranking are heuristic. The operator needs permission to capture and
 edit each source.
 
+## Continuous capture and private Reel delivery
+
+An opt-in single-channel session records consecutive windows independently
+from the existing serialized analysis and rendering. Keep one candidate per
+window and expose its transcript through the recorder's authenticated queue.
+Grok Bot can supply the Channel VI headline through the existing Reel edit
+endpoint and acknowledge delivery once the chat attachment is available.
+Each window retains the campaign brief selected at capture time. The recorder
+checks measurable duration limits, while the Bot reviews context and the
+finished output against the remaining campaign requirements.
+Maintain the recorder's existing storage bound and preserve pending Reels
+under backpressure. Continuous sessions and pending windows share the pilot's
+in-memory lifetime. A host must remain awake to run continuously.
+
+## Passwordless operator access
+
+An individual worker can replace Basic authentication with a private operator
+link. The service keeps a digest of the random link key in its environment.
+The browser exchanges the URL fragment for a secure, HTTP-only session cookie.
+The fragment never enters normal request URLs. Removing the password prompt
+preserves the access boundary for recording, editing and media downloads.
+
 [Deployment instructions](../../ops/streamlink-pilot/README.md)

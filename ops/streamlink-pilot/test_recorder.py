@@ -3,21 +3,324 @@ import re
 import subprocess
 from collections import Counter
 from functools import partial
+from hashlib import sha256
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
 from threading import Event, Thread
 from time import monotonic, sleep
 from urllib.parse import quote
+from zipfile import ZipFile
 
 from fastapi.testclient import TestClient
 
 import app
-from clipcast_template.hooks import HookSuggestion
+from clipcast_template.hooks import HookSuggestion, choose_hook
 from clipcast_template.render import TemplateResult
 from highlights import SoundSignals
 
 PASSWORD = "synthetic-test-password-only"
 AUTH = ("recorder", PASSWORD)
+
+
+def test_continuous_recording_overlaps_analysis_and_hands_off_distinct_highlights(monkeypatch):
+    second_started = Event()
+    finish_second = Event()
+    release_first_hook = Event()
+    sources = []
+    render_attempts = []
+
+    def capture(url, output, on_progress, *, quality, max_bytes):
+        assert url.endswith("/clix")
+        sources.append(output)
+        if len(sources) > 1:
+            second_started.set()
+            assert finish_second.wait(8)
+        output.write_bytes(b"capture")
+        return app.Capture(600, 720)
+
+    def speech(path, scratch, *, long_source=False):
+        if long_source:
+            if path == sources[0]:
+                assert second_started.wait(5)
+            return []
+        return [[0.6, 2.4, "I just lost my getaway vehicle."]]
+
+    def suggest(source, narration, crop, *, cached_cues):
+        if source.parent == sources[0].parent and source.stem == "highlight-1":
+            assert release_first_hook.wait(6)
+        return choose_hook([], [text for _, _, text in cached_cues])
+
+    def render(source, output, hook, narration, crop, cam, template, *, cached_cues):
+        assert cached_cues == [[0.6, 2.4, "I just lost my getaway vehicle."]]
+        attempt = (source.stem, template)
+        render_attempts.append(attempt)
+        if attempt == ("highlight-1", app.CUSTOM_GTA_CLIPCAST_TEMPLATE) and render_attempts.count(attempt) == 1:
+            raise ValueError("Simulated GTA render failure.")
+        assert hook == "THERE GOES THE GETAWAY CAR"
+        output.write_bytes(template.encode())
+        return TemplateResult("Automatic English captions", HookSuggestion(hook))
+
+    monkeypatch.setattr(app, "ChatMonitor", lambda _: type(
+        "Chat", (), {
+            "counts": Counter(), "laughter": Counter(), "connected": True,
+            "start": lambda self: None, "close": lambda self: None,
+            "progress": lambda self, seconds: None,
+        }
+    )())
+    monkeypatch.setattr(app, "capture_mp4", capture)
+    monkeypatch.setattr(app, "detect_sound", lambda *_: SoundSignals({}, {}))
+    monkeypatch.setattr(app, "detect_motion", lambda *_: {})
+    monkeypatch.setattr(app, "auto_captions", speech)
+    monkeypatch.setattr(app, "suggest_template_hook", suggest)
+    monkeypatch.setattr(app, "render_template", render)
+    def cut(source, output, clip):
+        output.write_text(str(clip.end - clip.start))
+
+    monkeypatch.setattr(app, "cut_clip", cut)
+    monkeypatch.setattr(app, "probe_clip", lambda path: (float(path.read_text()), True))
+    monkeypatch.setattr(app, "select_clips", lambda *a, **kw: [
+        app.Clip(20, 35, ("Dialogue may continue past the cut",), 12),
+        app.Clip(25, 50, ("Story beat",), 10),
+        app.Clip(45, 60, ("Gameplay movement",), 9),
+        app.Clip(70, 80, ("Action sounds",), 7),
+        app.Clip(100, 114, ("Laughter in stream audio",), 6),
+        app.Clip(140, 153, ("Chat spike",), 5),
+        app.Clip(200, 215, ("Story beat",), 4),
+    ])
+    monkeypatch.setattr(app, "disk_usage", lambda _: type("Disk", (), {"free": 8 * 1024**3})())
+
+    with TestClient(app.create_app("clix", PASSWORD)) as client:
+        assert client.get("/continuous/queue").status_code == 401
+        home = client.get("/", auth=AUTH).text
+        token = re.search(r'name="token" value="([^"]+)"', home)[1]
+        data = {"token": token, "channels": "@clix", "confirm": "yes"}
+        brief = {
+            "campaign_name": "Synthetic campaign",
+            "campaign_brief": "Gameplay only. Use #SyntheticCampaign.",
+            "min_seconds": "12",
+            "max_seconds": "20",
+        }
+
+        def pending():
+            return client.get("/continuous/queue", auth=AUTH).json()["highlights"]
+
+        def wait_for(predicate):
+            deadline = monotonic() + 6
+            while monotonic() < deadline:
+                result = predicate()
+                if result:
+                    return result
+                sleep(0.02)
+            raise AssertionError("Timed out waiting for background recorder")
+
+        try:
+            assert client.post(
+                "/continuous/start", data={**data, **brief, "min_seconds": "22"}, auth=AUTH,
+            ).status_code == 400
+            assert client.post(
+                "/continuous/start", data={**data, **brief}, auth=AUTH, follow_redirects=False
+            ).status_code == 303
+            assert client.post("/continuous/start", data=data, auth=AUTH).status_code == 409
+            assert client.post(
+                "/record", data={**data, "channels": "second"}, auth=AUTH,
+            ).status_code == 409
+            clips = wait_for(pending)
+            assert [item["clip_seconds"] for item in clips] == [15, 14, 13]
+            clip, sibling, other = clips
+            assert len({entry["id"] for entry in clips}) == 3
+            assert len({entry["bundle_url"] for entry in clips}) == 3
+            assert clip["clip_seconds"] == 15
+            assert clip["reasons"] == ["Gameplay movement"]
+            assert clip["campaign"] == {
+                "name": brief["campaign_name"], "brief": brief["campaign_brief"],
+                "min_seconds": 12, "max_seconds": 20,
+                "required_category": "", "preserve_source_frame": False,
+                "require_custom_hook": False,
+            }
+            assert clip["transcript"] == [[0.6, 2.4, "I just lost my getaway vehicle."]]
+            assert not clip["reels"]["channel-vi"]["download_url"]
+            assert client.get(clip["bundle_url"]).status_code == 401
+            assert client.get(clip["bundle_url"], auth=AUTH).status_code == 409
+            assert client.post(
+                clip["delivery_url"], data={"token": token, "revision": clip["revision"]},
+                auth=AUTH,
+            ).status_code == 409
+            release_first_hook.set()
+            options = {
+                "channel_vi_hook": "THERE GOES THE GETAWAY CAR",
+                "gta_clipcast_hook": "THERE GOES THE GETAWAY CAR",
+                "request_id": "a" * 32,
+            }
+            def submit_pair():
+                return client.post(
+                    clip["reels_url"], headers={"X-ClipCast-Token": token},
+                    auth=AUTH, json=options,
+                )
+
+            assert client.post(
+                "/continuous/stop", data={"token": token}, auth=AUTH, follow_redirects=False
+            ).status_code == 303
+            def pair_in_phase(phase):
+                item = pending()[0]
+                return item if item["reels"]["gta-clipcast"]["phase"] == phase else None
+
+            failed = wait_for(lambda: pair_in_phase("failed"))
+            assert client.post(
+                failed["delivery_url"],
+                data={"token": token, "revision": failed["revision"]}, auth=AUTH,
+            ).status_code == 409
+            assert submit_pair().status_code == 202
+            edit = wait_for(lambda: pair_in_phase("ready"))
+            reels = edit["reels"]
+            for brand, template in app.BRAND_REEL_TEMPLATES.items():
+                url = reels[brand]["download_url"]
+                assert client.get(url).status_code == 401
+                assert reels[brand]["hook"] == "THERE GOES THE GETAWAY CAR"
+            assert render_attempts.count(("highlight-1", app.CUSTOM_CHANNEL_VI_TEMPLATE)) == 1
+            assert render_attempts.count(("highlight-1", app.CUSTOM_GTA_CLIPCAST_TEMPLATE)) == 2
+            bundle = client.get(edit["bundle_url"], auth=AUTH)
+            assert bundle.headers["content-type"] == "application/zip"
+            assert bundle.headers["content-disposition"].endswith('-both-reels.zip"')
+            with ZipFile(BytesIO(bundle.content)) as files:
+                assert {
+                    name.rsplit(edit["id"] + "-", 1)[-1]: files.read(name)
+                    for name in files.namelist()
+                } == {
+                    f"{brand}.mp4": template.encode()
+                    for brand, template in app.BRAND_REEL_TEMPLATES.items()
+                }
+            assert [item["id"] for item in pending()] == [sibling["id"], other["id"]]
+
+            def finished(id):
+                for item in pending():
+                    if item["id"] == id and all(r["download_url"] for r in item["reels"].values()):
+                        return item
+                return None
+
+            sibling = wait_for(lambda: finished(sibling["id"]))
+            for index, (brand, template) in enumerate(app.BRAND_REEL_TEMPLATES.items()):
+                download = client.get(sibling["reels"][brand]["download_url"], auth=AUTH)
+                assert download.content == template.encode()
+                assert f"-{brand}.mp4" in download.headers["content-disposition"]
+                assert (sibling["id"] in {item["id"] for item in pending()}) is (index == 0)
+            other = wait_for(lambda: finished(other["id"]))
+            assert client.post(
+                other["skip_url"],
+                data={"token": token, "revision": sibling["revision"], "reason": "Wrong case"},
+                auth=AUTH,
+            ).status_code == 409
+            assert client.post(
+                other["skip_url"],
+                data={"token": token, "revision": other["revision"], "reason": "Weak hook."},
+                auth=AUTH,
+            ).status_code == 204
+            manifest = client.get(clip["run_url"] + "/manifest", auth=AUTH).json()
+            reasons = {item["id"]: item["skip_reason"] for item in manifest["clips"]}
+            assert reasons == {clip["id"]: "", sibling["id"]: "", other["id"]: "Weak hook."}
+            assert pending() == []
+        finally:
+            release_first_hook.set()
+            finish_second.set()
+        next_clips = wait_for(pending)
+        assert len(sources) == 2
+        assert len(next_clips) == 3
+        assert all(item["campaign"] == clip["campaign"] for item in next_clips)
+
+
+def test_campaign_configuration_locks_one_worker_to_its_stream_and_brief(monkeypatch):
+    monkeypatch.setenv("TWITCH_CHANNEL", "clix")
+    monkeypatch.setenv("RECORDER_PASSWORD", PASSWORD)
+    profile = {"name": "First Campaign", "brief": "Keep the dialogue.", "min_seconds": 30}
+    monkeypatch.setenv("CLIPCAST_CAMPAIGN", json.dumps(profile))
+    first = app.create_render_app()
+    monkeypatch.setenv("TWITCH_CHANNEL", "second")
+    monkeypatch.setenv("CLIPCAST_CAMPAIGN", json.dumps({"name": "Second", "brief": "Show the payoff."}))
+    second = app.create_render_app()
+
+    with TestClient(first) as client, TestClient(second) as other:
+        health = client.get("/healthz").json()
+        assert health["capture_slots"] == 1
+        assert health["campaign_lock"] == "enabled"
+        home = client.get("/", auth=AUTH).text
+        assert "Locked campaign" in home and "Keep the dialogue." in home
+        assert "Record and find clips" not in home
+        token = re.search(r'name="token" value="([^"]+)"', home)[1]
+        data = {"token": token, "confirm": "yes"}
+        assert client.post("/record", data=data, auth=AUTH).status_code == 409
+        assert client.post(
+            "/continuous/start", data={**data, "channels": "second"}, auth=AUTH
+        ).status_code == 409
+        assert client.post(
+            "/continuous/start",
+            data={**data, "campaign_name": profile["name"], "campaign_brief": "Changed"},
+            auth=AUTH,
+        ).status_code == 409
+        locked = client.get("/continuous/queue", auth=AUTH).json()["locked_campaign"]
+        assert locked == {
+            "channel": "clix", "max_seconds": None, "required_category": "",
+            "preserve_source_frame": False, "require_custom_hook": False, **profile,
+        }
+        other_lock = other.get("/continuous/queue", auth=AUTH).json()["locked_campaign"]
+        assert (other_lock["channel"], other_lock["name"]) == ("second", "Second")
+
+
+def test_private_access_link_replaces_basic_auth(monkeypatch):
+    token = "a" * 43
+    monkeypatch.setenv("TWITCH_CHANNEL", "clix")
+    monkeypatch.setenv("RECORDER_PASSWORD", PASSWORD)
+    monkeypatch.setenv("RECORDER_ACCESS_LINK_HASH", sha256(token.encode()).hexdigest())
+    with TestClient(app.create_render_app(), base_url="https://recorder.test") as client:
+        rejected = client.get("/", auth=AUTH)
+        assert rejected.status_code == 403
+        assert "WWW-Authenticate" not in rejected.headers
+        assert client.get("/continuous/queue").status_code == 403
+        assert client.get("/open").status_code == 200
+        invalid = client.post("/open", data={"token": "b" * 43})
+        assert invalid.status_code == 403 and "Set-Cookie" not in invalid.headers
+        accepted = client.post("/open", data={"token": token})
+        assert accepted.status_code == 204
+        assert all(flag in accepted.headers["Set-Cookie"] for flag in ("HttpOnly", "Secure", "SameSite=lax"))
+        assert 'id="channels"' in client.get("/").text
+        assert client.get("/continuous/queue").status_code == 200
+
+    monkeypatch.delenv("RECORDER_ACCESS_LINK_HASH")
+    with TestClient(app.create_render_app()) as client:
+        assert client.get("/open").status_code == 404
+        assert client.get("/").status_code == 401
+        assert client.get("/", auth=AUTH).status_code == 200
+
+
+def test_campaign_rejects_wrong_twitch_category_before_capture(monkeypatch):
+    assert_capture_check = Event()
+
+    def check_category(url, required):
+        assert url == "https://www.twitch.tv/example"
+        assert required == "Grand Theft Auto VI"
+        assert_capture_check.set()
+        raise app.CampaignCategoryError("Waiting for a verified Grand Theft Auto VI livestream.")
+
+    monkeypatch.setattr(app, "verify_twitch_category", check_category)
+    monkeypatch.setattr(app, "disk_usage", lambda _: type("Disk", (), {"free": 8 * 1024**3})())
+    campaign = app.CampaignBrief(
+        "Campaign", "GTA VI only", None, None, required_category="Grand Theft Auto VI",
+    )
+    with TestClient(app.create_app("example", PASSWORD, locked_campaign=campaign)) as client:
+        home = client.get("/", auth=AUTH).text
+        token = re.search(r'name="token" value="([^"]+)"', home)[1]
+        assert client.post(
+            "/continuous/start", data={"token": token, "confirm": "yes"},
+            follow_redirects=False, auth=AUTH,
+        ).status_code == 303
+        assert assert_capture_check.wait(2)
+        deadline = monotonic() + 3
+        while monotonic() < deadline:
+            queue = client.get("/continuous/queue", auth=AUTH).json()
+            if queue["status"].startswith("Waiting for a verified"):
+                break
+            sleep(0.02)
+        assert queue["status"] == "Waiting for a verified Grand Theft Auto VI livestream."
+        assert queue["highlights"] == []
 
 
 def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
@@ -56,7 +359,7 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
             app.Clip(n * 40, n * 40 + 20, ("Action sounds",), 9 - n) for n in range(8)
         ]
 
-    def finish_template(source, output, hook, narration, crop, cam):
+    def finish_template(source, output, hook, narration, crop, cam, template):
         assert source.read_bytes().endswith(b" highlight")
         assert (hook, narration, crop, cam) == (
             "ROLL THAT BACK",
@@ -64,6 +367,7 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
             "right",
             "top-left",
         )
+        assert template == "it-was-going-well"
         rendering.set()
         assert release_render.wait(5)
         output.write_bytes(b"branded clip")
@@ -161,9 +465,19 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
             "narration": "Four bikes.",
             "crop": "right",
             "cam": "top-left",
+            "template": "it-was-going-well",
             "request_id": "a" * 32,
         }
         assert client.get(edit_url).status_code == 401
+        assert (
+            client.post(
+                edit_url,
+                json={**options, "template": "../unknown"},
+                headers={"X-ClipCast-Token": token},
+                auth=AUTH,
+            ).status_code
+            == 400
+        )
         assert (
             client.post(
                 edit_url,
@@ -254,6 +568,7 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
     with TestClient(app.create_app("clix", PASSWORD)) as client:
         review = client.get(f"/saved/{batch}", auth=AUTH)
         assert 'data-view="review"' in review.text and "setInterval" not in review.text
+        assert "Channel VI · It Was Going Well" in review.text
         token = re.search(r'data-token="([^"]+)"', review.text)[1]
         form = {
             "token": token,
@@ -262,6 +577,7 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
             "narration": "Four bikes.",
             "crop": "right",
             "cam": "top-left",
+            "template": "it-was-going-well",
         }
         reply = client.post(
             "/saved-edits",
