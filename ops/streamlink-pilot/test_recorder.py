@@ -291,6 +291,59 @@ def test_private_access_link_replaces_basic_auth(monkeypatch):
         assert client.get("/", auth=AUTH).status_code == 200
 
 
+def test_logo_free_campaign_delivers_one_unbranded_reel(monkeypatch):
+    def capture(url, output, on_progress, *, quality, max_bytes):
+        assert url.endswith("/lacy")
+        output.write_bytes(b"capture")
+        return app.Capture(600, 720)
+
+    def cut(source, output, clip):
+        output.write_bytes(b"highlight")
+
+    def render(source, output, hook, narration, crop, cam, template, **kwargs):
+        assert template == app.LOGO_FREE_TEMPLATE
+        assert hook == "LACY · “I just lost the getaway car.”"
+        output.write_bytes(b"clean campaign Reel")
+        return TemplateResult("Original dialogue", HookSuggestion(hook))
+
+    monkeypatch.setattr(app, "capture_mp4", capture)
+    monkeypatch.setattr(app, "cut_clip", cut)
+    monkeypatch.setattr(app, "render_template", render)
+    monkeypatch.setattr(app.ChatMonitor, "start", lambda self: None)
+    monkeypatch.setattr(app.ChatMonitor, "close", lambda self: None)
+    monkeypatch.setattr(app, "detect_sound", lambda *_: SoundSignals({}, {}))
+    monkeypatch.setattr(app, "detect_motion", lambda *_: {})
+    monkeypatch.setattr(app, "auto_captions", lambda *a, **kw: [(0.2, 2.4, "I just lost the getaway car.")])
+    monkeypatch.setattr(app, "select_clips", lambda *a, **kw: [app.Clip(20, 38, ("Dialogue",), 10)])
+    monkeypatch.setattr(app, "disk_usage", lambda _: type("Disk", (), {"free": 8 * 1024**3})())
+    campaign = app.CampaignBrief("Lacy", "Lacy only, with no logos.", None, None)
+    with TestClient(app.create_app("lacy", PASSWORD, locked_campaign=campaign, logo_free=True)) as client:
+        home = client.get("/", auth=AUTH).text
+        token = re.search(r'name="token" value="([^"]+)"', home)[1]
+        started = client.post(
+            "/continuous/start", data={"token": token, "confirm": "yes"},
+            auth=AUTH, follow_redirects=False,
+        )
+        assert started.status_code == 303
+        try:
+            deadline = monotonic() + 5
+            while monotonic() < deadline:
+                queue = client.get("/continuous/queue", auth=AUTH).json()
+                for item in queue["highlights"]:
+                    reels = item["reels"]
+                    assert set(reels) == {"campaign"}
+                    assert not item["bundle_url"]
+                    if reels["campaign"]["download_url"]:
+                        response = client.get(reels["campaign"]["download_url"], auth=AUTH)
+                        assert response.content == b"clean campaign Reel"
+                        assert client.get(item["reels_url"] + "/gta-clipcast", auth=AUTH).status_code == 404
+                        return
+                sleep(0.02)
+            raise AssertionError("Campaign Reel did not reach the download queue")
+        finally:
+            client.post("/continuous/stop", data={"token": token}, auth=AUTH)
+
+
 def test_campaign_rejects_wrong_twitch_category_before_capture(monkeypatch):
     assert_capture_check = Event()
 

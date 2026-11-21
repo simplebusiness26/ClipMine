@@ -89,6 +89,13 @@ can survive reframing. Review the actual finished Reel for logo legibility
 and verify the content against the brief. Set `require_custom_hook` to require
 non-empty headlines for both branded exports.
 
+Set `CLIPCAST_LOGO_FREE=1` on a locked campaign worker that prohibits logos.
+This worker renders one portrait campaign Reel per highlight. It fits the
+full source frame, keeps the source audio, and adds plain creator attribution
+with a short opening quote if one can be transcribed. Check the finished Reel
+for any logo already in the source and confirm the featured creator before
+posting. Each worker uses its own deployment settings.
+
 ClipCast transcribes the highlight and chooses a short on-screen hook from
 spoken details. If the transcript offers no useful hook, ClipCast can use
 recognised objects or a recorded chat or laughter signal. A campaign that

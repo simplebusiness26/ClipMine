@@ -16,6 +16,7 @@ from clipcast_template import render
         (False, render.DEFAULT_TEMPLATE),
         (True, render.CUSTOM_CHANNEL_VI_TEMPLATE),
         (True, render.CUSTOM_GTA_CLIPCAST_TEMPLATE),
+        (True, render.LOGO_FREE_TEMPLATE),
         *((True, template) for template in render.CHANNEL_VI_TEMPLATES),
     ],
 )
@@ -55,6 +56,8 @@ def test_template_keeps_audio_and_duration_and_draws_text(
         render, "auto_captions", lambda *_: [(1, 2, "One late arrival.")]
     )
     narration = "Four bikes.\nOne late arrival." if written else ""
+    if template == render.LOGO_FREE_TEMPLATE:
+        monkeypatch.setattr(render, "ASSETS", tmp_path / "no-brand-artwork")
     status = render.render_template(
         source, destination, "CUSTOM HOOK", narration, "center", template=template
     )
@@ -89,6 +92,9 @@ def test_template_keeps_audio_and_duration_and_draws_text(
         template == render.CUSTOM_CHANNEL_VI_TEMPLATE
         or template in render.CHANNEL_VI_TEMPLATES
     )
+    caption_crop = "crop=2:2:55:970" if channel_vi else "crop=2:2:38:896"
+    if template == render.LOGO_FREE_TEMPLATE:
+        caption_crop = "crop=2:2:42:944"
 
     def has_narration(timestamp: str) -> bool:
         frame = subprocess.check_output(
@@ -104,7 +110,7 @@ def test_template_keeps_audio_and_duration_and_draws_text(
                 "-frames:v",
                 "1",
                 "-vf",
-                "crop=2:2:55:970" if channel_vi else "crop=2:2:38:896",
+                caption_crop,
                 "-pix_fmt",
                 "rgb24",
                 "-f",
@@ -142,6 +148,12 @@ def test_template_keeps_audio_and_duration_and_draws_text(
             timeout=10,
         )
         with Image.open(BytesIO(raw)).convert("RGB") as frame:
+            if template == render.LOGO_FREE_TEMPLATE:
+                assert frame.getpixel((350, 550))[2] > 180
+                assert max(frame.getpixel((85, 105))) < 20
+                assert max(frame.getpixel((540, 1130))) < 20
+                assert min(frame.getpixel((45, 180))) > 150
+                return
             if channel_vi:
                 r, g, b = frame.getpixel((350, 550))
                 assert b > 180 and r < 55 and g < 55

@@ -52,6 +52,7 @@ from clipcast_template.render import (
     CUSTOM_GTA_CLIPCAST_TEMPLATE,
     DEFAULT_TEMPLATE,
     HOOK_LIMIT,
+    LOGO_FREE_TEMPLATE,
     NARRATION_LIMIT,
     REEL_TEMPLATES,
     auto_captions,
@@ -441,18 +442,23 @@ def create_app(
     locked_campaign: CampaignBrief | None = None,
     continuous_highlight_limit: int = DEFAULT_CONTINUOUS_HIGHLIGHTS,
     access_link_hash: str = "",
+    logo_free: bool = False,
 ) -> FastAPI:
     default_channels = channels_from_input(channel)
     if len(default_channels) > MAX_ACTIVE:
         raise ValueError("TWITCH_CHANNEL can prefill up to five usernames")
     if locked_campaign and len(default_channels) != 1:
         raise ValueError("A locked campaign requires one TWITCH_CHANNEL")
+    if logo_free and not locked_campaign:
+        raise ValueError("CLIPCAST_LOGO_FREE requires CLIPCAST_CAMPAIGN")
     if access_link_hash and re.fullmatch(r"[0-9a-f]{64}", access_link_hash) is None:
         raise ValueError("RECORDER_ACCESS_LINK_HASH must be a lowercase SHA-256 hex digest")
     if not access_link_hash and (len(password) < 20 or not password.isascii()):
         raise ValueError("RECORDER_PASSWORD must be at least 20 ASCII characters")
     if not 1 <= continuous_highlight_limit <= MAX_CONTINUOUS_HIGHLIGHTS:
         raise ValueError("CLIPCAST_HIGHLIGHTS_PER_WINDOW must be between 1 and 5")
+    reel_templates = {LOGO_FREE_TEMPLATE: "Campaign Reel"} if logo_free else REEL_TEMPLATES
+    automatic_templates = {"campaign": LOGO_FREE_TEMPLATE} if logo_free else BRAND_REEL_TEMPLATES
 
     csrf = secrets.token_urlsafe(32)
     state = Lock()
@@ -685,7 +691,9 @@ def create_app(
                     transcript = auto_captions(output, Path(scan))
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 LOGGER.info("Highlight transcript unavailable (%s)", type(error).__name__)
-        template = CUSTOM_CHANNEL_VI_TEMPLATE if transcribe else DEFAULT_TEMPLATE
+        template = LOGO_FREE_TEMPLATE if logo_free else (
+            CUSTOM_CHANNEL_VI_TEMPLATE if transcribe else DEFAULT_TEMPLATE
+        )
         with state:
             job.highlights.append(
                 Highlight(clip, output, transcript=transcript, template=template, duration=duration)
@@ -729,9 +737,23 @@ def create_app(
                             automatic.append((item, run.campaign))
                 job.candidates.clear()
         for item, campaign in automatic:
-            render_automatic_pair(item, campaign)
+            render_automatic_reels(item, campaign)
 
-    def render_automatic_pair(item: Highlight, campaign: CampaignBrief | None) -> None:
+    def render_automatic_reels(item: Highlight, campaign: CampaignBrief | None) -> None:
+        if logo_free:
+            creator = default_channels[0].upper()
+            quote = next((
+                text.strip() for start, _, text in item.transcript or []
+                if start <= 4.0 and len(text.split()) >= 3
+                and len(text.strip()) <= HOOK_LIMIT - len(creator) - 5
+            ), "")
+            hook = f'{creator} · “{quote}”' if quote else f"{creator} · GTA VI"
+            with state:
+                item.hook = hook
+                item.phase = ""
+                renders = prepare_brand_reels(item, {"campaign": hook})
+            render_brand_reels(renders)
+            return
         hook = ""
         source = ""
         try:
@@ -870,10 +892,11 @@ def create_app(
             "hooks": "clip-aware",
             "previews": "inline",
             "continuous_capture": "supported",
-            "branded_reel_pair": "supported",
-            "branded_reel_bundle": "supported",
+            "branded_reel_pair": "disabled" if logo_free else "supported",
+            "branded_reel_bundle": "disabled" if logo_free else "supported",
             "automatic_reels": "supported",
             "campaign_lock": "enabled" if locked_campaign else "optional",
+            "campaign_export": "logo-free" if logo_free else "standard",
         }
 
     hidden = f'<input type="hidden" name="token" value="{csrf}">'
@@ -1193,7 +1216,7 @@ def create_app(
         authorize_form(token)
         if crop not in CROP:
             return show_home("Choose left, centre or right framing.", 400)
-        if template not in REEL_TEMPLATES:
+        if template not in reel_templates:
             return show_home("Choose an available Reel template.", 400)
         with state:
             job = get_job(key)
@@ -1283,14 +1306,14 @@ def create_app(
     def brand_reels_status(item: Highlight, base: str) -> dict:
         result = {}
         skip_reason = item.skip_reason if item.resolved_revision == item.edit_revision else ""
-        for brand, template in BRAND_REEL_TEMPLATES.items():
+        for brand, template in automatic_templates.items():
             reel = item.brand_reels.get(brand)
             phase = "skipped" if skip_reason else reel.phase if reel else item.phase or "waiting"
             url = ""
             if phase == "ready" and brand_reel_path(item, brand).is_file():
                 url = f"{base}/reels/{brand}"
             result[brand] = {
-                "label": REEL_TEMPLATES[template].split(" · ")[0],
+                "label": reel_templates[template].split(" · ")[0],
                 "phase": phase,
                 "download_url": url,
                 "hook": reel.hook if reel else "",
@@ -1340,11 +1363,11 @@ def create_app(
             "preview_url": f"{base}/preview",
             "edit_url": f"{base}/edit",
             "reels_url": f"{base}/reels",
-            "bundle_url": f"{base}/reels/download",
+            "bundle_url": "" if logo_free else f"{base}/reels/download",
             "reels": brand_reels_status(item, base),
             "delivery_url": f"/continuous/{job.key}/delivered?rank={rank}",
             "skip_url": f"/continuous/{job.key}/skipped?rank={rank}",
-            "template": CUSTOM_CHANNEL_VI_TEMPLATE,
+            "template": item.template,
             "revision": highlight_revision(job.key, rank, item),
             "edit": run_edit_status(item, base),
         }
@@ -1369,7 +1392,7 @@ def create_app(
                 revision != highlight_revision(key, rank, item)
                 or not all(reel["download_url"] for reel in reels.values())
             ):
-                raise HTTPException(409, "Download both current finished Reels first.")
+                raise HTTPException(409, "Download the current finished Reel exports first.")
             item.resolved_revision = item.edit_revision
             item.skip_reason = ""
         return Response(status_code=204)
@@ -1463,9 +1486,11 @@ def create_app(
             run = get_run(job.run)
             if job.phase != "ready" or not run.continuous:
                 raise HTTPException(409, "Wait for the continuous recording's highlight to be ready.")
+            item = get_highlight(job, rank)
+            if logo_free:
+                hooks = {"campaign": item.hook}
             if run.campaign and run.campaign.require_custom_hook and not all(hooks.values()):
                 raise HTTPException(400, "Add a headline to each Reel for this campaign.")
-            item = get_highlight(job, rank)
             if item.brand_request == options.request_id:
                 return brand_reels_status(item, base)
             if highlight_is_busy(item):
@@ -1485,7 +1510,7 @@ def create_app(
                 continue
             reel = Highlight(
                 item.clip, item.path, phase="queued", hook=hook, cam=item.cam,
-                crop=item.crop, template=BRAND_REEL_TEMPLATES[brand],
+                crop=item.crop, template=automatic_templates[brand],
                 transcript=item.transcript,
             )
             item.brand_reels[brand] = reel
@@ -1517,12 +1542,14 @@ def create_app(
                 item.downloaded_revision = revision
                 item.downloaded_brands.clear()
             item.downloaded_brands.update(brands)
-            if item.downloaded_brands == BRAND_REEL_TEMPLATES.keys():
+            if item.downloaded_brands == automatic_templates.keys():
                 item.resolved_revision = revision
                 item.skip_reason = ""
 
     @app.get("/jobs/{key}/clips/{rank}/reels/download", dependencies=[Depends(authenticate)])
     def download_reel_bundle(key: str, rank: int) -> StreamingResponse:
+        if logo_free:
+            raise HTTPException(404, "Use the campaign Reel download.")
         with ExitStack() as sources:
             with state:
                 job = get_job(key)
@@ -1561,7 +1588,7 @@ def create_app(
 
     @app.get("/jobs/{key}/clips/{rank}/reels/{brand}", dependencies=[Depends(authenticate)])
     def download_brand_reel(key: str, rank: int, brand: str) -> StreamingResponse:
-        if brand not in BRAND_REEL_TEMPLATES:
+        if brand not in automatic_templates:
             raise HTTPException(404, "Unknown Reel brand.")
         with state:
             job = get_job(key)
@@ -1585,19 +1612,19 @@ def create_app(
 
     @app.get("/saved", dependencies=[Depends(authenticate)])
     def archive_index() -> HTMLResponse:
-        return saved_page("index", csrf)
+        return saved_page("index", csrf, templates=reel_templates)
 
     @app.get("/saved/{key}", dependencies=[Depends(authenticate)])
     def archive_review(key: str) -> HTMLResponse:
         if not re.fullmatch(r"[a-f0-9]{16}", key):
             raise HTTPException(404, "This saved run is unavailable.")
-        return saved_page("review", csrf, key)
+        return saved_page("review", csrf, key, templates=reel_templates)
 
     @app.get("/runs/{key}", dependencies=[Depends(authenticate)])
     def capture_progress(key: str) -> HTMLResponse:
         if not re.fullmatch(r"[a-f0-9]{16}", key):
             raise HTTPException(404, "This recording run is unavailable.")
-        return saved_page("capture", csrf, key)
+        return saved_page("capture", csrf, key, templates=reel_templates)
 
     @app.get("/runs/{key}/manifest", dependencies=[Depends(authenticate)])
     def capture_manifest(key: str) -> dict:
@@ -1633,7 +1660,7 @@ def create_app(
                             if item.resolved_revision == item.edit_revision else ""
                         ),
                         "reels_url": f"/jobs/{job.key}/clips/{rank}/reels",
-                        "bundle_url": f"/jobs/{job.key}/clips/{rank}/reels/download",
+                        "bundle_url": "" if logo_free else f"/jobs/{job.key}/clips/{rank}/reels/download",
                     } if run.continuous and job.phase == "ready" else {}),
                 }
                 for job, rank, item in ranked
@@ -1689,7 +1716,7 @@ def create_app(
             options.kind not in {"hook", "reel"}
             or options.crop not in CROP
             or options.cam not in FACECAM_OPTIONS
-            or options.template not in REEL_TEMPLATES
+            or options.template not in reel_templates
         ):
             raise HTTPException(400, "Check your clip options.")
 
@@ -2087,4 +2114,5 @@ def create_render_app() -> FastAPI:
             os.environ.get("CLIPCAST_HIGHLIGHTS_PER_WINDOW", DEFAULT_CONTINUOUS_HIGHLIGHTS)
         ),
         access_link_hash=os.environ.get("RECORDER_ACCESS_LINK_HASH", ""),
+        logo_free=os.environ.get("CLIPCAST_LOGO_FREE") == "1",
     )

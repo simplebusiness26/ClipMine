@@ -23,6 +23,7 @@ NARRATION_LIMIT = 110
 DEFAULT_TEMPLATE = "gameplay-first"
 CUSTOM_CHANNEL_VI_TEMPLATE = "channel-vi-custom"
 CUSTOM_GTA_CLIPCAST_TEMPLATE = "gta-clipcast-custom"
+LOGO_FREE_TEMPLATE = "logo-free"
 CHANNEL_VI_TEMPLATES = {
     "it-was-going-well": "It Was Going Well",
     "roll-that-back": "Roll That Back",
@@ -324,7 +325,7 @@ def render_template(
     cached_cues: list | None = None,
     preserve_source_frame: bool = False,
 ) -> TemplateResult:
-    if template not in REEL_TEMPLATES:
+    if template not in REEL_TEMPLATES and template != LOGO_FREE_TEMPLATE:
         raise ValueError("Unknown Reel template")
     custom_headline = template in {CUSTOM_CHANNEL_VI_TEMPLATE, CUSTOM_GTA_CLIPCAST_TEMPLATE}
     headline = CHANNEL_VI_TEMPLATES.get("roll-that-back" if custom_headline else template)
@@ -341,7 +342,7 @@ def render_template(
             cues, status = transcript_context(source, scratch, has_audio)
         if headline and not (custom_headline and hook):
             selected = HookSuggestion(headline.upper())
-        elif hook:
+        elif hook or template == LOGO_FREE_TEMPLATE:
             selected = HookSuggestion(hook)
         else:
             selected = suggest_hook(
@@ -350,7 +351,18 @@ def render_template(
         timeline = scratch / "captions.ffconcat"
         caption_timeline(timeline, cues, duration, 350 if headline else 520)
         captions_input = ["-f", "concat", "-safe", "1", "-i", str(timeline)]
-        if template == CUSTOM_CHANNEL_VI_TEMPLATE or template in CHANNEL_VI_TEMPLATES:
+        if template == LOGO_FREE_TEMPLATE:
+            hook_image = scratch / "headline.png"
+            draw_caption(selected.text, hook_image, 620)
+            layers = ["-i", str(hook_image), *captions_input]
+            graph = (
+                "[0:v]setpts=PTS-STARTPTS,fps=30,"
+                f"scale={WIDTH}:574:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+                f"setsar=1,pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2[base];"
+                "[base][1:v]overlay=x=36:y=174:enable='lt(t,3)'[hook];"
+                "[hook][2:v]overlay=x=36:y=938[out]"
+            )
+        elif template == CUSTOM_CHANNEL_VI_TEMPLATE or template in CHANNEL_VI_TEMPLATES:
             art = scratch / "channel-vi.png"
             channel_vi_frame(selected.text, art)
             layers = ["-i", str(art), *captions_input]

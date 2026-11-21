@@ -9,9 +9,6 @@ from fastapi.responses import HTMLResponse
 from clipcast_template.render import REEL_TEMPLATES
 
 SCRIPT = Path(__file__).with_name("saved_clips.js")
-TEMPLATE_OPTIONS = html.escape(
-    json.dumps(list(REEL_TEMPLATES.items()), ensure_ascii=False), quote=True
-)
 STYLE = """
 :root{color-scheme:dark;--ink:#fff2e9;--muted:#cbb8cc;--panel:#251a2e;--border:#543b55;--pink:#ff9dc4}
 *{box-sizing:border-box}body{margin:0;background:#18101d;color:var(--ink);font:1rem/1.55 system-ui,sans-serif}
@@ -29,7 +26,12 @@ progress{width:100%;height:.65rem;accent-color:var(--pink)}[hidden]{display:none
 """
 
 
-def saved_page(view: str, token: str, batch: str = "") -> HTMLResponse:
+def saved_page(
+    view: str, token: str, batch: str = "", *, templates: dict[str, str] = REEL_TEMPLATES,
+) -> HTMLResponse:
+    template_options = html.escape(
+        json.dumps(list(templates.items()), ensure_ascii=False), quote=True
+    )
     title = {
         "capture": "Recording run",
         "index": "Saved clips",
@@ -49,7 +51,7 @@ def saved_page(view: str, token: str, batch: str = "") -> HTMLResponse:
         '<script src="/saved-clips.js?v=3" defer></script></head>'
         f'<body><main data-view="{view}" data-run="{html.escape(batch, quote=True)}" '
         f'data-token="{html.escape(token, quote=True)}" '
-        f'data-templates="{TEMPLATE_OPTIONS}">'
+        f'data-templates="{template_options}">'
         '<nav><a href="/" class="secondary">New recording</a>'
         '<a href="/saved" class="secondary">Saved clips</a></nav>'
         f"<h1>{title}</h1><p>{message}</p>"

@@ -323,7 +323,7 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
     suggest.type = render.type = "button";
     const hookField = field("Top hook", hook);
     function showHookControls() {
-        hookField.hidden = ![defaultTemplate, "channel-vi-custom", "gta-clipcast-custom"].includes(template.value);
+        hookField.hidden = ![defaultTemplate, "channel-vi-custom", "gta-clipcast-custom", "logo-free"].includes(template.value);
         suggest.hidden = template.value !== defaultTemplate;
     }
     template.addEventListener("change", showHookControls);
@@ -521,7 +521,7 @@ function automaticReelCard(clip, rank) {
     const active = new Set(["hook_queued", "suggesting", "queued", "rendering"]);
     async function showReels(reels) {
         while (Object.values(reels).some(reel => active.has(reel.phase))) {
-            progress.textContent = "Preparing both Reels in the background…";
+            progress.textContent = clip.bundle_url ? "Preparing both Reels in the background…" : "Preparing the campaign Reel…";
             await delay(2500);
             reels = await editRequest(clip.reels_url, "Could not check the Reels. Reopen this run to try again.");
         }
@@ -533,9 +533,11 @@ function automaticReelCard(clip, rank) {
         const ready = Object.values(reels).filter(reel => reel.download_url);
         downloads.replaceChildren(...ready.map(reel => link("Download " + reel.label, reel.download_url, "secondary")));
         title.textContent = ready[0]?.hook || title.textContent;
-        if (ready.length === 2) {
+        if (clip.bundle_url && ready.length === 2) {
             downloads.prepend(link("Download both Reels", clip.bundle_url));
             progress.textContent = "Both Reels are ready.";
+        } else if (!clip.bundle_url && ready.length === 1) {
+            progress.textContent = "Campaign Reel ready. Check the source for visible logos before posting.";
         } else if (Object.values(reels).some(reel => reel.phase === "failed")) {
             progress.textContent = "A Reel failed to render.";
             const retry = node("button", "Retry render", "secondary");
@@ -548,8 +550,8 @@ function automaticReelCard(clip, rank) {
                         headers: {"Content-Type": "application/json", "X-ClipCast-Token": token},
                         body: JSON.stringify({
                             request_id: crypto.randomUUID().replaceAll("-", ""),
-                            channel_vi_hook: reels["channel-vi"].hook,
-                            gta_clipcast_hook: reels["gta-clipcast"].hook
+                            channel_vi_hook: reels["channel-vi"]?.hook,
+                            gta_clipcast_hook: reels["gta-clipcast"]?.hook
                         })
                     });
                     await showReels(queued);
