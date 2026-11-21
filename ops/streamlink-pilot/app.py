@@ -615,6 +615,7 @@ def create_app(
             "clip_cap_per_run": MAX_CLIPS,
             "batch_progress": "progressive",
             "reel_upload": "chunked",
+            "reel_download": "direct",
             "hooks": "clip-aware",
             "previews": "inline",
         }
@@ -1141,14 +1142,23 @@ def create_app(
                 "message": item.hook_status,
             }
 
-    @app.get("/saved-edits/{key}/video", dependencies=[Depends(authenticate)])
-    def saved_edit_video(key: str) -> StreamingResponse:
+    @app.api_route(
+        "/saved-edits/{key}/video",
+        methods=["GET", "HEAD"],
+        dependencies=[Depends(authenticate)],
+    )
+    def saved_edit_video(key: str) -> FileResponse:
         with state:
             item = get_saved_edit(key).highlight
             path = template_path(item)
             if item.phase != "ready" or not path.is_file():
                 raise HTTPException(404, "This Reel is not ready.")
-            return media_response(path, "clipcast-reel.mp4")
+            return FileResponse(
+                path,
+                media_type="video/mp4",
+                filename="clipcast-reel.mp4",
+                headers={"Cache-Control": "private, no-store"},
+            )
 
     def media_response(path: Path, filename: str) -> StreamingResponse:
         file = path.open("rb")

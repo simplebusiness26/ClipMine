@@ -253,6 +253,12 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
                 break
             sleep(0.03)
         assert client.get(edit + "/video", auth=AUTH).content == b"branded clip"
+        file_info = client.head(edit + "/video", auth=AUTH)
+        assert file_info.headers["content-length"] == "12"
+        assert "attachment" in file_info.headers["content-disposition"]
+        partial = client.get(edit + "/video", auth=AUTH, headers={"Range": "bytes=0-6"})
+        assert partial.status_code == 206
+        assert partial.content == b"branded"
 
 
 def test_streamlink_and_ffmpeg_create_ten_minute_mp4(tmp_path: Path):

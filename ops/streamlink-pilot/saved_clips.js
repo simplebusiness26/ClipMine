@@ -30,15 +30,18 @@ function read(archive, store, key) {
     });
 }
 
-function write(archive, store, value, key) {
+function write(archive, store, value, key, timeout = 0) {
     return new Promise((resolve, reject) => {
         const transaction = archive.transaction(store, "readwrite");
         const table = transaction.objectStore(store);
         if (key === undefined) table.put(value);
         else table.put(value, key);
-        transaction.oncomplete = () => resolve();
-        transaction.onabort = () => reject(transaction.error);
-        transaction.onerror = () => reject(transaction.error);
+        const timer = timeout && setTimeout(() => {
+            reject(new Error("Safari took too long to save the Reel."));
+            try { transaction.abort(); } catch (_) {}
+        }, timeout);
+        transaction.oncomplete = () => { clearTimeout(timer); resolve(); };
+        transaction.onabort = transaction.onerror = () => { clearTimeout(timer); reject(transaction.error); };
     });
 }
 
@@ -90,6 +93,7 @@ async function editRequest(url, connectionMessage, options = {}, onRetry = () =>
 const runUrl = id => "/saved/" + encodeURIComponent(id);
 const mediaKey = (run, clip) => run + "/" + clip;
 const exportKey = id => "export/" + id;
+const reelTaskKey = id => "reel-task/" + id;
 const labelDate = value => new Date(value).toLocaleString([], {dateStyle: "medium", timeStyle: "short"});
 
 function saveSnapshot(archive, run) {
@@ -219,10 +223,38 @@ async function showDownload(archive, id, filename, target) {
 }
 
 function linkFromBlob(file, filename, target) {
-    if (target.firstChild) URL.revokeObjectURL(target.firstChild.href);
+    if (target.firstChild?.href.startsWith("blob:")) URL.revokeObjectURL(target.firstChild.href);
     const download = link("Download ClipCast Reel", URL.createObjectURL(file));
     download.download = filename;
     target.replaceChildren(download);
+}
+
+async function fetchReel(url, controller, onProgress) {
+    let timer;
+    function resetTimer() {
+        clearTimeout(timer);
+        timer = setTimeout(() => controller.abort(), 30000);
+    }
+    resetTimer();
+    try {
+        const result = await response(url, {cache: "no-store", signal: controller.signal});
+        const total = Number(result.headers.get("Content-Length"));
+        const reader = result.body.getReader();
+        const chunks = [];
+        let received = 0;
+        for (;;) {
+            const {done, value} = await reader.read();
+            if (done) break;
+            resetTimer();
+            chunks.push(value);
+            received += value.byteLength;
+            if (total) onProgress(Math.min(100, Math.floor(100 * received / total)));
+        }
+        if (!received || (total && received !== total)) throw new Error("The Reel download was incomplete.");
+        return new Blob(chunks, {type: "video/mp4"});
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 async function clipCard(archive, run, clip, rank) {
@@ -293,6 +325,7 @@ async function clipCard(archive, run, clip, rank) {
     const downloads = node("div");
     const filename = clip.channel + "-clipcast-" + rank + ".mp4";
     await showDownload(archive, id, filename, downloads);
+    const previousTask = await read(archive, "drafts", reelTaskKey(id));
 
     let pendingUpload;
     async function uploadClip(file, kind) {
@@ -323,13 +356,21 @@ async function clipCard(archive, run, clip, rank) {
         return task;
     }
 
-    async function processClip(kind) {
+    async function processClip(kind, resumeTask) {
         suggest.disabled = render.disabled = true;
         try {
-            await saveDraft();
-            const file = await read(archive, "media", id);
-            if (!file) throw new Error("This clip's video is missing from this browser.");
-            const task = await uploadClip(file, kind);
+            let task = resumeTask;
+            if (!task) {
+                await saveDraft();
+                const file = await read(archive, "media", id);
+                if (!file) throw new Error("This clip's video is missing from this browser.");
+                task = await uploadClip(file, kind);
+                if (kind === "reel") {
+                    void write(archive, "drafts", task, reelTaskKey(id), 20000).catch(() => {});
+                }
+            } else {
+                progress.textContent = "Checking your ClipCast Reel…";
+            }
             let state;
             for (;;) {
                 state = await editRequest("/saved-edits/" + task.id, "Lost the connection while ClipCast was working. Your original is still saved here.");
@@ -341,7 +382,10 @@ async function clipCard(archive, run, clip, rank) {
                 }
                 await delay(2500);
             }
-            if (state.error) throw new Error(state.error);
+            if (state.error) {
+                if (kind === "reel") void write(archive, "drafts", null, reelTaskKey(id), 20000).catch(() => {});
+                throw new Error(state.error);
+            }
             if (kind === "hook") {
                 if (state.hook) {
                     hook.value = state.hook;
@@ -349,13 +393,30 @@ async function clipCard(archive, run, clip, rank) {
                 }
                 progress.textContent = state.message;
             } else {
-                progress.textContent = "Saving the finished Reel on this device…";
-                const finished = await (await response("/saved-edits/" + task.id + "/video")).blob();
-                await write(archive, "media", finished, exportKey(id));
-                linkFromBlob(finished, filename, downloads);
-                progress.textContent = "Reel saved.";
+                const url = "/saved-edits/" + task.id + "/video";
+                const direct = link("Download ClipCast Reel", url);
+                direct.download = filename;
+                if (downloads.firstChild?.href.startsWith("blob:")) URL.revokeObjectURL(downloads.firstChild.href);
+                downloads.replaceChildren(direct);
+                const controller = new AbortController();
+                direct.addEventListener("click", () => controller.abort(), {once: true});
+                progress.textContent = "Reel ready. Saving a copy in ClipCast…";
+                try {
+                    const finished = await fetchReel(url, controller, percent => {
+                        progress.textContent = "Reel ready. Saving a copy in ClipCast · " + percent + "%";
+                    });
+                    await write(archive, "media", finished, exportKey(id), 20000);
+                    linkFromBlob(finished, filename, downloads);
+                    progress.textContent = "Reel saved in ClipCast.";
+                    void write(archive, "drafts", null, reelTaskKey(id), 20000).catch(() => {});
+                } catch (_) {
+                    progress.textContent = "Reel ready. Use Download ClipCast Reel to save it to Files.";
+                }
             }
         } catch (error) {
+            if (kind === "reel" && error.status === 404) {
+                void write(archive, "drafts", null, reelTaskKey(id), 20000).catch(() => {});
+            }
             progress.textContent = storageError(error);
         } finally {
             suggest.disabled = render.disabled = false;
@@ -364,6 +425,7 @@ async function clipCard(archive, run, clip, rank) {
     suggest.onclick = () => processClip("hook");
     render.onclick = () => processClip("reel");
     card.append(previewButton, video, field("Top hook", hook), suggest, settings, render, progress, downloads);
+    if (previousTask?.id) void processClip("reel", previousTask);
     return card;
 }
 
@@ -417,6 +479,7 @@ function deleteRun(archive, run) {
             media.delete(id);
             media.delete(exportKey(id));
             drafts.delete(id);
+            drafts.delete(reelTaskKey(id));
         }
         transaction.objectStore("runs").delete(run.id);
         transaction.oncomplete = () => resolve();
