@@ -53,4 +53,6 @@ for index, clip in enumerate(manifest["clips"], 1):
     saved += 1
 print(f"Saved {saved} completed Reels", flush=True)
 if not saved:
-    raise RuntimeError("No finished Reels produced; inspect manifest and job logs")
+    print("No finished Reels. Final channel status:", json.dumps(manifest["channels"]), flush=True)
+    print("Final clip metadata:", json.dumps(manifest["clips"]), flush=True)
+    raise RuntimeError("No finished Reels; inspect the uploaded manifest.json for capture/analysis status")
