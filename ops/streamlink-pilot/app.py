@@ -441,6 +441,7 @@ def create_app(
     locked_campaign: CampaignBrief | None = None,
     continuous_highlight_limit: int = DEFAULT_CONTINUOUS_HIGHLIGHTS,
     access_link_hash: str = "",
+    public_access: bool = False,
 ) -> FastAPI:
     default_channels = channels_from_input(channel)
     if len(default_channels) > MAX_ACTIVE:
@@ -449,7 +450,7 @@ def create_app(
         raise ValueError("A locked campaign requires one TWITCH_CHANNEL")
     if access_link_hash and re.fullmatch(r"[0-9a-f]{64}", access_link_hash) is None:
         raise ValueError("RECORDER_ACCESS_LINK_HASH must be a lowercase SHA-256 hex digest")
-    if not access_link_hash and (len(password) < 20 or not password.isascii()):
+    if not public_access and not access_link_hash and (len(password) < 20 or not password.isascii()):
         raise ValueError("RECORDER_PASSWORD must be at least 20 ASCII characters")
     if not 1 <= continuous_highlight_limit <= MAX_CONTINUOUS_HIGHLIGHTS:
         raise ValueError("CLIPCAST_HIGHLIGHTS_PER_WINDOW must be between 1 and 5")
@@ -485,6 +486,8 @@ def create_app(
         )
 
     async def authenticate(request: Request) -> None:
+        if public_access:
+            return
         if access_link_hash:
             if not valid_access_link(request.cookies.get(ACCESS_COOKIE, "")):
                 raise HTTPException(status_code=403, detail="Open ClipCast using your private link.")
@@ -2087,4 +2090,6 @@ def create_render_app() -> FastAPI:
             os.environ.get("CLIPCAST_HIGHLIGHTS_PER_WINDOW", DEFAULT_CONTINUOUS_HIGHLIGHTS)
         ),
         access_link_hash=os.environ.get("RECORDER_ACCESS_LINK_HASH", ""),
+        # Public access applies only to the deployed KreekCraft recorder.
+        public_access=os.environ.get("RENDER_SERVICE_ID") == "srv-dc0rj449v7es739o9tvg",
     )
