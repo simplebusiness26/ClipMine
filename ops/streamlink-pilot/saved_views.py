@@ -25,6 +25,7 @@ small,.muted{color:var(--muted)}label{display:block;margin-top:.65rem}summary{cu
 input,textarea,select{display:block;width:100%;border:1px solid #947991;border-radius:.45rem;padding:.5rem;
 background:#1b1320;color:var(--ink);font:inherit;margin:.25rem 0 .6rem}
 video{display:block;width:100%;max-height:45vh;aspect-ratio:16/9;background:#0c090f;object-fit:contain;border-radius:.55rem;margin:.5rem 0}
+video.reel{width:auto;max-width:100%;max-height:65vh;aspect-ratio:9/16}
 progress{width:100%;height:.65rem;accent-color:var(--pink)}[hidden]{display:none!important}.error{color:#ffc5ad}
 """
 
@@ -33,26 +34,26 @@ def saved_page(view: str, token: str, batch: str = "") -> HTMLResponse:
     title = {
         "capture": "Recording run",
         "index": "Saved clips",
-        "review": "Review saved clips",
+        "review": "Review run",
     }[view]
     message = (
         "You can close this page. To check back, choose Open recording run on the recorder."
         if view == "capture"
         else "Runs saved in this browser appear here."
         if view == "index"
-        else "Watch your clips and choose what to turn into a Reel."
+        else ""
     )
     return HTMLResponse(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f"<title>{title} · ClipCast</title><style>{STYLE}</style>"
-        '<script src="/saved-clips.js?v=3" defer></script></head>'
+        '<script src="/saved-clips.js?v=4" defer></script></head>'
         f'<body><main data-view="{view}" data-run="{html.escape(batch, quote=True)}" '
         f'data-token="{html.escape(token, quote=True)}" '
         f'data-templates="{TEMPLATE_OPTIONS}">'
         '<nav><a href="/" class="secondary">New recording</a>'
         '<a href="/saved" class="secondary">Saved clips</a></nav>'
-        f"<h1>{title}</h1><p>{message}</p>"
+        f"<h1>{title}</h1>{f'<p>{message}</p>' if message else ''}"
         '<p id="status" role="status" aria-live="polite"></p>'
         '<div id="content"></div></main></body></html>',
         headers={"Cache-Control": "private, no-store", "X-Frame-Options": "DENY"},

@@ -46,6 +46,7 @@ from streamlink.options import Options
 
 from clipcast_template.facecam import FACECAM_OPTIONS
 from clipcast_template.render import (
+    CHANNEL_VI_TEMPLATES,
     CROP,
     DEFAULT_TEMPLATE,
     HOOK_LIMIT,
@@ -70,6 +71,7 @@ from saved_views import SCRIPT, saved_page
 CAPTURE_SECONDS = 600
 MIB = 1024 * 1024
 DEFAULT_QUALITY = "720p"
+DEFAULT_RECORDING_TEMPLATE = "roll-that-back"
 HD_STREAMS = "720p60,720p,720p30,480p60,480p,480p30,360p60,360p,360p30"
 QUALITY_OPTIONS = {
     "720p": (HD_STREAMS, 500 * MIB),
@@ -237,7 +239,7 @@ MAX_ACTIVE = 5
 MAX_RUNS = 6
 CAPTURE_HEADROOM = 192 * MIB
 HANDLE = re.compile(r"[a-z0-9_]{3,25}", re.ASCII)
-BUSY = {"capturing", "queued", "analysing", "ranked", "cutting"}
+BUSY = {"capturing", "queued", "analysing", "ranked", "cutting", "rendering_reels"}
 ARCHIVE_EDIT_MAX_BYTES = 192 * MIB
 ARCHIVE_EDIT_MAX_JOBS = 3
 ARCHIVE_CHUNK_BYTES = 2 * MIB
@@ -287,6 +289,7 @@ class Recording:
 class Run:
     key: str
     created_at: str
+    reel_template: str = ""
     jobs: list[str] = field(default_factory=list)
     finalizing: bool = False
     saved_revision: str | None = None
@@ -351,6 +354,7 @@ def create_app(
     edits: dict[str, ArchiveEdit] = {}
     selected_channels = default_channels
     selected_quality = DEFAULT_QUALITY
+    selected_template = DEFAULT_RECORDING_TEMPLATE
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -477,7 +481,10 @@ def create_app(
                 job.detail = "Cutting the first highlights"
                 # Early slots are split across channels. Remaining slots are
                 # filled from the best candidates once every channel is checked.
-                share = MAX_CLIPS // len(runs[job.run].jobs)
+                run = runs[job.run]
+                share = MAX_CLIPS // len(run.jobs)
+            if run.reel_template:
+                candidates = [clip for clip in candidates if not clip.incomplete]
             remaining = []
             for clip in candidates:
                 if len(job.highlights) >= share:
@@ -515,9 +522,9 @@ def create_app(
             for job in batch:
                 if job.phase == "ranked":
                     job.phase = "cutting"
-        Thread(target=cut_run, args=(batch,), daemon=True).start()
+        Thread(target=cut_run, args=(batch, run.reel_template), daemon=True).start()
 
-    def cut_run(batch: list[Recording]) -> None:
+    def cut_run(batch: list[Recording], reel_template: str) -> None:
         candidates = sorted(
             ((job, clip) for job in batch for clip in job.candidates),
             key=lambda entry: (-entry[1].score, entry[1].start),
@@ -530,9 +537,25 @@ def create_app(
                 count += append_highlight(job, clip)
         with state:
             for job in batch:
-                if job.phase == "cutting":
-                    job.phase = "ready"
                 job.candidates.clear()
+                if job.phase != "cutting":
+                    continue
+                job.phase = (
+                    "rendering_reels" if reel_template and job.highlights else "ready"
+                )
+                if job.phase == "rendering_reels":
+                    for item in job.highlights:
+                        item.template = reel_template
+                        item.phase = "queued"
+                        item.edit_kind = "reel"
+                        item.edit_revision += 1
+        for job in batch:
+            if job.phase == "rendering_reels":
+                for item in job.highlights:
+                    if item.phase == "queued":
+                        run_template(item, template_path(item))
+                with state:
+                    job.phase = "ready"
 
     def run_template(highlight: Highlight, output: Path) -> None:
         phase = "ready"
@@ -650,10 +673,15 @@ def create_app(
             )
             form_channels = html.escape(", ".join(selected_channels), quote=True)
             quality = selected_quality
+            template = selected_template
         notice = f'<p role="alert">{html.escape(error)}</p>' if error else ""
         options = "".join(
             f'<option value="{value}"{" selected" if value == quality else ""}>{title}</option>'
             for value, title in (("720p", "720p HD"), ("1080p", "Up to 1080p Full HD"))
+        )
+        templates = "".join(
+            f'<option value="{value}"{" selected" if value == template else ""}>{title}</option>'
+            for value, title in CHANNEL_VI_TEMPLATES.items()
         )
         return HTMLResponse(
             '<!doctype html><html lang="en"><head><meta charset="utf-8">'
@@ -688,10 +716,12 @@ def create_app(
             "<small>Enter up to five live usernames, separated by a comma.</small>"
             f'<label for="quality">Recording quality</label><select id="quality" '
             f'name="quality">{options}</select>'
+            '<label for="reel-template">Channel VI template</label>'
+            f'<select id="reel-template" name="reel_template">{templates}</select>'
             '<label><input type="checkbox" name="confirm" value="yes" required> '
             "I have permission to capture these streams.</label>"
             f'<button type="submit"{" disabled" if active >= MAX_ACTIVE else ""}>'
-            "Record and find clips</button></form>"
+            "Record and make Reels</button></form>"
             f'<div id="recordings">{cards}</div></main></body></html>',
             status_code=status,
             headers={"Cache-Control": "private, no-store", "X-Frame-Options": "DENY"},
@@ -707,13 +737,16 @@ def create_app(
         confirm: str = Form(""),
         quality: str = Form(DEFAULT_QUALITY),
         channels: str = Form("", max_length=160),
+        reel_template: str = Form(""),
     ):
-        nonlocal selected_channels, selected_quality
+        nonlocal selected_channels, selected_quality, selected_template
         authorize_form(token)
         if confirm != "yes":
             return show_home("Confirm permission to record first.", 400)
         if quality not in QUALITY_OPTIONS:
             return show_home("Choose a recording quality.", 400)
+        if reel_template and reel_template not in CHANNEL_VI_TEMPLATES:
+            return show_home("Choose an available Channel VI template.", 400)
         try:
             requested = channels_from_input(channels) if channels else default_channels
         except ValueError as error:
@@ -747,8 +780,10 @@ def create_app(
                     error_message = "The recorder is low on space. Save an older finished run to this device."
             if not error_message:
                 selected_channels, selected_quality = requested, quality
+                if reel_template:
+                    selected_template = reel_template
                 run_key = secrets.token_hex(8)
-                run = Run(run_key, datetime.now(UTC).isoformat())
+                run = Run(run_key, datetime.now(UTC).isoformat(), reel_template)
                 runs[run_key] = run
                 for name in requested:
                     key = secrets.token_hex(8)
@@ -867,6 +902,7 @@ def create_app(
         return {
             **edit_status(item),
             "kind": item.edit_kind,
+            "template": item.template,
             "url": f"{base}/template" if template_path(item).is_file() else "",
         }
 
@@ -967,6 +1003,7 @@ def create_app(
                 "analysing": "Checking footage for highlights",
                 "ranked": "Checked. Waiting for the rest of the batch",
                 "cutting": "Preparing your best clips",
+                "rendering_reels": "Making Channel VI Reels",
                 "failed": "No playable recording",
                 "ready": "Processed",
             }
@@ -974,6 +1011,7 @@ def create_app(
                 "id": key,
                 "created_at": run.created_at,
                 "complete": complete,
+                "reel_template": run.reel_template,
                 "revision": run_revision(batch),
                 "saved_revision": run.saved_revision,
                 "clips": clips,
@@ -1355,7 +1393,7 @@ def create_app(
         methods=["GET", "HEAD"],
         dependencies=[Depends(authenticate)],
     )
-    def download_template(key: str, rank: int) -> FileResponse:
+    def download_template(key: str, rank: int, inline: bool = False) -> FileResponse:
         with state:
             job = get_job(key)
             item = get_highlight(job, rank)
@@ -1368,6 +1406,7 @@ def create_app(
                 path,
                 media_type="video/mp4",
                 filename=f"{job.channel}-{job.key}-clipcast-{rank}.mp4",
+                content_disposition_type="inline" if inline else "attachment",
                 headers={"Cache-Control": "private, no-store"},
             )
 

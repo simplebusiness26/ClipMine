@@ -24,8 +24,13 @@ edits. Browser-only entries upload the selected clip on request. The upload ID
 is stored with the device copy so reopening the clip can resume an interrupted
 upload while the recorder retains its parts.
 
-Use the Gameplay First layout with manual facecam overrides and a small
-animated Scoop gesture. Keep the source audio. Add no publishing credentials.
+New recording requests from the operator form include a Channel VI template.
+The recorder queues the selected highlights for rendering after ranking and
+skips candidates flagged as having an unfinished ending. The review page
+opens the finished Reel directly, with editing and source backup available
+on demand. Manual edits and older saved runs can still use the Gameplay First
+layout with facecam overrides and a small animated Scoop gesture. Keep the
+source audio and retain human review before publishing.
 
 ## Consequences
 
