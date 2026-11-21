@@ -1,0 +1,40 @@
+name: ClipCast background recording test
+on:
+  workflow_dispatch:
+    inputs:
+      twitch_channel:
+        description: "Live Twitch username you have permission to record"
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  record-and-render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ClipCast recorder
+        run: docker build -t clipcast-recorder ops/streamlink-pilot
+      - name: Start background recorder
+        env:
+          RECORDER_PASSWORD: ${{ secrets.CLIPCAST_RECORDER_PASSWORD }}
+        run: |
+          test -n "$RECORDER_PASSWORD" || { echo "::error::Set CLIPCAST_RECORDER_PASSWORD as a repository Actions secret (20+ ASCII characters)."; exit 1; }
+          docker run -d --name clipcast -p 10000:10000 -e PORT=10000 -e TWITCH_CHANNEL=clix -e RECORDER_PASSWORD clipcast-recorder
+      - name: Record, analyse and export Channel VI Reels
+        env:
+          RECORDER_PASSWORD: ${{ secrets.CLIPCAST_RECORDER_PASSWORD }}
+          TWITCH_CHANNEL: ${{ inputs.twitch_channel }}
+        run: python ops/streamlink-pilot/background_run.py
+      - name: Upload results even if rendering fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipcast-background-results
+          path: clipcast-results/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Show recorder logs on failure
+        if: failure()
+        run: docker logs --tail 150 clipcast || true
