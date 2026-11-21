@@ -212,7 +212,43 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
             ).status_code
             == 204
         )
+        assert client.get(preview, auth=AUTH).content == original
+        assert client.get(edit["url"], auth=AUTH).content == b"branded clip"
+        assert (
+            client.get(monitor + "/manifest", auth=AUTH).json()["saved_revision"]
+            == (reopened["revision"])
+        )
+
+        assert (
+            client.post(
+                monitor + "/saved/forget", data={"token": token}, auth=AUTH
+            ).status_code
+            == 204
+        )
+        next_fields = {**fields, "channels": "clix, second"}
+        assert client.post("/record", data=next_fields, auth=AUTH).status_code == 409
+        assert (
+            client.post(
+                monitor + "/saved",
+                data={"token": token, "revision": reopened["revision"]},
+                auth=AUTH,
+            ).status_code
+            == 204
+        )
+        new_run = client.post(
+            "/record", data=next_fields, auth=AUTH, follow_redirects=False
+        )
+        assert new_run.status_code == 303
         assert client.get(preview, auth=AUTH).status_code == 404
+        deadline = monotonic() + 3
+        while monotonic() < deadline:
+            if client.get(new_run.headers["location"] + "/manifest", auth=AUTH).json()[
+                "complete"
+            ]:
+                break
+            sleep(0.03)
+        else:
+            raise AssertionError("The next run did not finish")
 
     # The review URL still boots with a new worker; the browser supplies the saved file.
     with TestClient(app.create_app("clix", PASSWORD)) as client:
@@ -292,6 +328,16 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
                     part_url, content=data, headers=token_header, auth=AUTH
                 )
                 assert part.json() == {"received": offset + len(data)}
+            if offset == 0:
+                with monkeypatch.context() as paused:
+                    paused.setattr(app, "monotonic", lambda: monotonic() + 600)
+                    resumed = client.put(
+                        upload,
+                        json={**options, "size": len(original)},
+                        headers=token_header,
+                        auth=AUTH,
+                    )
+                assert resumed.json()["received"] == chunk_size
         resume = client.put(
             upload,
             json={**options, "size": len(original)},

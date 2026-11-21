@@ -18,9 +18,11 @@ checked. Allocate an early share of slots to each channel, then fill remaining
 slots from the strongest remaining candidates. The review page reads clips and
 queues edits directly on the recorder. Closing the page has no effect on the job
 while the service is running. An explicit save copies clips and finished Reels to
-IndexedDB. The recorder frees temporary files after save acknowledgement, provided
-no newer edits have started. Browser-only archive entries can still upload their
-clips when the operator requests a hook or Reel.
+IndexedDB. The recorder keeps its copy for editing and reclaims runs saved to
+the device when a new run needs space, provided the archive includes the latest
+edits. Browser-only entries upload the selected clip on request. The upload ID
+is stored with the device copy so reopening the clip can resume an interrupted
+upload while the recorder retains its parts.
 
 Use the Gameplay First layout with manual facecam overrides and a small
 animated Scoop gesture. Keep the source audio. Add no publishing credentials.
