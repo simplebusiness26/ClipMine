@@ -1,4 +1,4 @@
-"""Compose the Gameplay First ClipCast layout with the source audio."""
+"""Compose ClipCast Reel layouts with the source audio."""
 
 import json
 import logging
@@ -20,6 +20,16 @@ WIDTH, HEIGHT, FPS = 720, 1280, 30
 CROP = {"left": "0.16", "center": "0.50", "right": "0.84"}
 HOOK_LIMIT = 64
 NARRATION_LIMIT = 110
+DEFAULT_TEMPLATE = "gameplay-first"
+CHANNEL_VI_TEMPLATES = {
+    "it-was-going-well": "It Was Going Well",
+    "roll-that-back": "Roll That Back",
+    "scoop-was-there": "Scoop Was There",
+}
+REEL_TEMPLATES = {
+    DEFAULT_TEMPLATE: "Gameplay First",
+    **{key: f"Channel VI · {label}" for key, label in CHANNEL_VI_TEMPLATES.items()},
+}
 CREAM = (255, 240, 216, 255)
 PLUM = (39, 11, 41, 255)
 PINK = (237, 45, 118, 255)
@@ -99,21 +109,21 @@ def fit_caption(text: str, font: ImageFont.FreeTypeFont, limit: int) -> list[str
     return rows
 
 
-def draw_caption(text: str, output: Path) -> None:
+def draw_caption(text: str, output: Path, max_text_width: int = 520) -> None:
     canvas = Image.new("RGBA", (WIDTH, 144))
     if text:
         draw = ImageDraw.Draw(canvas)
         path = FONT_DIR / "DejaVuSans-Bold.ttf"
         size = 33
         font = ImageFont.truetype(str(path), size)
-        rows = fit_caption(text, font, 520)
+        rows = fit_caption(text, font, max_text_width)
         if len(text.splitlines()) > 3:
             text = " ".join(text.split())
-            rows = fit_caption(text, font, 520)
+            rows = fit_caption(text, font, max_text_width)
         while len(rows) > 3 and size > 18:
             size -= 1
             font = ImageFont.truetype(str(path), size)
-            rows = fit_caption(text, font, 520)
+            rows = fit_caption(text, font, max_text_width)
         for index, row in enumerate(rows[:3]):
             y = index * (size + 8)
             width = math.ceil(font.getlength(row)) + 18
@@ -167,7 +177,9 @@ def auto_captions(source: Path, scratch: Path, *, long_source: bool = False) -> 
     return sorted(cues)
 
 
-def caption_timeline(path: Path, cues: list, duration: float) -> None:
+def caption_timeline(
+    path: Path, cues: list, duration: float, max_text_width: int = 520
+) -> None:
     blank = path.with_name("blank.png")
     draw_caption("", blank)
     cursor = 0.0
@@ -182,7 +194,7 @@ def caption_timeline(path: Path, cues: list, duration: float) -> None:
             if start - cursor >= 0.039:
                 playlist.write(f"file '{blank.name}'\nduration {start - cursor:.5f}\n")
             caption = path.with_name(f"caption-{index}.png")
-            draw_caption(text, caption)
+            draw_caption(text, caption, max_text_width)
             playlist.write(f"file '{caption.name}'\nduration {end - start:.5f}\n")
             cursor = end
         playlist.write(f"file '{blank.name}'\n")
@@ -273,7 +285,11 @@ def render_template(
     narration: str,
     crop: str,
     cam: str = "auto",
+    template: str = DEFAULT_TEMPLATE,
 ) -> TemplateResult:
+    if template not in REEL_TEMPLATES:
+        raise ValueError("Unknown Reel template")
+    headline = CHANNEL_VI_TEMPLATES.get(template)
     duration, has_audio = probe_clip(source)
     with TemporaryDirectory(prefix="template-", dir=output.parent) as temp:
         scratch = Path(temp)
@@ -282,17 +298,17 @@ def render_template(
             status = "Written narration included."
         else:
             cues, status = transcript_context(source, scratch, has_audio)
-        selected = (
-            HookSuggestion(hook)
-            if hook
-            else suggest_hook(
+        if headline:
+            selected = HookSuggestion(headline.upper())
+        elif hook:
+            selected = HookSuggestion(hook)
+        else:
+            selected = suggest_hook(
                 source, duration, portrait_crop(crop), [text for _, _, text in cues]
             )
-        )
-        hook_image = scratch / "hook.png"
-        draw_hook(selected.text, hook_image)
         timeline = scratch / "captions.ffconcat"
-        caption_timeline(timeline, cues, duration)
+        caption_timeline(timeline, cues, duration, 350 if headline else 520)
+        captions_input = ["-f", "concat", "-safe", "1", "-i", str(timeline)]
         camera = facecam_crop(source, duration, cam)
         top = CAM_HEIGHT if camera else 0
         game = (
@@ -307,18 +323,38 @@ def render_template(
             )
         else:
             layout = f"[0:v]setpts=PTS-STARTPTS,fps=30,{game}[base];"
-        wink = scratch / "scoop-wink.png"
-        draw_scoop_wink(wink)
-        wink_start = min(3.1, duration * 0.48)
-        wink_window = f"between(t,{wink_start:.2f},{wink_start + 0.45:.2f})"
-        graph = (
-            f"{layout}[base][1:v]overlay=x=29:y={top + 55}[logo];"
-            f"[logo][2:v]overlay=x=26:y={top + 132}:enable='lt(t,4)'[hook];"
-            "[hook][3:v]overlay=x=32:y=884[text];"
-            "[4:v]scale=-1:235:flags=lanczos[scoop];[5:v]scale=-1:235:flags=lanczos[wink];"
-            f"[text][scoop]overlay=x=W-w-59:y=H-h-87:enable='not({wink_window})'[stood];"
-            f"[stood][wink]overlay=x=W-w-59:y=H-h-87:enable='{wink_window}'[out]"
-        )
+        if headline:
+            layers = ["-i", str(ASSETS / f"channel-vi-{template}.png"), *captions_input]
+            graph = (
+                f"{layout}[1:v]scale={WIDTH}:{HEIGHT}:flags=lanczos[art];"
+                "[base][art]overlay[branded];[branded][2:v]overlay=x=32:y=884[out]"
+            )
+        else:
+            hook_image = scratch / "hook.png"
+            draw_hook(selected.text, hook_image)
+            wink = scratch / "scoop-wink.png"
+            draw_scoop_wink(wink)
+            wink_start = min(3.1, duration * 0.48)
+            wink_window = f"between(t,{wink_start:.2f},{wink_start + 0.45:.2f})"
+            layers = [
+                "-i",
+                str(ASSETS / "brand-badge.png"),
+                "-i",
+                str(hook_image),
+                *captions_input,
+                "-i",
+                str(ASSETS / "scoop-stand.png"),
+                "-i",
+                str(wink),
+            ]
+            graph = (
+                f"{layout}[base][1:v]overlay=x=29:y={top + 55}[logo];"
+                f"[logo][2:v]overlay=x=26:y={top + 132}:enable='lt(t,4)'[hook];"
+                "[hook][3:v]overlay=x=32:y=884[text];"
+                "[4:v]scale=-1:235:flags=lanczos[scoop];[5:v]scale=-1:235:flags=lanczos[wink];"
+                f"[text][scoop]overlay=x=W-w-59:y=H-h-87:enable='not({wink_window})'[stood];"
+                f"[stood][wink]overlay=x=W-w-59:y=H-h-87:enable='{wink_window}'[out]"
+            )
         subprocess.run(
             [
                 "ffmpeg",
@@ -330,20 +366,7 @@ def render_template(
                 "1",
                 "-i",
                 str(source),
-                "-i",
-                str(ASSETS / "brand-badge.png"),
-                "-i",
-                str(hook_image),
-                "-f",
-                "concat",
-                "-safe",
-                "1",
-                "-i",
-                str(timeline),
-                "-i",
-                str(ASSETS / "scoop-stand.png"),
-                "-i",
-                str(wink),
+                *layers,
                 "-filter_complex_threads",
                 "1",
                 "-filter_complex",

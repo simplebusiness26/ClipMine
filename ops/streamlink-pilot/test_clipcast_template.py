@@ -1,15 +1,24 @@
 import json
 import subprocess
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from clipcast_template import render
 
 
-@pytest.mark.parametrize("written", [True, False])
+@pytest.mark.parametrize(
+    ("written", "template"),
+    [
+        (True, render.DEFAULT_TEMPLATE),
+        (False, render.DEFAULT_TEMPLATE),
+        *((True, template) for template in render.CHANNEL_VI_TEMPLATES),
+    ],
+)
 def test_template_keeps_audio_and_duration_and_draws_text(
-    tmp_path: Path, written, monkeypatch
+    tmp_path: Path, written, template, monkeypatch
 ):
     source = tmp_path / "highlight.mp4"
     destination = tmp_path / "branded.mp4"
@@ -45,8 +54,10 @@ def test_template_keeps_audio_and_duration_and_draws_text(
     )
     narration = "Four bikes.\nOne late arrival." if written else ""
     status = render.render_template(
-        source, destination, "IT WAS GOING WELL", narration, "center"
+        source, destination, "CUSTOM HOOK", narration, "center", template=template
     )
+    title = render.CHANNEL_VI_TEMPLATES.get(template, "Custom Hook")
+    assert status.hook.text == title.upper()
     assert status.caption_status.startswith(
         "Written narration" if written else "Automatic English captions"
     )
@@ -101,6 +112,37 @@ def test_template_keeps_audio_and_duration_and_draws_text(
     assert has_narration("1.5")
     assert has_narration("0.5") is written
     assert has_narration("2.5") is written
+    if template in render.CHANNEL_VI_TEMPLATES:
+        raw = subprocess.check_output(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-ss",
+                "2.5",
+                "-i",
+                str(destination),
+                "-frames:v",
+                "1",
+                "-c:v",
+                "png",
+                "-threads",
+                "1",
+                "-f",
+                "image2pipe",
+                "pipe:1",
+            ],
+            timeout=10,
+        )
+        with Image.open(BytesIO(raw)).convert("RGB") as frame:
+            for area in (
+                (28, 62, 125, 157),
+                (28, 166, 240, 228),
+                (460, 1010, 630, 1260),
+            ):
+                pixels = frame.crop(area).get_flattened_data()
+                assert sum(red > blue + 35 for red, _, blue in pixels) > 60
 
 
 def test_recording_scan_keeps_whisper_windows_when_worker_times_out(
