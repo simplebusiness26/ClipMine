@@ -22,6 +22,7 @@ HOOK_LIMIT = 64
 NARRATION_LIMIT = 110
 DEFAULT_TEMPLATE = "gameplay-first"
 CUSTOM_CHANNEL_VI_TEMPLATE = "channel-vi-custom"
+CUSTOM_GTA_CLIPCAST_TEMPLATE = "gta-clipcast-custom"
 CHANNEL_VI_TEMPLATES = {
     "it-was-going-well": "It Was Going Well",
     "roll-that-back": "Roll That Back",
@@ -30,6 +31,7 @@ CHANNEL_VI_TEMPLATES = {
 REEL_TEMPLATES = {
     DEFAULT_TEMPLATE: "Gameplay First",
     CUSTOM_CHANNEL_VI_TEMPLATE: "Channel VI · Custom headline",
+    CUSTOM_GTA_CLIPCAST_TEMPLATE: "GTA ClipCast · Custom headline",
     **{key: f"Channel VI · {label}" for key, label in CHANNEL_VI_TEMPLATES.items()},
 }
 CREAM = (255, 240, 216, 255)
@@ -288,10 +290,12 @@ def render_template(
     crop: str,
     cam: str = "auto",
     template: str = DEFAULT_TEMPLATE,
+    *,
+    cached_cues: list | None = None,
 ) -> TemplateResult:
     if template not in REEL_TEMPLATES:
         raise ValueError("Unknown Reel template")
-    custom_headline = template == CUSTOM_CHANNEL_VI_TEMPLATE
+    custom_headline = template in {CUSTOM_CHANNEL_VI_TEMPLATE, CUSTOM_GTA_CLIPCAST_TEMPLATE}
     headline = CHANNEL_VI_TEMPLATES.get("roll-that-back" if custom_headline else template)
     duration, has_audio = probe_clip(source)
     with TemporaryDirectory(prefix="template-", dir=output.parent) as temp:
@@ -299,6 +303,9 @@ def render_template(
         if narration:
             cues = [(0.0, duration + 0.04, narration)]
             status = "Written narration included."
+        elif cached_cues is not None:
+            cues = cached_cues
+            status = "Automatic English captions included." if cues else "No clear speech was detected."
         else:
             cues, status = transcript_context(source, scratch, has_audio)
         if headline and not (custom_headline and hook):
@@ -328,7 +335,8 @@ def render_template(
             layout = f"[0:v]setpts=PTS-STARTPTS,fps=30,{game}[base];"
         if headline:
             asset_name = "roll-that-back" if custom_headline else template
-            art = ASSETS / f"channel-vi-{asset_name}.png"
+            brand = "gta-clipcast" if template == CUSTOM_GTA_CLIPCAST_TEMPLATE else "channel-vi"
+            art = ASSETS / f"{brand}-{asset_name}.png"
             if custom_headline and hook:
                 hook_image = scratch / "hook.png"
                 draw_hook(selected.text, hook_image)
@@ -337,7 +345,7 @@ def render_template(
                     image.paste((0, 0, 0, 0), (0, 245, image.width, 360))
                     branded = image.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
                     branded.alpha_composite(title, (26, 165))
-                    art = scratch / "channel-vi.png"
+                    art = scratch / "brand.png"
                     branded.save(art)
             layers = ["-i", str(art), *captions_input]
             graph = (

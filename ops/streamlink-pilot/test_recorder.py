@@ -24,6 +24,7 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_one_reel(monkeypat
     second_started = Event()
     finish_second = Event()
     sources = []
+    render_attempts = []
 
     def capture(url, output, on_progress, *, quality, max_bytes):
         assert url.endswith("/clix")
@@ -41,10 +42,16 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_one_reel(monkeypat
             return []
         return [[0.6, 2.4, "That was my getaway vehicle."]]
 
-    def render(source, output, hook, narration, crop, cam, template):
-        assert hook == "SUSPECT LOSES GETAWAY VEHICLE"
-        assert template == app.CUSTOM_CHANNEL_VI_TEMPLATE
-        output.write_bytes(b"Channel VI reel")
+    def render(source, output, hook, narration, crop, cam, template, *, cached_cues):
+        assert cached_cues == [[0.6, 2.4, "That was my getaway vehicle."]]
+        render_attempts.append(template)
+        if template == app.CUSTOM_GTA_CLIPCAST_TEMPLATE and render_attempts.count(template) == 1:
+            raise ValueError("Simulated GTA render failure.")
+        assert (template, hook) in {
+            (app.CUSTOM_CHANNEL_VI_TEMPLATE, "SUSPECT LOSES GETAWAY VEHICLE"),
+            (app.CUSTOM_GTA_CLIPCAST_TEMPLATE, "WORST GETAWAY IN LEONIDA"),
+        }
+        output.write_bytes(template.encode())
         return TemplateResult("Automatic English captions", HookSuggestion(hook))
 
     monkeypatch.setattr(app, "ChatMonitor", lambda _: type(
@@ -117,21 +124,48 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_one_reel(monkeypat
                 "min_seconds": 12, "max_seconds": 20,
             }
             assert clip["transcript"] == [[0.6, 2.4, "That was my getaway vehicle."]]
-            assert not clip["edit"]["url"]
+            assert not clip["reels"]["channel-vi"]["download_url"]
             assert client.post(
                 clip["delivery_url"], data={"token": token, "revision": clip["revision"]},
                 auth=AUTH,
             ).status_code == 409
-            assert client.post(
-                clip["edit_url"], headers={"X-ClipCast-Token": token}, auth=AUTH,
-                json={"kind": "reel", "hook": "SUSPECT LOSES GETAWAY VEHICLE",
-                      "template": clip["template"], "request_id": "a" * 32},
-            ).status_code == 202
+            options = {
+                "channel_vi_hook": "SUSPECT LOSES GETAWAY VEHICLE",
+                "gta_clipcast_hook": "WORST GETAWAY IN LEONIDA",
+                "request_id": "a" * 32,
+            }
+            def submit_pair():
+                return client.post(
+                    clip["reels_url"], headers={"X-ClipCast-Token": token},
+                    auth=AUTH, json=options,
+                )
+
+            assert submit_pair().status_code == 202
+            assert submit_pair().status_code == 202
             assert client.post(
                 "/continuous/stop", data={"token": token}, auth=AUTH, follow_redirects=False
             ).status_code == 303
-            edit = wait_for(lambda: pending()[0] if pending()[0]["edit"]["url"] else None)
-            assert client.get(edit["edit"]["url"], auth=AUTH).content == b"Channel VI reel"
+            def pair_in_phase(phase):
+                item = pending()[0]
+                return item if item["reels"]["gta-clipcast"]["phase"] == phase else None
+
+            failed = wait_for(lambda: pair_in_phase("failed"))
+            assert client.post(
+                failed["delivery_url"],
+                data={"token": token, "revision": failed["revision"]}, auth=AUTH,
+            ).status_code == 409
+            options["request_id"] = "b" * 32
+            assert submit_pair().status_code == 202
+            edit = wait_for(lambda: pair_in_phase("ready"))
+            reels = edit["reels"]
+            for brand, template in app.BRAND_REEL_TEMPLATES.items():
+                url = reels[brand]["download_url"]
+                assert client.get(url).status_code == 401
+                download = client.get(url, auth=AUTH)
+                assert download.content == template.encode()
+                assert f"-{brand}.mp4" in download.headers["content-disposition"]
+            assert render_attempts.count(app.CUSTOM_CHANNEL_VI_TEMPLATE) == 1
+            assert render_attempts.count(app.CUSTOM_GTA_CLIPCAST_TEMPLATE) == 2
             assert client.post(
                 edit["delivery_url"], data={"token": token, "revision": edit["revision"]},
                 auth=AUTH,

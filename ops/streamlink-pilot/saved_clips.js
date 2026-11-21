@@ -321,7 +321,7 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
     suggest.type = render.type = "button";
     const hookField = field("Top hook", hook);
     function showHookControls() {
-        hookField.hidden = template.value !== defaultTemplate && template.value !== "channel-vi-custom";
+        hookField.hidden = ![defaultTemplate, "channel-vi-custom", "gta-clipcast-custom"].includes(template.value);
         suggest.hidden = template.value !== defaultTemplate;
     }
     template.addEventListener("change", showHookControls);
@@ -474,6 +474,9 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
     suggest.onclick = () => processClip("hook", null, pendingUpload?.kind === "hook");
     render.onclick = () => processClip("reel", null, pendingUpload?.kind === "reel");
     card.append(previewButton, video, field("Reel template", template), hookField, suggest, settings, render, progress, downloads);
+    for (const reel of Object.values(clip.reels || {})) {
+        if (reel.download_url) card.append(link("Download " + reel.label + " Reel", reel.download_url));
+    }
     if (clip.transcript?.length) {
         const transcript = node("details");
         transcript.append(node("summary", "Timestamped transcript"));

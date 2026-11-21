@@ -48,6 +48,7 @@ from clipcast_template.facecam import FACECAM_OPTIONS
 from clipcast_template.render import (
     CROP,
     CUSTOM_CHANNEL_VI_TEMPLATE,
+    CUSTOM_GTA_CLIPCAST_TEMPLATE,
     DEFAULT_TEMPLATE,
     HOOK_LIMIT,
     NARRATION_LIMIT,
@@ -70,6 +71,10 @@ from highlights import (
 from saved_views import SCRIPT, saved_page
 
 CAPTURE_SECONDS = 600
+BRAND_REEL_TEMPLATES = {
+    "channel-vi": CUSTOM_CHANNEL_VI_TEMPLATE,
+    "gta-clipcast": CUSTOM_GTA_CLIPCAST_TEMPLATE,
+}
 MIB = 1024 * 1024
 DEFAULT_QUALITY = "720p"
 HD_STREAMS = "720p60,720p,720p30,480p60,480p,480p30,360p60,360p,360p30"
@@ -269,8 +274,10 @@ class Highlight:
     edit_request: str = ""
     edit_kind: str = ""
     edit_revision: int = 0
-    transcript: list = field(default_factory=list)
+    transcript: list | None = None
     duration: float | None = None
+    brand_reels: dict[str, "Highlight"] = field(default_factory=dict)
+    brand_request: str = ""
 
 
 @dataclass
@@ -342,6 +349,12 @@ class UploadOptions(EditOptions):
 
 
 class RunEditOptions(EditOptions):
+    request_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+
+class BrandReelOptions(BaseModel):
+    channel_vi_hook: str = Field(min_length=1, max_length=HOOK_LIMIT)
+    gta_clipcast_hook: str = Field(min_length=1, max_length=HOOK_LIMIT)
     request_id: str = Field(pattern=r"^[a-f0-9]{32}$")
 
 
@@ -558,7 +571,7 @@ def create_app(
             output.unlink(missing_ok=True)
             LOGGER.warning("Highlight cut failed (%s)", type(error).__name__)
             return False
-        transcript = []
+        transcript = None
         if transcribe:
             try:
                 with TemporaryDirectory(prefix="transcript-", dir=output.parent) as scan:
@@ -603,13 +616,14 @@ def create_app(
                     job.phase = "ready"
                 job.candidates.clear()
 
-    def run_template(highlight: Highlight, output: Path) -> None:
+    def run_template(highlight: Highlight, output: Path, *, reuse_transcript: bool = False) -> None:
         phase = "ready"
         candidate = output.with_suffix(".pending.mp4")
         try:
             with processor:
                 with state:
                     highlight.phase = "rendering"
+                caption_options = {"cached_cues": highlight.transcript or []} if reuse_transcript else {}
                 result = render_template(
                     highlight.path,
                     candidate,
@@ -618,6 +632,7 @@ def create_app(
                     highlight.crop,
                     highlight.cam,
                     highlight.template,
+                    **caption_options,
                 )
                 candidate.replace(output)
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
@@ -705,6 +720,7 @@ def create_app(
             "hooks": "clip-aware",
             "previews": "inline",
             "continuous_capture": "supported",
+            "branded_reel_pair": "supported",
         }
 
     hidden = f'<input type="hidden" name="token" value="{csrf}">'
@@ -965,7 +981,7 @@ def create_app(
         with state:
             job = get_job(key)
             item = get_highlight(job, rank)
-            if item.phase not in TEMPLATE_BUSY:
+            if not highlight_is_busy(item):
                 item.narration = "\n".join(
                     " ".join(line.split()) for line in narration.splitlines()
                 ).strip()
@@ -994,7 +1010,7 @@ def create_app(
         with state:
             job = get_job(key)
             item = get_highlight(job, rank)
-            if item.phase not in TEMPLATE_BUSY:
+            if not highlight_is_busy(item):
                 cleaned_hook = " ".join(hook.split())
                 if cleaned_hook != item.hook:
                     item.hook_status = ""
@@ -1031,8 +1047,13 @@ def create_app(
     def run_is_busy(batch: list[Recording]) -> bool:
         return any(
             job.phase in BUSY
-            or any(clip.phase in TEMPLATE_BUSY for clip in job.highlights)
+            or any(highlight_is_busy(clip) for clip in job.highlights)
             for job in batch
+        )
+
+    def highlight_is_busy(item: Highlight) -> bool:
+        return item.phase in TEMPLATE_BUSY or any(
+            reel.phase in TEMPLATE_BUSY for reel in item.brand_reels.values()
         )
 
     def reclaim_saved_runs(incoming: int, needed: int) -> None:
@@ -1050,6 +1071,8 @@ def create_app(
             processed = run.continuous and run.finalizing and (
                 not revision or revision in (run.delivered_revision, run.skipped_revision)
             )
+            if any(item.brand_reels for job in batch for item in job.highlights):
+                saved = False
             if not (saved or processed):
                 continue
             for job in batch:
@@ -1063,6 +1086,24 @@ def create_app(
             "kind": item.edit_kind,
             "url": f"{base}/template" if template_path(item).is_file() else "",
         }
+
+    def brand_reel_path(item: Highlight, brand: str) -> Path:
+        return item.path.with_name(f"{item.path.stem}-{brand}.mp4")
+
+    def brand_reels_status(item: Highlight, base: str) -> dict:
+        result = {}
+        for brand, template in BRAND_REEL_TEMPLATES.items():
+            reel = item.brand_reels.get(brand)
+            phase = reel.phase if reel else "waiting"
+            url = ""
+            if phase == "ready" and brand_reel_path(item, brand).is_file():
+                url = f"{base}/reels/{brand}"
+            result[brand] = {
+                "label": REEL_TEMPLATES[template].split(" · ")[0],
+                "phase": phase,
+                "download_url": url,
+            }
+        return result
 
     @app.get("/continuous/queue", dependencies=[Depends(authenticate)])
     def continuous_queue(response: Response) -> dict:
@@ -1094,6 +1135,8 @@ def create_app(
                     "run_url": f"/runs/{run.key}",
                     "preview_url": f"{base}/preview",
                     "edit_url": f"{base}/edit",
+                    "reels_url": f"{base}/reels",
+                    "reels": brand_reels_status(item, base),
                     "delivery_url": f"/continuous/{job.key}/delivered",
                     "skip_url": f"/continuous/{job.key}/skipped",
                     "template": CUSTOM_CHANNEL_VI_TEMPLATE,
@@ -1122,12 +1165,12 @@ def create_app(
             if not run.continuous:
                 raise HTTPException(404, "This is not a continuous recording.")
             item = get_highlight(job, 1)
+            reels = brand_reels_status(item, "")
             if (
                 revision != run_revision([job])
-                or item.phase != "ready"
-                or not template_path(item).is_file()
+                or not all(reel["download_url"] for reel in reels.values())
             ):
-                raise HTTPException(409, "Download the current finished Reel first.")
+                raise HTTPException(409, "Download both current finished Reels first.")
             run.delivered_revision = revision
         return Response(status_code=204)
 
@@ -1175,7 +1218,7 @@ def create_app(
             base = f"/jobs/{key}/clips/{rank}"
             if item.edit_request == options.request_id:
                 return run_edit_status(item, base)
-            if item.phase in TEMPLATE_BUSY:
+            if highlight_is_busy(item):
                 raise HTTPException(409, "ClipCast is already working on this clip.")
             item.edit_request = options.request_id
             item.edit_kind = options.kind
@@ -1196,6 +1239,73 @@ def create_app(
         with state:
             item = get_highlight(get_job(key), rank)
             return run_edit_status(item, f"/jobs/{key}/clips/{rank}")
+
+    @app.post(
+        "/jobs/{key}/clips/{rank}/reels", dependencies=[Depends(authenticate)], status_code=202
+    )
+    def queue_brand_reels(
+        key: str, rank: int, options: BrandReelOptions,
+        x_clipcast_token: Annotated[str, Header()],
+    ) -> dict:
+        authorize_form(x_clipcast_token)
+        hooks = {
+            "channel-vi": " ".join(options.channel_vi_hook.split()),
+            "gta-clipcast": " ".join(options.gta_clipcast_hook.split()),
+        }
+        if not all(hooks.values()):
+            raise HTTPException(400, "Enter a headline for each Reel.")
+        base = f"/jobs/{key}/clips/{rank}"
+        with state:
+            job = get_job(key)
+            if job.phase != "ready" or not get_run(job.run).continuous:
+                raise HTTPException(409, "Wait for the continuous recording's highlight to be ready.")
+            item = get_highlight(job, rank)
+            if item.brand_request == options.request_id:
+                return brand_reels_status(item, base)
+            if highlight_is_busy(item):
+                raise HTTPException(409, "ClipCast is already working on this clip.")
+            item.brand_request = options.request_id
+            pending = []
+            for brand, hook in hooks.items():
+                reel = item.brand_reels.get(brand)
+                path = brand_reel_path(item, brand)
+                if reel and reel.phase == "ready" and reel.hook == hook and path.is_file():
+                    continue
+                reel = Highlight(
+                    item.clip, item.path, phase="queued", hook=hook, cam=item.cam,
+                    crop=item.crop, template=BRAND_REEL_TEMPLATES[brand],
+                    transcript=item.transcript,
+                )
+                item.brand_reels[brand] = reel
+                pending.append((reel, path))
+            if pending:
+                item.edit_revision += 1
+                Thread(target=render_brand_reels, args=(pending,), daemon=True).start()
+            return brand_reels_status(item, base)
+
+    def render_brand_reels(pending: list[tuple[Highlight, Path]]) -> None:
+        for reel, path in pending:
+            run_template(reel, path, reuse_transcript=True)
+
+    @app.get("/jobs/{key}/clips/{rank}/reels", dependencies=[Depends(authenticate)])
+    def get_brand_reels(key: str, rank: int, response: Response) -> dict:
+        response.headers["Cache-Control"] = "private, no-store"
+        with state:
+            item = get_highlight(get_job(key), rank)
+            return brand_reels_status(item, f"/jobs/{key}/clips/{rank}")
+
+    @app.get("/jobs/{key}/clips/{rank}/reels/{brand}", dependencies=[Depends(authenticate)])
+    def download_brand_reel(key: str, rank: int, brand: str) -> StreamingResponse:
+        if brand not in BRAND_REEL_TEMPLATES:
+            raise HTTPException(404, "Unknown Reel brand.")
+        with state:
+            job = get_job(key)
+            item = get_highlight(job, rank)
+            reel = item.brand_reels.get(brand)
+            path = brand_reel_path(item, brand)
+            if not reel or reel.phase != "ready" or not path.is_file():
+                raise HTTPException(404, "This branded Reel is not ready.")
+            return media_response(path, f"{job.channel}-{job.key}-{brand}.mp4")
 
     @app.get("/saved-clips.js", dependencies=[Depends(authenticate)])
     def archive_script() -> FileResponse:
@@ -1245,6 +1355,8 @@ def create_app(
                     "url": f"/jobs/{job.key}/clips/{rank}/preview",
                     "edit_url": f"/jobs/{job.key}/clips/{rank}/edit",
                     "edit": run_edit_status(item, f"/jobs/{job.key}/clips/{rank}"),
+                    "reels": brand_reels_status(item, f"/jobs/{job.key}/clips/{rank}")
+                    if item.brand_reels else {},
                     **({"transcript": item.transcript} if run.continuous else {}),
                 }
                 for job, rank, item in ranked
@@ -1664,9 +1776,7 @@ def create_app(
         authorize_form(token)
         with state:
             job = get_job(key)
-            if job.phase in BUSY or any(
-                item.phase in TEMPLATE_BUSY for item in job.highlights
-            ):
+            if run_is_busy([job]):
                 raise HTTPException(
                     status_code=409, detail="This recording is still processing."
                 )

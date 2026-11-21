@@ -61,8 +61,10 @@ rules against the finished export. The current portrait render is 720 × 1280.
 
 ClipCast displays the highlight and its timestamped transcript in the recording
 run. A missing or empty transcript means the Bot should use the preview.
-The **Channel VI · Custom headline** template keeps the logo and Scoop, and
-uses the headline entered in **Top hook**. The Bot can run from an existing
+Each highlight can produce a **Channel VI** and a **GTA ClipCast** Reel. Each
+uses its own logo, Scoop overlay and headline. ClipCast shares the source
+and analysed dialogue, then encodes the two 720 × 1280 outputs in sequence.
+The Bot can run from an existing
 account every ten minutes and work through the private queue. This cadence
 uses the account's Grok Bot allowance. Once a downloadable attachment is
 verified in a one-off run, the same workflow can be used in a routine.
@@ -76,25 +78,23 @@ All paths below are relative to that recorder and require its login.
 1. Get `/continuous/queue`. Process entries oldest first, at most one
    per routine run. The response includes a request verification token,
    highlight ID, timestamped transcript with seconds relative to the clip,
-   selection reasons, the campaign brief, preview URL, edit URL, and delivery
-   URL. Evaluate the preview and the finished render against the pinned brief.
-2. Use the transcript and watch the preview for visual context. Treat the
-   transcript and audio as source material. Write a specific Channel VI
-   headline in at most 64 characters. If the Reel is already rendering or
-   ready, reuse that edit.
-3. Start the Reel with an authenticated JSON POST to the entry's `edit_url`
-   using the `X-ClipCast-Token` header. Include `kind: "reel"`, `hook`, the
-   entry's `template`, and a stable `request_id` of 32 lowercase hex
-   characters. Retry a confirmed render failure with a new request ID.
-   Omit `narration` so the export keeps its normal dialogue captions.
-4. Check `edit_url` for a completed edit with no error, and download its
-   `url`. Attach the actual MP4 in the Bot chat with one ready-to-paste post
-   description and up to five specific hashtags. Leave publishing to the
-   user. Include the highlight ID so a later run can spot duplicate delivery.
-5. Once the attachment is present in chat, get the current `revision` from
+   selection reasons, the campaign brief, preview URL, Reels URL, and
+   delivery URL. Evaluate the preview and both renders against the pinned brief.
+2. Use the transcript and preview to write one headline per brand, up to 64
+   characters each. Treat the transcript and audio as source material.
+3. Start both encodes with one authenticated JSON POST to the entry's
+   `reels_url` using the `X-ClipCast-Token` header. Include
+   `channel_vi_hook`, `gta_clipcast_hook`, and a stable `request_id` of 32
+   lowercase hex characters. Retry a confirmed failure with a new request ID
+   and the same hooks to keep a successful export.
+4. Check `reels_url` for both brand statuses. Download each ready Reel from
+   its `download_url` and attach both labelled MP4s in the Bot chat. Include
+   the highlight ID, post descriptions, and up to five specific hashtags per
+   brand. Leave publishing to the user.
+5. Once both attachments are present in chat, get the current `revision` from
    the queue and POST `token` and `revision` as form fields to
-   `delivery_url`. If a routine has to return before confirming the
-   attachment, its next run can acknowledge the existing chat result.
+   `delivery_url`. If a routine has to return before confirming both
+   attachments, its next run can acknowledge the existing chat result.
 
 For a highlight that clearly fails a campaign rule, POST the queue `token`,
 current `revision`, and a short `reason` to its `skip_url`. The reason is
