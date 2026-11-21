@@ -17,7 +17,7 @@ jobs:
         with:
           ref: clipcast-background-actions
       - name: Build ClipCast image
-        run: docker build -t clipcast-recorder ops/streamlink-pilot
+        run: docker build -t clipcast-recorder -f ops/streamlink-pilot/Dockerfile ops/streamlink-pilot
       - name: Start recorder locally on runner
         run: |
           echo "RECORDER_PASSWORD=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" >> "$GITHUB_ENV"
