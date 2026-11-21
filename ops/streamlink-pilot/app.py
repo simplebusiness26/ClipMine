@@ -6,11 +6,13 @@ import os
 import re
 import secrets
 import subprocess
+from base64 import b64decode
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import ExitStack, asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
 from shutil import copyfileobj, disk_usage, rmtree
 from tempfile import TemporaryDirectory, TemporaryFile
@@ -38,6 +40,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from PIL import Image
 from pydantic import BaseModel, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
@@ -443,6 +446,8 @@ def create_app(
     continuous_highlight_limit: int = DEFAULT_CONTINUOUS_HIGHLIGHTS,
     access_link_hash: str = "",
     logo_free: bool = False,
+    campaign_overlay: bytes | None = None,
+    post_caption: str = "",
 ) -> FastAPI:
     default_channels = channels_from_input(channel)
     if len(default_channels) > MAX_ACTIVE:
@@ -451,6 +456,11 @@ def create_app(
         raise ValueError("A locked campaign requires one TWITCH_CHANNEL")
     if logo_free and not locked_campaign:
         raise ValueError("CLIPCAST_LOGO_FREE requires CLIPCAST_CAMPAIGN")
+    if campaign_overlay:
+        if not locked_campaign or logo_free:
+            raise ValueError("A campaign overlay requires a locked campaign that allows logos")
+        with Image.open(BytesIO(campaign_overlay)) as asset:
+            asset.verify()
     if access_link_hash and re.fullmatch(r"[0-9a-f]{64}", access_link_hash) is None:
         raise ValueError("RECORDER_ACCESS_LINK_HASH must be a lowercase SHA-256 hex digest")
     if not access_link_hash and (len(password) < 20 or not password.isascii()):
@@ -795,6 +805,8 @@ def create_app(
                 caption_options = {"cached_cues": highlight.transcript or []} if reuse_transcript else {}
                 if locked_campaign and locked_campaign.preserve_source_frame:
                     caption_options["preserve_source_frame"] = True
+                if campaign_overlay:
+                    caption_options["campaign_overlay"] = campaign_overlay
                 result = render_template(
                     highlight.path,
                     candidate,
@@ -896,7 +908,8 @@ def create_app(
             "branded_reel_bundle": "disabled" if logo_free else "supported",
             "automatic_reels": "supported",
             "campaign_lock": "enabled" if locked_campaign else "optional",
-            "campaign_export": "logo-free" if logo_free else "standard",
+            "campaign_export": "official-overlay" if campaign_overlay else ("logo-free" if logo_free else "standard"),
+            "campaign_caption": "configured" if post_caption else "optional",
         }
 
     hidden = f'<input type="hidden" name="token" value="{csrf}">'
@@ -1571,6 +1584,8 @@ def create_app(
                     for name, source in files.items():
                         with archive.open(name, "w") as entry:
                             copyfileobj(source, entry)
+                    if post_caption:
+                        archive.writestr("posting-caption.txt", post_caption + "\n")
                 length = bundle.tell()
                 bundle.seek(0)
             except OSError as error:
@@ -1655,6 +1670,7 @@ def create_app(
                     **({
                         "automatic_reels": True,
                         "transcript": item.transcript,
+                        **({"post_caption": post_caption} if post_caption else {}),
                         "skip_reason": (
                             item.skip_reason
                             if item.resolved_revision == item.edit_revision else ""
@@ -2103,6 +2119,7 @@ def create_app(
 
 def create_render_app() -> FastAPI:
     configured_campaign = os.environ.get("CLIPCAST_CAMPAIGN", "")
+    configured_overlay = os.environ.get("CLIPCAST_CAMPAIGN_OVERLAY", "")
     return create_app(
         os.environ.get("TWITCH_CHANNEL", ""),
         os.environ.get("RECORDER_PASSWORD", ""),
@@ -2115,4 +2132,6 @@ def create_render_app() -> FastAPI:
         ),
         access_link_hash=os.environ.get("RECORDER_ACCESS_LINK_HASH", ""),
         logo_free=os.environ.get("CLIPCAST_LOGO_FREE") == "1",
+        campaign_overlay=b64decode(configured_overlay, validate=True) if configured_overlay else None,
+        post_caption=os.environ.get("CLIPCAST_POST_CAPTION", "").strip(),
     )

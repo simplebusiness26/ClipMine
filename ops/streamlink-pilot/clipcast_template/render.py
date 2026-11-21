@@ -6,6 +6,7 @@ import math
 import subprocess
 import sys
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -324,6 +325,7 @@ def render_template(
     *,
     cached_cues: list | None = None,
     preserve_source_frame: bool = False,
+    campaign_overlay: bytes | None = None,
 ) -> TemplateResult:
     if template not in REEL_TEMPLATES and template != LOGO_FREE_TEMPLATE:
         raise ValueError("Unknown Reel template")
@@ -425,6 +427,19 @@ def render_template(
                 f"[text][scoop]overlay=x=W-w-59:y=H-h-87:enable='not({wink_window})'[stood];"
                 f"[stood][wink]overlay=x=W-w-59:y=H-h-87:enable='{wink_window}'[out]"
             )
+        if campaign_overlay:
+            overlay = scratch / "campaign-overlay.png"
+            with Image.open(BytesIO(campaign_overlay)) as asset:
+                asset = asset.convert("RGBA")
+                asset.thumbnail((400, 138), Image.Resampling.LANCZOS)
+                asset.save(overlay)
+            overlay_index = layers.count("-i") + 1
+            overlay_y = 220 if template == CUSTOM_CHANNEL_VI_TEMPLATE or template in CHANNEL_VI_TEMPLATES else 270
+            graph = (
+                graph.removesuffix("[out]") + "[composed];"
+                f"[composed][{overlay_index}:v]overlay=x=(W-w)/2:y={overlay_y}[out]"
+            )
+            layers.extend(("-i", str(overlay)))
         subprocess.run(
             [
                 "ffmpeg",

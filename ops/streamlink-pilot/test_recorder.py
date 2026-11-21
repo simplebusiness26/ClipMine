@@ -90,7 +90,8 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_distinct_highlight
     ])
     monkeypatch.setattr(app, "disk_usage", lambda _: type("Disk", (), {"free": 8 * 1024**3})())
 
-    with TestClient(app.create_app("clix", PASSWORD)) as client:
+    post_caption = "Watch the creator on Twitch\n#SyntheticCampaign"
+    with TestClient(app.create_app("clix", PASSWORD, post_caption=post_caption)) as client:
         assert client.get("/continuous/queue").status_code == 401
         home = client.get("/", auth=AUTH).text
         token = re.search(r'name="token" value="([^"]+)"', home)[1]
@@ -183,12 +184,13 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_distinct_highlight
             assert bundle.headers["content-type"] == "application/zip"
             assert bundle.headers["content-disposition"].endswith('-both-reels.zip"')
             with ZipFile(BytesIO(bundle.content)) as files:
+                assert files.namelist().count("posting-caption.txt") == 1
                 assert {
                     name.rsplit(edit["id"] + "-", 1)[-1]: files.read(name)
                     for name in files.namelist()
                 } == {
-                    f"{brand}.mp4": template.encode()
-                    for brand, template in app.BRAND_REEL_TEMPLATES.items()
+                    **{f"{brand}.mp4": template.encode() for brand, template in app.BRAND_REEL_TEMPLATES.items()},
+                    "posting-caption.txt": (post_caption + "\n").encode(),
                 }
             assert [item["id"] for item in pending()] == [sibling["id"], other["id"]]
 
@@ -216,6 +218,7 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_distinct_highlight
                 auth=AUTH,
             ).status_code == 204
             manifest = client.get(clip["run_url"] + "/manifest", auth=AUTH).json()
+            assert all(item["post_caption"] == post_caption for item in manifest["clips"])
             reasons = {item["id"]: item["skip_reason"] for item in manifest["clips"]}
             assert reasons == {clip["id"]: "", sibling["id"]: "", other["id"]: "Weak hook."}
             assert pending() == []

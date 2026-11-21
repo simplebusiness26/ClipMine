@@ -96,6 +96,12 @@ with a short opening quote if one can be transcribed. Check the finished Reel
 for any logo already in the source and confirm the featured creator before
 posting. Each worker uses its own deployment settings.
 
+For a locked worker that requires an official campaign logo, set
+`CLIPCAST_CAMPAIGN_OVERLAY` to the base64-encoded image bytes in the host
+environment. The logo is added over every frame of both Reel templates.
+`CLIPCAST_POST_CAPTION` supplies the copyable caption text and hashtags on
+the review card and adds `posting-caption.txt` to the bundle.
+
 ClipCast transcribes the highlight and chooses a short on-screen hook from
 spoken details. If the transcript offers no useful hook, ClipCast can use
 recognised objects or a recorded chat or laughter signal. A campaign that

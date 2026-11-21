@@ -532,6 +532,25 @@ function automaticReelCard(clip, rank) {
         }
         const ready = Object.values(reels).filter(reel => reel.download_url);
         downloads.replaceChildren(...ready.map(reel => link("Download " + reel.label, reel.download_url, "secondary")));
+        if (ready.length && clip.post_caption) {
+            const caption = node("textarea");
+            caption.value = clip.post_caption;
+            caption.readOnly = true;
+            caption.rows = 3;
+            downloads.append(field("Required posting caption", caption));
+            const copy = node("button", "Copy posting caption", "secondary");
+            copy.type = "button";
+            copy.onclick = async () => {
+                try {
+                    await navigator.clipboard.writeText(caption.value);
+                    copy.textContent = "Copied";
+                } catch {
+                    caption.focus();
+                    caption.select();
+                }
+            };
+            downloads.append(copy);
+        }
         title.textContent = ready[0]?.hook || title.textContent;
         if (clip.bundle_url && ready.length === 2) {
             downloads.prepend(link("Download both Reels", clip.bundle_url));
