@@ -13,14 +13,14 @@ signals. Rank action, story, chat and laughter leads together and cut a
 maximum of ten highlights per run. Use transcript timing to move endings
 to a natural break where possible. Select as many clips as the evidence earns.
 
-Capture progress polls a small manifest that includes playable clips as each
-channel is checked. Allocate an early share of slots to each channel, then
-fill remaining slots from the strongest remaining candidates. Preview media
-is transferred to IndexedDB before publishing that clip to the stable
-review URL. Full-batch completion opens the review page automatically. The review page has no automatic reload. Drafts and
-finished Reels are stored beside the source clips. The recorder frees
-temporary capture files after save acknowledgement. The review page re-uploads
-only the clip the operator has chosen for a hook check or Reel.
+Capture progress polls a manifest that lists playable clips as each channel is
+checked. Allocate an early share of slots to each channel, then fill remaining
+slots from the strongest remaining candidates. The review page reads clips and
+queues edits directly on the recorder. Closing the page has no effect on the job
+while the service is running. An explicit save copies clips and finished Reels to
+IndexedDB. The recorder frees temporary files after save acknowledgement, provided
+no newer edits have started. Browser-only archive entries can still upload their
+clips when the operator requests a hook or Reel.
 
 Use the Gameplay First layout with manual facecam overrides and a small
 animated Scoop gesture. Keep the source audio. Add no publishing credentials.
@@ -28,8 +28,8 @@ animated Scoop gesture. Keep the source audio. Add no publishing credentials.
 ## Consequences
 
 Saved runs survive a recorder restart in the same browser, subject to browser
-storage limits and site-data settings. Capture and analysis still need a
-healthy recorder until archiving finishes. Analysis and rendering are
+storage limits and site-data settings. Before that save, an idle spin-down,
+restart or redeploy loses the recorder's jobs and files. Analysis and rendering are
 serialised for the free instance. Recording speech scans have a wall-clock
 budget and keep completed windows if a scan runs out of time. Face
 detection, dialogue timing and highlight ranking are heuristic. The operator needs permission to capture and

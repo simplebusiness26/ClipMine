@@ -30,7 +30,7 @@ def saved_page(view: str, token: str, batch: str = "") -> HTMLResponse:
         "review": "Review saved clips",
     }[view]
     message = (
-        "Keep this tab open until the clips finish saving."
+        "You can close this page. To check back, choose Open recording run on the recorder."
         if view == "capture"
         else "Runs saved in this browser appear here."
         if view == "index"
