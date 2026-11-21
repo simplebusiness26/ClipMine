@@ -483,8 +483,11 @@ def create_app(
                 # filled from the best candidates once every channel is checked.
                 run = runs[job.run]
                 share = MAX_CLIPS // len(run.jobs)
+            total_candidates = len(candidates)
+            incomplete_candidates = sum(clip.incomplete for clip in candidates)
             if run.reel_template:
                 candidates = [clip for clip in candidates if not clip.incomplete]
+            LOGGER.info("ClipCast channel=%s duration=%.1fs candidates=%d incomplete=%d usable=%d", job.channel, recorded.duration, total_candidates, incomplete_candidates, len(candidates))
             remaining = []
             for clip in candidates:
                 if len(job.highlights) >= share:
@@ -495,7 +498,9 @@ def create_app(
                 job.candidates = remaining
                 job.signals = f"{chat_status} {audio_status}"
                 job.phase = "ranked"
-                job.detail = ""
+                job.detail = (f"Recorded {recorded.duration:.0f}s; detected {total_candidates} candidates; "
+                              f"{incomplete_candidates} incomplete; {len(candidates)} usable. "
+                              f"{chat_status} {audio_status}") if not candidates and not job.highlights else ""
         prepare_run(job.run)
 
     def append_highlight(job: Recording, clip: Clip) -> bool:
