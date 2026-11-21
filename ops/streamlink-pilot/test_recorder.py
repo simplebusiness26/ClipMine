@@ -14,7 +14,7 @@ from zipfile import ZipFile
 from fastapi.testclient import TestClient
 
 import app
-from clipcast_template.hooks import HookSuggestion
+from clipcast_template.hooks import HookSuggestion, choose_hook
 from clipcast_template.render import TemplateResult
 from highlights import SoundSignals
 
@@ -25,6 +25,7 @@ AUTH = ("recorder", PASSWORD)
 def test_continuous_recording_overlaps_analysis_and_hands_off_distinct_highlights(monkeypatch):
     second_started = Event()
     finish_second = Event()
+    release_first_hook = Event()
     sources = []
     render_attempts = []
 
@@ -42,17 +43,20 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_distinct_highlight
             if path == sources[0]:
                 assert second_started.wait(5)
             return []
-        return [[0.6, 2.4, "That was my getaway vehicle."]]
+        return [[0.6, 2.4, "I just lost my getaway vehicle."]]
+
+    def suggest(source, narration, crop, *, cached_cues):
+        if source.parent == sources[0].parent and source.stem == "highlight-1":
+            assert release_first_hook.wait(6)
+        return choose_hook([], [text for _, _, text in cached_cues])
 
     def render(source, output, hook, narration, crop, cam, template, *, cached_cues):
-        assert cached_cues == [[0.6, 2.4, "That was my getaway vehicle."]]
-        render_attempts.append(template)
-        if template == app.CUSTOM_GTA_CLIPCAST_TEMPLATE and render_attempts.count(template) == 1:
+        assert cached_cues == [[0.6, 2.4, "I just lost my getaway vehicle."]]
+        attempt = (source.stem, template)
+        render_attempts.append(attempt)
+        if attempt == ("highlight-1", app.CUSTOM_GTA_CLIPCAST_TEMPLATE) and render_attempts.count(attempt) == 1:
             raise ValueError("Simulated GTA render failure.")
-        assert (template, hook) in {
-            (app.CUSTOM_CHANNEL_VI_TEMPLATE, "SUSPECT LOSES GETAWAY VEHICLE"),
-            (app.CUSTOM_GTA_CLIPCAST_TEMPLATE, "WORST GETAWAY IN LEONIDA"),
-        }
+        assert hook == "THERE GOES THE GETAWAY CAR"
         output.write_bytes(template.encode())
         return TemplateResult("Automatic English captions", HookSuggestion(hook))
 
@@ -67,6 +71,7 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_distinct_highlight
     monkeypatch.setattr(app, "detect_sound", lambda *_: SoundSignals({}, {}))
     monkeypatch.setattr(app, "detect_motion", lambda *_: {})
     monkeypatch.setattr(app, "auto_captions", speech)
+    monkeypatch.setattr(app, "suggest_template_hook", suggest)
     monkeypatch.setattr(app, "render_template", render)
     def cut(source, output, clip):
         output.write_text(str(clip.end - clip.start))
@@ -132,7 +137,7 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_distinct_highlight
                 "required_category": "", "preserve_source_frame": False,
                 "require_custom_hook": False,
             }
-            assert clip["transcript"] == [[0.6, 2.4, "That was my getaway vehicle."]]
+            assert clip["transcript"] == [[0.6, 2.4, "I just lost my getaway vehicle."]]
             assert not clip["reels"]["channel-vi"]["download_url"]
             assert client.get(clip["bundle_url"]).status_code == 401
             assert client.get(clip["bundle_url"], auth=AUTH).status_code == 409
@@ -140,20 +145,10 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_distinct_highlight
                 clip["delivery_url"], data={"token": token, "revision": clip["revision"]},
                 auth=AUTH,
             ).status_code == 409
-            assert client.post(
-                sibling["skip_url"],
-                data={"token": token, "revision": clip["revision"], "reason": "Wrong case"},
-                auth=AUTH,
-            ).status_code == 409
-            assert client.post(
-                sibling["skip_url"],
-                data={"token": token, "revision": sibling["revision"], "reason": "Lacks gameplay."},
-                auth=AUTH,
-            ).status_code == 204
-            assert [item["id"] for item in pending()] == [clip["id"], other["id"]]
+            release_first_hook.set()
             options = {
-                "channel_vi_hook": "SUSPECT LOSES GETAWAY VEHICLE",
-                "gta_clipcast_hook": "WORST GETAWAY IN LEONIDA",
+                "channel_vi_hook": "THERE GOES THE GETAWAY CAR",
+                "gta_clipcast_hook": "THERE GOES THE GETAWAY CAR",
                 "request_id": "a" * 32,
             }
             def submit_pair():
@@ -162,8 +157,6 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_distinct_highlight
                     auth=AUTH, json=options,
                 )
 
-            assert submit_pair().status_code == 202
-            assert submit_pair().status_code == 202
             assert client.post(
                 "/continuous/stop", data={"token": token}, auth=AUTH, follow_redirects=False
             ).status_code == 303
@@ -176,18 +169,15 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_distinct_highlight
                 failed["delivery_url"],
                 data={"token": token, "revision": failed["revision"]}, auth=AUTH,
             ).status_code == 409
-            options["request_id"] = "b" * 32
             assert submit_pair().status_code == 202
             edit = wait_for(lambda: pair_in_phase("ready"))
             reels = edit["reels"]
             for brand, template in app.BRAND_REEL_TEMPLATES.items():
                 url = reels[brand]["download_url"]
                 assert client.get(url).status_code == 401
-                download = client.get(url, auth=AUTH)
-                assert download.content == template.encode()
-                assert f"-{brand}.mp4" in download.headers["content-disposition"]
-            assert render_attempts.count(app.CUSTOM_CHANNEL_VI_TEMPLATE) == 1
-            assert render_attempts.count(app.CUSTOM_GTA_CLIPCAST_TEMPLATE) == 2
+                assert reels[brand]["hook"] == "THERE GOES THE GETAWAY CAR"
+            assert render_attempts.count(("highlight-1", app.CUSTOM_CHANNEL_VI_TEMPLATE)) == 1
+            assert render_attempts.count(("highlight-1", app.CUSTOM_GTA_CLIPCAST_TEMPLATE)) == 2
             bundle = client.get(edit["bundle_url"], auth=AUTH)
             assert bundle.headers["content-type"] == "application/zip"
             assert bundle.headers["content-disposition"].endswith('-both-reels.zip"')
@@ -199,11 +189,26 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_distinct_highlight
                     f"{brand}.mp4": template.encode()
                     for brand, template in app.BRAND_REEL_TEMPLATES.items()
                 }
+            assert [item["id"] for item in pending()] == [sibling["id"], other["id"]]
+
+            def finished(id):
+                for item in pending():
+                    if item["id"] == id and all(r["download_url"] for r in item["reels"].values()):
+                        return item
+                return None
+
+            sibling = wait_for(lambda: finished(sibling["id"]))
+            for index, (brand, template) in enumerate(app.BRAND_REEL_TEMPLATES.items()):
+                download = client.get(sibling["reels"][brand]["download_url"], auth=AUTH)
+                assert download.content == template.encode()
+                assert f"-{brand}.mp4" in download.headers["content-disposition"]
+                assert (sibling["id"] in {item["id"] for item in pending()}) is (index == 0)
+            other = wait_for(lambda: finished(other["id"]))
             assert client.post(
-                edit["delivery_url"], data={"token": token, "revision": edit["revision"]},
+                other["skip_url"],
+                data={"token": token, "revision": sibling["revision"], "reason": "Wrong case"},
                 auth=AUTH,
-            ).status_code == 204
-            assert [item["id"] for item in pending()] == [other["id"]]
+            ).status_code == 409
             assert client.post(
                 other["skip_url"],
                 data={"token": token, "revision": other["revision"], "reason": "Weak hook."},
@@ -211,9 +216,10 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_distinct_highlight
             ).status_code == 204
             manifest = client.get(clip["run_url"] + "/manifest", auth=AUTH).json()
             reasons = {item["id"]: item["skip_reason"] for item in manifest["clips"]}
-            assert reasons == {clip["id"]: "", sibling["id"]: "Lacks gameplay.", other["id"]: "Weak hook."}
+            assert reasons == {clip["id"]: "", sibling["id"]: "", other["id"]: "Weak hook."}
             assert pending() == []
         finally:
+            release_first_hook.set()
             finish_second.set()
         next_clips = wait_for(pending)
         assert len(sources) == 2

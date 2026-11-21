@@ -300,6 +300,8 @@ class Highlight:
     brand_request: str = ""
     resolved_revision: int | None = None
     skip_reason: str = ""
+    downloaded_revision: int | None = None
+    downloaded_brands: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -675,11 +677,51 @@ def create_app(
                 if count == MAX_CLIPS:
                     break
                 count += append_highlight(job, clip)
+        automatic = []
         with state:
             for job in batch:
                 if job.phase == "cutting":
                     job.phase = "ready"
+                    run = runs[job.run]
+                    if run.continuous:
+                        for item in job.highlights:
+                            item.phase = "hook_queued"
+                            automatic.append((item, run.campaign))
                 job.candidates.clear()
+        for item, campaign in automatic:
+            render_automatic_pair(item, campaign)
+
+    def render_automatic_pair(item: Highlight, campaign: CampaignBrief | None) -> None:
+        hook = ""
+        source = ""
+        try:
+            with processor:
+                with state:
+                    item.phase = "suggesting"
+                suggestion = suggest_template_hook(
+                    item.path, "", item.crop, cached_cues=item.transcript or [],
+                )
+                hook, source = suggestion.text, suggestion.source
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+            LOGGER.info("Automatic Reel hook unavailable (%s)", type(error).__name__)
+        if not hook:
+            if "Laugh reactions in chat" in item.clip.reasons:
+                hook = "THIS HAD CHAT LAUGHING"
+            elif "Chat spike" in item.clip.reasons:
+                hook = "WATCH WHAT GOT CHAT TALKING"
+            elif "Laughter in stream audio" in item.clip.reasons:
+                hook = "WAIT FOR THE LAUGH"
+            source = "highlight signals"
+        with state:
+            item.phase = ""
+            if not hook and campaign and campaign.require_custom_hook:
+                item.skip_reason = "ClipCast could not find a specific hook supported by the clip."
+                item.resolved_revision = item.edit_revision
+                return
+            item.hook = hook or "WATCH HOW THIS PLAYS OUT"
+            item.hook_status = f"Hook selected from {source}." if hook else "Used a neutral hook."
+            renders = prepare_brand_reels(item, dict.fromkeys(BRAND_REEL_TEMPLATES, item.hook))
+        render_brand_reels(renders)
 
     def run_template(highlight: Highlight, output: Path, *, reuse_transcript: bool = False) -> None:
         phase = "ready"
@@ -790,6 +832,7 @@ def create_app(
             "continuous_capture": "supported",
             "branded_reel_pair": "supported",
             "branded_reel_bundle": "supported",
+            "automatic_reels": "supported",
             "campaign_lock": "enabled" if locked_campaign else "optional",
         }
 
@@ -1199,9 +1242,10 @@ def create_app(
 
     def brand_reels_status(item: Highlight, base: str) -> dict:
         result = {}
+        skip_reason = item.skip_reason if item.resolved_revision == item.edit_revision else ""
         for brand, template in BRAND_REEL_TEMPLATES.items():
             reel = item.brand_reels.get(brand)
-            phase = reel.phase if reel else "waiting"
+            phase = "skipped" if skip_reason else reel.phase if reel else item.phase or "waiting"
             url = ""
             if phase == "ready" and brand_reel_path(item, brand).is_file():
                 url = f"{base}/reels/{brand}"
@@ -1210,6 +1254,7 @@ def create_app(
                 "phase": phase,
                 "download_url": url,
                 "hook": reel.hook if reel else "",
+                "skip_reason": skip_reason,
             }
         return result
 
@@ -1386,23 +1431,29 @@ def create_app(
             if highlight_is_busy(item):
                 raise HTTPException(409, "ClipCast is already working on this clip.")
             item.brand_request = options.request_id
-            pending = []
-            for brand, hook in hooks.items():
-                reel = item.brand_reels.get(brand)
-                path = brand_reel_path(item, brand)
-                if reel and reel.phase == "ready" and reel.hook == hook and path.is_file():
-                    continue
-                reel = Highlight(
-                    item.clip, item.path, phase="queued", hook=hook, cam=item.cam,
-                    crop=item.crop, template=BRAND_REEL_TEMPLATES[brand],
-                    transcript=item.transcript,
-                )
-                item.brand_reels[brand] = reel
-                pending.append((reel, path))
+            pending = prepare_brand_reels(item, hooks)
             if pending:
-                item.edit_revision += 1
                 Thread(target=render_brand_reels, args=(pending,), daemon=True).start()
             return brand_reels_status(item, base)
+
+    def prepare_brand_reels(item: Highlight, hooks: dict[str, str]) -> list[tuple[Highlight, Path]]:
+        pending = []
+        for brand, hook in hooks.items():
+            reel = item.brand_reels.get(brand)
+            path = brand_reel_path(item, brand)
+            if reel and reel.phase == "ready" and reel.hook == hook and path.is_file():
+                continue
+            reel = Highlight(
+                item.clip, item.path, phase="queued", hook=hook, cam=item.cam,
+                crop=item.crop, template=BRAND_REEL_TEMPLATES[brand],
+                transcript=item.transcript,
+            )
+            item.brand_reels[brand] = reel
+            pending.append((reel, path))
+        if pending:
+            item.edit_revision += 1
+            item.skip_reason = ""
+        return pending
 
     def render_brand_reels(pending: list[tuple[Highlight, Path]]) -> None:
         for reel, path in pending:
@@ -1415,6 +1466,21 @@ def create_app(
             item = get_highlight(get_job(key), rank)
             return brand_reels_status(item, f"/jobs/{key}/clips/{rank}")
 
+    def branded_download_chunks(
+        file: BinaryIO, item: Highlight, revision: int, brands: tuple[str, ...],
+    ) -> Iterator[bytes]:
+        yield from download_chunks(file)
+        with state:
+            if item.edit_revision != revision:
+                return
+            if item.downloaded_revision != revision:
+                item.downloaded_revision = revision
+                item.downloaded_brands.clear()
+            item.downloaded_brands.update(brands)
+            if item.downloaded_brands == BRAND_REEL_TEMPLATES.keys():
+                item.resolved_revision = revision
+                item.skip_reason = ""
+
     @app.get("/jobs/{key}/clips/{rank}/reels/download", dependencies=[Depends(authenticate)])
     def download_reel_bundle(key: str, rank: int) -> StreamingResponse:
         with ExitStack() as sources:
@@ -1425,6 +1491,7 @@ def create_app(
                 if not all(reel["download_url"] for reel in reels.values()):
                     raise HTTPException(409, "Both Reels need to finish before downloading.")
                 stem = f"{job.channel}-{job.key}-{rank}"
+                revision = item.edit_revision
                 files = {
                     f"{stem}-{brand}.mp4": sources.enter_context(
                         brand_reel_path(item, brand).open("rb")
@@ -1443,7 +1510,7 @@ def create_app(
                 bundle.close()
                 raise HTTPException(507, "ClipCast could not prepare the ZIP download.") from error
             return StreamingResponse(
-                download_chunks(bundle),
+                branded_download_chunks(bundle, item, revision, tuple(BRAND_REEL_TEMPLATES)),
                 media_type="application/zip",
                 headers={
                     "Content-Length": str(length),
@@ -1463,7 +1530,10 @@ def create_app(
             path = brand_reel_path(item, brand)
             if not reel or reel.phase != "ready" or not path.is_file():
                 raise HTTPException(404, "This branded Reel is not ready.")
-            return media_response(path, f"{job.channel}-{job.key}-{rank}-{brand}.mp4")
+            return media_response(
+                path, f"{job.channel}-{job.key}-{rank}-{brand}.mp4",
+                delivery=(item, item.edit_revision, brand),
+            )
 
     @app.get("/saved-clips.js", dependencies=[Depends(authenticate)])
     def archive_script() -> FileResponse:
@@ -1514,8 +1584,9 @@ def create_app(
                     "edit_url": f"/jobs/{job.key}/clips/{rank}/edit",
                     "edit": run_edit_status(item, f"/jobs/{job.key}/clips/{rank}"),
                     "reels": brand_reels_status(item, f"/jobs/{job.key}/clips/{rank}")
-                    if item.brand_reels else {},
+                    if run.continuous else {},
                     **({
+                        "automatic_reels": True,
                         "transcript": item.transcript,
                         "skip_reason": (
                             item.skip_reason
@@ -1862,11 +1933,18 @@ def create_app(
                 headers={"Cache-Control": "private, no-store"},
             )
 
-    def media_response(path: Path, filename: str) -> StreamingResponse:
+    def media_response(
+        path: Path, filename: str, *, delivery: tuple[Highlight, int, str] | None = None
+    ) -> StreamingResponse:
         file = path.open("rb")
         length = os.fstat(file.fileno()).st_size
+        if delivery:
+            highlight, revision, brand = delivery
+            chunks = branded_download_chunks(file, highlight, revision, (brand,))
+        else:
+            chunks = download_chunks(file)
         return StreamingResponse(
-            download_chunks(file),
+            chunks,
             media_type="video/mp4",
             headers={
                 "Content-Length": str(length),

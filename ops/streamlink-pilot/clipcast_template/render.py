@@ -263,8 +263,12 @@ def transcript_context(
     )
 
 
-def suggest_template_hook(source: Path, narration: str, crop: str) -> HookSuggestion:
+def suggest_template_hook(
+    source: Path, narration: str, crop: str, *, cached_cues: list | None = None
+) -> HookSuggestion:
     duration, has_audio = probe_clip(source)
+    if cached_cues is not None and not narration:
+        return suggest_hook(source, duration, portrait_crop(crop), [text for _, _, text in cached_cues])
     with TemporaryDirectory(prefix="hook-", dir=source.parent) as temp:
         dialogue = (
             [narration]

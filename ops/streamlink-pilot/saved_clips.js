@@ -246,6 +246,7 @@ async function fetchReel(url, controller, onProgress) {
 }
 
 async function clipCard(archive, run, clip, rank, recorderUnavailable) {
+    if (clip.automatic_reels && clip.reels_url) return automaticReelCard(clip, rank);
     const id = mediaKey(run.id, clip.id);
     const card = node("article");
     const summary = node("p", clip.reasons.join(" · "), "muted");
@@ -475,7 +476,6 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
     suggest.onclick = () => processClip("hook", null, pendingUpload?.kind === "hook");
     render.onclick = () => processClip("reel", null, pendingUpload?.kind === "reel");
     card.append(previewButton, video);
-    if (clip.reels_url) card.append(pairDownload(clip, hook, progress));
     card.append(field("Reel template", template), hookField, suggest, settings, render, progress, downloads);
     for (const reel of Object.values(clip.reels || {})) {
         if (reel.download_url) card.append(link("Download " + reel.label + " Reel", reel.download_url));
@@ -506,60 +506,63 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
     return card;
 }
 
-function pairDownload(clip, hook, progress) {
-    const label = "Download both Reels";
-    const area = node("div");
-    const download = link(label, clip.bundle_url);
-    download.download = "";
-    const ready = reels => reels["channel-vi"]?.download_url && reels["gta-clipcast"]?.download_url;
-    if (ready(clip.reels || {})) {
-        area.append(download);
-        return area;
+function automaticReelCard(clip, rank) {
+    const card = node("article");
+    const title = node("h3", "Highlight " + rank + " · " + clip.seconds + "s");
+    const progress = node("p", "", "muted");
+    const downloads = node("div");
+    progress.setAttribute("role", "status");
+    card.append(title, progress, downloads);
+    if (clip.skip_reason) {
+        progress.textContent = clip.skip_reason;
+        return card;
     }
 
-    const button = node("button", label);
-    button.type = "button";
-    button.onclick = async () => {
-        button.disabled = true;
-        const readStatus = () => editRequest(clip.reels_url, "Could not check the two Reels. Reopen this run to try again.");
-        const working = reels => Object.values(reels).some(reel => ["queued", "rendering"].includes(reel.phase));
-        try {
-            let reels = await readStatus();
-            if (!ready(reels) && !working(reels)) {
-                const headline = hook.value.trim();
+    const active = new Set(["hook_queued", "suggesting", "queued", "rendering"]);
+    async function showReels(reels) {
+        while (Object.values(reels).some(reel => active.has(reel.phase))) {
+            progress.textContent = "Preparing both Reels in the background…";
+            await delay(2500);
+            reels = await editRequest(clip.reels_url, "Could not check the Reels. Reopen this run to try again.");
+        }
+        const skipReason = Object.values(reels).find(reel => reel.skip_reason)?.skip_reason;
+        if (skipReason) {
+            progress.textContent = skipReason;
+            return;
+        }
+        const ready = Object.values(reels).filter(reel => reel.download_url);
+        downloads.replaceChildren(...ready.map(reel => link("Download " + reel.label, reel.download_url, "secondary")));
+        title.textContent = ready[0]?.hook || title.textContent;
+        if (ready.length === 2) {
+            downloads.prepend(link("Download both Reels", clip.bundle_url));
+            progress.textContent = "Both Reels are ready.";
+        } else if (Object.values(reels).some(reel => reel.phase === "failed")) {
+            progress.textContent = "A Reel failed to render.";
+            const retry = node("button", "Retry render", "secondary");
+            retry.type = "button";
+            retry.onclick = async () => {
+                retry.disabled = true;
                 try {
-                    reels = await editRequest(clip.reels_url, "Could not queue both Reels.", {
+                    const queued = await editRequest(clip.reels_url, "Could not retry the Reel.", {
                         method: "POST",
                         headers: {"Content-Type": "application/json", "X-ClipCast-Token": token},
                         body: JSON.stringify({
                             request_id: crypto.randomUUID().replaceAll("-", ""),
-                            channel_vi_hook: reels["channel-vi"]?.hook || headline,
-                            gta_clipcast_hook: reels["gta-clipcast"]?.hook || headline
+                            channel_vi_hook: reels["channel-vi"].hook,
+                            gta_clipcast_hook: reels["gta-clipcast"].hook
                         })
                     });
+                    await showReels(queued);
                 } catch (error) {
-                    if (error.status !== 409) throw error;
-                    reels = await readStatus();
-                    if (!working(reels) && !ready(reels)) throw error;
+                    progress.textContent = error.message;
+                    retry.disabled = false;
                 }
-            }
-            while (working(reels)) {
-                progress.textContent = "Making Channel VI and GTA ClipCast Reels. You can reopen this run later.";
-                await delay(2500);
-                reels = await readStatus();
-            }
-            if (!ready(reels)) throw new Error("One Reel failed. Tap Download both Reels to retry.");
-            area.replaceChildren(download);
-            progress.textContent = "Both Reels are ready in one ZIP.";
-            if (!document.hidden) download.click();
-        } catch (error) {
-            progress.textContent = error.message;
-        } finally {
-            button.disabled = false;
+            };
+            downloads.append(retry);
         }
-    };
-    area.append(button);
-    return area;
+    }
+    void showReels(clip.reels || {}).catch(error => { progress.textContent = error.message; });
+    return card;
 }
 
 async function review(archive) {

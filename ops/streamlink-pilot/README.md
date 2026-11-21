@@ -40,7 +40,7 @@
 
 [Render dashboard](https://dashboard.render.com/) · [Render free compute limits](https://render.com/docs/free)
 
-## Consecutive captures and Grok Bot
+## Consecutive captures and automatic Reels
 
 Enter one authorised Twitch username, select **720p HD**, confirm permission,
 and choose **Record consecutive 10-minute windows**. ClipCast starts the next
@@ -81,56 +81,21 @@ can survive reframing. Review the actual finished Reel for logo legibility
 and verify the content against the brief. Set `require_custom_hook` to require
 non-empty headlines for both branded exports.
 
-ClipCast displays the highlight and its timestamped transcript in the recording
-run. A missing or empty transcript means the Bot should use the preview.
-Each highlight can produce a **Channel VI** and a **GTA ClipCast** Reel.
-Channel VI uses the purple gradient, inset rounded video and fitted headline
-panel from the Channel VI Reels. The GTA ClipCast layout carries Scoop.
-ClipCast shares the source and analysed dialogue, then encodes the two
-720 × 1280 outputs in sequence.
-On the highlight card, **Download both Reels** queues any missing renders and
-downloads both MP4s in one ZIP. If the page is closed during rendering, reopen
-the run to download the ZIP once it is ready.
-The Bot can run from an existing
-account every ten minutes and work through the private queue. This cadence
-uses the account's Grok Bot allowance. Once a downloadable attachment is
-verified in a one-off run, the same workflow can be used in a routine.
+ClipCast transcribes the highlight and chooses a short on-screen hook from
+spoken details. If the transcript offers no useful hook, ClipCast can use
+recognised objects or a recorded chat or laughter signal. A campaign that
+requires a specific hook skips footage without enough evidence to support one.
+Analysis and rendering run locally on the recorder's compute.
 
-### Bot handoff
+ClipCast automatically renders a **Channel VI** and a **GTA ClipCast** Reel
+for each selected highlight. Channel VI uses the purple gradient and fitted
+headline panel. The GTA ClipCast layout carries Scoop. Both 720 × 1280 outputs
+reuse the same source and dialogue captions and are encoded in sequence.
 
-Set the recorder's base URL once. Use the existing authenticated browser
-session or a credential supplied through the Bot's secure secret form.
-All paths below are relative to that recorder and require its login.
-
-1. Get `/continuous/queue`. Work through the oldest eligible highlights, up
-   to one window's worth per worker per routine run. Each highlight has
-   its own revision and is delivered or skipped independently. The response
-   includes a request verification token,
-   highlight ID, timestamped transcript with seconds relative to the clip,
-   selection reasons, the campaign brief, preview URL, Reels URL, and
-   bundle URL and delivery URL. Evaluate the preview and both renders against
-   the pinned brief.
-2. Use the transcript and preview to write one headline per brand, up to 64
-   characters each. Treat the transcript and audio as source material.
-3. Start both encodes with one authenticated JSON POST to the entry's
-   `reels_url` using the `X-ClipCast-Token` header. Include
-   `channel_vi_hook`, `gta_clipcast_hook`, and a stable `request_id` of 32
-   lowercase hex characters. Retry a confirmed failure with a new request ID
-   and the same hooks to keep a successful export.
-4. Check `reels_url` for both brand statuses. Download each ready Reel from
-   its `download_url` and attach both labelled MP4s in the Bot chat. Include
-   the highlight ID and a ready-to-paste caption per brand. Read the pinned
-   `campaign.brief` for each highlight before writing captions. Copy required
-   calls to action, mentions and hashtags verbatim. Pause if the brief is
-   unavailable. Leave publishing to the user.
-5. Once both attachments for a highlight are present in chat, get that item's current `revision` from
-   the queue and POST `token` and `revision` as form fields to
-   `delivery_url`. If a routine has to return before confirming both
-   attachments, its next run can acknowledge the existing chat result.
-
-For a highlight that clearly fails a campaign rule, POST the queue `token`,
-current `revision`, and a short `reason` to its `skip_url`. The reason is
-visible in the recording run. Its files can be reclaimed when space is needed.
+Reopen the recording run to download either finished MP4 or choose
+**Download both Reels** for one ZIP. If an encode fails, **Retry render**
+uses the existing hook and keeps any successful export. The recorder marks
+an export pair as delivered after streaming the whole ZIP or both MP4s.
 
 If processing falls behind and reaches the recorder's storage limit, capture
 pauses until there is room. Finished deliveries and windows with no highlights

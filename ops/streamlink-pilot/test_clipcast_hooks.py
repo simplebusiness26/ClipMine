@@ -22,5 +22,6 @@ def test_writes_hook_from_known_details_or_leaves_it_blank():
         choose_hook([], ["Four bikes. One late arrival."]).text == "WHO SHOWED UP LATE?"
     )
     assert choose_hook([], ["We beat the game."]).text == "THEY FINALLY BEAT THE GAME"
+    assert choose_hook([], ["I just lost my getaway vehicle."]).text == "THERE GOES THE GETAWAY CAR"
     assert not choose_hook([], ["If we beat the game, I can go home."]).text
     assert not choose_hook([], ["Yeah, maybe."]).text
