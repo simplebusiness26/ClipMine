@@ -90,6 +90,7 @@ async function editRequest(url, connectionMessage, options = {}, onRetry = () =>
     }
 }
 
+const manifestUrl = id => "/runs/" + encodeURIComponent(id) + "/manifest";
 const runUrl = id => "/saved/" + encodeURIComponent(id);
 const mediaKey = (run, clip) => run + "/" + clip;
 const exportKey = id => "export/" + id;
@@ -103,8 +104,8 @@ function saveSnapshot(archive, run) {
         const existing = table.get(run.id);
         existing.onsuccess = () => {
             const saved = existing.result;
-            if (saved?.complete) return;
-            const current = run.clips.map(({url, ...clip}) => clip);
+            if (saved?.complete && !run.complete) return;
+            const current = run.clips.map(({url, edit_url, edit, ...clip}) => clip);
             const clips = new Map((saved?.clips || []).map(clip => [clip.id, clip]));
             for (const clip of current) clips.set(clip.id, clip);
             table.put({...run, clips: run.complete ? current : [...clips.values()]});
@@ -115,75 +116,59 @@ function saveSnapshot(archive, run) {
     });
 }
 
-async function capture(archive) {
-    const old = await read(archive, "runs", runId);
-    if (old?.complete) {
-        location.replace(runUrl(runId));
-        return;
-    }
-    const savedIds = new Set((old?.clips || []).map(clip => clip.id));
-    const openSaved = link("Watch clips saved so far", runUrl(runId), "secondary");
-    openSaved.target = "_blank";
-    openSaved.rel = "noopener";
-    openSaved.hidden = savedIds.size === 0;
-    const progress = node("progress");
-    progress.hidden = true;
+async function capture() {
+    const openSaved = link("Review available clips", runUrl(runId), "secondary");
+    openSaved.hidden = true;
     const channelList = node("div");
-    content.replaceChildren(openSaved, progress, channelList);
+    content.replaceChildren(openSaved, channelList);
 
-    let failures = 0;
     for (;;) {
-        let run;
-        try {
-            run = await (await response("/runs/" + encodeURIComponent(runId) + "/manifest")).json();
-            failures = 0;
-        } catch (error) {
-            if ([401, 403, 404].includes(error.status) || ++failures >= 4) throw error;
-            announce("Connection interrupted. Checking the run again…");
-            await delay(5000);
-            continue;
+        const run = await editRequest(manifestUrl(runId), "Could not check the recorder. Open this run again shortly.");
+        if (run.complete) {
+            location.replace(runUrl(run.id));
+            return;
         }
         channelList.replaceChildren(...run.channels.map(channel => {
             const card = node("article");
             card.append(node("strong", channel.name), node("p", channel.status, "muted"));
             return card;
         }));
-        progress.max = Math.max(run.clips.length, 1);
-        progress.value = savedIds.size;
-        progress.hidden = run.clips.length === 0;
-        const transferred = [];
-        for (const clip of run.clips) {
-            if (!savedIds.has(clip.id)) {
-                announce("Saving a finished clip on this device…");
-                const key = mediaKey(run.id, clip.id);
-                let file = await read(archive, "media", key);
-                if (file?.size !== clip.bytes) {
-                    file = await (await response(clip.url)).blob();
-                    if (file.size !== clip.bytes) throw new Error("A clip did not finish transferring. Try saving this run again.");
-                    await write(archive, "media", file, key);
-                }
-                savedIds.add(clip.id);
-                progress.value = savedIds.size;
-                await saveSnapshot(archive, {...run, complete: false, clips: [...transferred, clip]});
-                openSaved.hidden = false;
-            }
-            transferred.push(clip);
-        }
-        if (run.complete) {
-            await saveSnapshot(archive, run);
-            // The archive is committed even if the recorder restarts during cleanup.
-            void navigator.storage?.persist?.().catch(() => false);
-            try {
-                await response("/runs/" + encodeURIComponent(runId) + "/saved", {
-                    method: "POST", body: new URLSearchParams({token}),
-                    signal: AbortSignal.timeout(3000)
-                });
-            } catch (_) {}
-            location.replace(runUrl(run.id));
-            return;
-        }
-        announce(savedIds.size ? savedIds.size + " clips saved. Checking the remaining streams…" : "Recording or processing your streams…");
+        openSaved.hidden = run.clips.length === 0;
+        announce("ClipCast is working. Reopen this run when you’re ready.");
         await delay(5000);
+    }
+}
+
+async function saveRunOnDevice(archive, button) {
+    button.disabled = true;
+    try {
+        const run = await (await response(manifestUrl(runId), {cache: "no-store"})).json();
+        if (!run.complete || run.clips.some(clip => !clip.edit.done)) {
+            throw new Error("Wait for ClipCast to finish working, then save this run.");
+        }
+        for (const [index, clip] of run.clips.entries()) {
+            announce("Saving clip " + (index + 1) + " of " + run.clips.length + " on this device…");
+            const id = mediaKey(run.id, clip.id);
+            let file = await read(archive, "media", id);
+            if (file?.size !== clip.bytes) {
+                file = await (await response(clip.url)).blob();
+                if (file.size !== clip.bytes) throw new Error("A clip did not finish transferring. Try saving this run again.");
+                await write(archive, "media", file, id);
+            }
+            if (clip.edit.url) {
+                const reel = await fetchReel(clip.edit.url, new AbortController(), () => {});
+                await write(archive, "media", reel, exportKey(id), 20000);
+            }
+        }
+        await saveSnapshot(archive, run);
+        void navigator.storage?.persist?.().catch(() => false);
+        await response("/runs/" + encodeURIComponent(runId) + "/saved", {
+            method: "POST", body: new URLSearchParams({token, revision: run.revision})
+        });
+        location.reload();
+    } catch (error) {
+        announce(storageError(error), true);
+        button.disabled = false;
     }
 }
 
@@ -272,9 +257,13 @@ async function clipCard(archive, run, clip, rank) {
     video.setAttribute("aria-label", "Preview clip " + rank);
     previewButton.onclick = async () => {
         try {
-            const file = await read(archive, "media", id);
-            if (!file) throw new Error("This clip's video is missing from this browser.");
-            video.src = URL.createObjectURL(file);
+            if (clip.url) {
+                video.src = clip.url;
+            } else {
+                const file = await read(archive, "media", id);
+                if (!file) throw new Error("This clip's video is missing from this browser.");
+                video.src = URL.createObjectURL(file);
+            }
             video.hidden = false;
             previewButton.hidden = true;
             await video.play().catch(() => {});
@@ -297,7 +286,7 @@ async function clipCard(archive, run, clip, rank) {
         ["bottom-left", "Bottom left"], ["bottom-right", "Bottom right"]
     ]);
     const draft = await read(archive, "drafts", id);
-    hook.value = draft?.hook || "";
+    hook.value = draft?.hook || clip.edit?.hook || "";
     narration.value = draft?.narration || "";
     crop.value = draft?.crop || "center";
     cam.value = draft?.cam || "auto";
@@ -324,8 +313,17 @@ async function clipCard(archive, run, clip, rank) {
     suggest.type = render.type = "button";
     const downloads = node("div");
     const filename = clip.channel + "-clipcast-" + rank + ".mp4";
+    function showDirectDownload(url) {
+        const direct = link("Download ClipCast Reel", url);
+        direct.download = filename;
+        if (downloads.firstChild?.href.startsWith("blob:")) URL.revokeObjectURL(downloads.firstChild.href);
+        downloads.replaceChildren(direct);
+        return direct;
+    }
     await showDownload(archive, id, filename, downloads);
-    const previousTask = await read(archive, "drafts", reelTaskKey(id));
+    if (clip.edit?.url) showDirectDownload(clip.edit.url);
+    if (clip.edit) progress.textContent = clip.edit.error || (clip.edit.url ? "Reel ready." : clip.edit.message);
+    const previousTask = clip.edit_url ? null : await read(archive, "drafts", reelTaskKey(id));
 
     let pendingUpload;
     async function uploadClip(file, kind) {
@@ -359,31 +357,46 @@ async function clipCard(archive, run, clip, rank) {
     async function processClip(kind, resumeTask) {
         suggest.disabled = render.disabled = true;
         try {
-            let task = resumeTask;
-            if (!task) {
-                await saveDraft();
-                const file = await read(archive, "media", id);
-                if (!file) throw new Error("This clip's video is missing from this browser.");
-                task = await uploadClip(file, kind);
-                if (kind === "reel") {
-                    void write(archive, "drafts", task, reelTaskKey(id), 20000).catch(() => {});
+            let statusUrl = clip.edit_url;
+            if (!resumeTask) {
+                if (clip.edit_url) {
+                    void saveDraft().catch(() => {});
+                    const request_id = crypto.randomUUID().replaceAll("-", "");
+                    await editRequest(statusUrl, "Could not queue this edit. Reopen the run to check its status.", {
+                        method: "POST",
+                        headers: {"X-ClipCast-Token": token, "Content-Type": "application/json"},
+                        body: JSON.stringify({...draftData(), kind, request_id})
+                    });
+                    progress.textContent = "Queued in ClipCast. You can leave this page.";
+                } else {
+                    await saveDraft();
+                    const file = await read(archive, "media", id);
+                    if (!file) throw new Error("This clip's video is missing from this browser.");
+                    const task = await uploadClip(file, kind);
+                    statusUrl = "/saved-edits/" + task.id;
+                    if (kind === "reel") {
+                        await write(archive, "drafts", task, reelTaskKey(id), 20000);
+                    }
                 }
             } else {
-                progress.textContent = "Checking your ClipCast Reel…";
+                if (!statusUrl) statusUrl = "/saved-edits/" + resumeTask.id;
+                progress.textContent = kind === "hook" ? "Checking the hook…" : "Checking your ClipCast Reel…";
             }
             let state;
             for (;;) {
-                state = await editRequest("/saved-edits/" + task.id, "Lost the connection while ClipCast was working. Your original is still saved here.");
+                state = await editRequest(statusUrl, "Could not check this edit. Reopen the run to check its status.");
                 if (state.done) break;
-                if (state.phase === "queued" || state.phase === "hook_queued") {
-                    progress.textContent = "In the queue. Waiting for the recorder…";
-                } else if (state.phase !== "verifying") {
-                    progress.textContent = kind === "hook" ? "Looking for a hook…" : "Making your ClipCast Reel…";
-                }
+                progress.textContent = {
+                    queued: "Reel queued. You can leave this page.",
+                    hook_queued: "Hook queued. You can leave this page.",
+                    verifying: "Checking the uploaded clip…",
+                    suggesting: "Looking for a hook…",
+                    rendering: "Making your ClipCast Reel. You can leave this page."
+                }[state.phase] || "ClipCast is working…";
                 await delay(2500);
             }
             if (state.error) {
-                if (kind === "reel") void write(archive, "drafts", null, reelTaskKey(id), 20000).catch(() => {});
+                if (kind === "reel" && !clip.edit_url) void write(archive, "drafts", null, reelTaskKey(id), 20000).catch(() => {});
                 throw new Error(state.error);
             }
             if (kind === "hook") {
@@ -392,12 +405,12 @@ async function clipCard(archive, run, clip, rank) {
                     await saveDraft();
                 }
                 progress.textContent = state.message;
+            } else if (clip.edit_url) {
+                showDirectDownload(state.url);
+                progress.textContent = "Reel ready.";
             } else {
-                const url = "/saved-edits/" + task.id + "/video";
-                const direct = link("Download ClipCast Reel", url);
-                direct.download = filename;
-                if (downloads.firstChild?.href.startsWith("blob:")) URL.revokeObjectURL(downloads.firstChild.href);
-                downloads.replaceChildren(direct);
+                const url = statusUrl + "/video";
+                const direct = showDirectDownload(url);
                 const controller = new AbortController();
                 direct.addEventListener("click", () => controller.abort(), {once: true});
                 progress.textContent = "Reel ready. Saving a copy in ClipCast…";
@@ -414,7 +427,7 @@ async function clipCard(archive, run, clip, rank) {
                 }
             }
         } catch (error) {
-            if (kind === "reel" && error.status === 404) {
+            if (kind === "reel" && !clip.edit_url && error.status === 404) {
                 void write(archive, "drafts", null, reelTaskKey(id), 20000).catch(() => {});
             }
             progress.textContent = storageError(error);
@@ -425,22 +438,43 @@ async function clipCard(archive, run, clip, rank) {
     suggest.onclick = () => processClip("hook");
     render.onclick = () => processClip("reel");
     card.append(previewButton, video, field("Top hook", hook), suggest, settings, render, progress, downloads);
-    if (previousTask?.id) void processClip("reel", previousTask);
+    if (clip.edit && !clip.edit.done) void processClip(clip.edit.kind, clip.edit);
+    else if (previousTask?.id) void processClip("reel", previousTask);
     return card;
 }
 
 async function review(archive) {
-    const run = await read(archive, "runs", runId);
+    const local = await read(archive, "runs", runId);
+    let remote;
+    try {
+        remote = await (await response(manifestUrl(runId), {cache: "no-store"})).json();
+    } catch (error) {
+        if (error.status !== 404 && !local) throw error;
+    }
+    const run = remote || local;
     if (!run) {
-        announce("This run is not saved in this browser.", true);
+        announce("This run has expired on the recorder. Check Saved clips for any copies on this device.", true);
         return;
     }
-    announce("Saved on this device · " + labelDate(run.created_at));
-    if (!run.complete) {
-        content.append(node("p", "This run was still processing when these clips were saved."),
-            link("Check run for more clips", "/runs/" + encodeURIComponent(runId), "secondary"));
+    if (remote) {
+        announce("On the recorder · " + labelDate(run.created_at));
+        if (remote.complete) {
+            const save = node("button", "Save run to this device", "secondary");
+            save.type = "button";
+            save.onclick = () => saveRunOnDevice(archive, save);
+            content.append(save);
+        } else {
+            content.append(link("Check recording progress", "/runs/" + encodeURIComponent(runId), "secondary"));
+        }
+    } else {
+        announce("Saved on this device · " + labelDate(run.created_at));
+        if (!run.complete) {
+            content.append(node("p", "This device only saved part of this run."));
+        }
     }
-    if (run.clips.length === 0) content.append(node("p", "No strong highlights were found in this run."));
+    if (run.clips.length === 0) {
+        content.append(node("p", run.complete ? "No strong highlights were found in this run." : "No clips are ready yet."));
+    }
     let rank = 0;
     const sections = new Map();
     for (const channel of run.channels) {
@@ -455,6 +489,7 @@ async function review(archive) {
     for (const clip of run.clips) {
         sections.get(clip.channel).append(await clipCard(archive, run, clip, ++rank));
     }
+    if (remote) return;
     const remove = node("button", "Delete this saved run", "secondary");
     remove.type = "button";
     remove.onclick = async () => {
@@ -495,9 +530,12 @@ function storageError(error) {
 }
 
 async function start() {
+    if (root.dataset.view === "capture") {
+        await capture();
+        return;
+    }
     const archive = await openArchive();
     switch (root.dataset.view) {
-    case "capture": await capture(archive); break;
     case "index": await archiveIndex(archive); break;
     case "review": await review(archive); break;
     }
@@ -505,5 +543,5 @@ async function start() {
 
 start().catch(error => {
     announce(storageError(error), true);
-    if (root.dataset.view === "capture") content.append(link("Try saving this run again", location.pathname));
+    if (root.dataset.view === "capture") content.append(link("Check the run again", location.pathname));
 });

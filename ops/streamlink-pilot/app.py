@@ -260,6 +260,9 @@ class Highlight:
     crop: str = "center"
     caption_status: str = ""
     cam: str = "auto"
+    edit_request: str = ""
+    edit_kind: str = ""
+    edit_revision: int = 0
 
 
 @dataclass
@@ -304,6 +307,10 @@ class EditOptions(BaseModel):
 
 class UploadOptions(EditOptions):
     size: int
+
+
+class RunEditOptions(EditOptions):
+    request_id: str = Field(pattern=r"^[a-f0-9]{32}$")
 
 
 def channels_from_input(names: str) -> list[str]:
@@ -612,6 +619,7 @@ def create_app(
             "capture_slots": MAX_ACTIVE,
             "template": "gameplay-first",
             "saved_runs": "browser",
+            "background_review": "server",
             "clip_cap_per_run": MAX_CLIPS,
             "batch_progress": "progressive",
             "reel_upload": "chunked",
@@ -762,6 +770,8 @@ def create_app(
                     " ".join(line.split()) for line in narration.splitlines()
                 ).strip()
                 item.crop = crop
+                item.edit_kind = "hook"
+                item.edit_revision += 1
                 item.phase = "hook_queued"
                 Thread(target=run_hook, args=(item,), daemon=True).start()
         return RedirectResponse(f"/runs/{job.run}", status_code=303)
@@ -790,6 +800,8 @@ def create_app(
                     " ".join(line.split()) for line in narration.splitlines()
                 ).strip()
                 item.crop = crop
+                item.edit_kind = "reel"
+                item.edit_revision += 1
                 item.phase = "queued"
                 Thread(
                     target=run_template, args=(item, template_path(item)), daemon=True
@@ -804,6 +816,59 @@ def create_app(
                 "This recording run is no longer on the recorder. Check Saved clips on this device.",
             )
         return run
+
+    def run_revision(batch: list[Recording]) -> str:
+        return ",".join(
+            f"{job.key}:{item.edit_revision}"
+            for job in batch
+            for item in job.highlights
+        )
+
+    def run_edit_status(item: Highlight, base: str) -> dict:
+        return {
+            **edit_status(item),
+            "kind": item.edit_kind,
+            "url": f"{base}/template" if template_path(item).is_file() else "",
+        }
+
+    @app.post(
+        "/jobs/{key}/clips/{rank}/edit",
+        dependencies=[Depends(authenticate)],
+        status_code=202,
+    )
+    def queue_run_edit(
+        key: str,
+        rank: int,
+        options: RunEditOptions,
+        x_clipcast_token: Annotated[str, Header()],
+    ) -> dict:
+        authorize_form(x_clipcast_token)
+        validate_options(options)
+        with state:
+            item = get_highlight(get_job(key), rank)
+            base = f"/jobs/{key}/clips/{rank}"
+            if item.edit_request == options.request_id:
+                return run_edit_status(item, base)
+            if item.phase in TEMPLATE_BUSY:
+                raise HTTPException(409, "ClipCast is already working on this clip.")
+            item.edit_request = options.request_id
+            item.edit_kind = options.kind
+            item.edit_revision += 1
+            item.hook = " ".join(options.hook.split())
+            item.hook_status = ""
+            item.narration = "\n".join(
+                " ".join(line.split()) for line in options.narration.splitlines()
+            ).strip()
+            item.crop = options.crop
+            item.cam = options.cam
+            queue_edit(options.kind, item)
+            return run_edit_status(item, base)
+
+    @app.get("/jobs/{key}/clips/{rank}/edit", dependencies=[Depends(authenticate)])
+    def get_run_edit(key: str, rank: int) -> dict:
+        with state:
+            item = get_highlight(get_job(key), rank)
+            return run_edit_status(item, f"/jobs/{key}/clips/{rank}")
 
     @app.get("/saved-clips.js", dependencies=[Depends(authenticate)])
     def archive_script() -> FileResponse:
@@ -851,6 +916,8 @@ def create_app(
                     "reasons": item.clip.reasons,
                     "bytes": item.path.stat().st_size,
                     "url": f"/jobs/{job.key}/clips/{rank}/preview",
+                    "edit_url": f"/jobs/{job.key}/clips/{rank}/edit",
+                    "edit": run_edit_status(item, f"/jobs/{job.key}/clips/{rank}"),
                 }
                 for job, rank, item in ranked
             ]
@@ -867,6 +934,7 @@ def create_app(
                 "id": key,
                 "created_at": run.created_at,
                 "complete": complete,
+                "revision": run_revision(batch),
                 "clips": clips,
                 "channels": [
                     {"name": job.channel, "status": job.detail or statuses[job.phase]}
@@ -875,7 +943,9 @@ def create_app(
             }
 
     @app.post("/runs/{key}/saved", dependencies=[Depends(authenticate)])
-    def acknowledge_saved(key: str, token: str = Form()) -> Response:
+    def acknowledge_saved(
+        key: str, token: str = Form(), revision: str | None = Form(None)
+    ) -> Response:
         authorize_form(token)
         with state:
             run = get_run(key)
@@ -886,21 +956,26 @@ def create_app(
                 for job in batch
             ):
                 raise HTTPException(409, "This run is still processing.")
+            if revision is not None and revision != run_revision(batch):
+                raise HTTPException(409, "This run has a newer edit. Save it again.")
             for job in batch:
                 rmtree(job.path.parent)
                 del jobs[job.key]
             del runs[run.key]
         return Response(status_code=204)
 
-    def reserve_edit(
-        options: EditOptions, size: int, upload_id: str | None = None
-    ) -> tuple[str, Highlight]:
+    def validate_options(options: EditOptions) -> None:
         if (
             options.kind not in {"hook", "reel"}
             or options.crop not in CROP
             or options.cam not in FACECAM_OPTIONS
         ):
             raise HTTPException(400, "Check your clip options.")
+
+    def reserve_edit(
+        options: EditOptions, size: int, upload_id: str | None = None
+    ) -> tuple[str, Highlight]:
+        validate_options(options)
         if not 0 < size <= ARCHIVE_EDIT_MAX_BYTES:
             raise HTTPException(413, "This clip is outside the recorder's size limit.")
         key = upload_id or secrets.token_hex(8)
@@ -967,10 +1042,13 @@ def create_app(
             raise HTTPException(
                 400, "This file is not a playable highlight."
             ) from error
+        with state:
+            queue_edit(kind, item)
+
+    def queue_edit(kind: str, item: Highlight) -> None:
         target = run_hook if kind == "hook" else run_template
         args = (item,) if kind == "hook" else (item, template_path(item))
-        with state:
-            item.phase = "hook_queued" if kind == "hook" else "queued"
+        item.phase = "hook_queued" if kind == "hook" else "queued"
         Thread(target=target, args=args, daemon=True).start()
 
     @app.get("/saved-edits/session", dependencies=[Depends(authenticate)])
@@ -1130,17 +1208,18 @@ def create_app(
     @app.get("/saved-edits/{key}", dependencies=[Depends(authenticate)])
     def saved_edit_status(key: str) -> dict:
         with state:
-            edit = get_saved_edit(key)
-            item = edit.highlight
-            return {
-                "done": item.phase not in TEMPLATE_BUSY,
-                "phase": item.phase,
-                "error": "The Reel could not be made. Try again."
-                if item.phase == "failed"
-                else "",
-                "hook": item.hook,
-                "message": item.hook_status,
-            }
+            return edit_status(get_saved_edit(key).highlight)
+
+    def edit_status(item: Highlight) -> dict:
+        return {
+            "done": item.phase not in TEMPLATE_BUSY,
+            "phase": item.phase,
+            "error": "The Reel could not be made. Try again."
+            if item.phase == "failed"
+            else "",
+            "hook": item.hook,
+            "message": item.hook_status,
+        }
 
     @app.api_route(
         "/saved-edits/{key}/video",
@@ -1214,8 +1293,12 @@ def create_app(
                 },
             )
 
-    @app.get("/jobs/{key}/clips/{rank}/template", dependencies=[Depends(authenticate)])
-    def download_template(key: str, rank: int) -> StreamingResponse:
+    @app.api_route(
+        "/jobs/{key}/clips/{rank}/template",
+        methods=["GET", "HEAD"],
+        dependencies=[Depends(authenticate)],
+    )
+    def download_template(key: str, rank: int) -> FileResponse:
         with state:
             job = get_job(key)
             item = get_highlight(job, rank)
@@ -1224,7 +1307,12 @@ def create_app(
                 raise HTTPException(
                     status_code=404, detail="The ClipCast version is not ready."
                 )
-            return media_response(path, f"{job.channel}-{job.key}-clipcast-{rank}.mp4")
+            return FileResponse(
+                path,
+                media_type="video/mp4",
+                filename=f"{job.channel}-{job.key}-clipcast-{rank}.mp4",
+                headers={"Cache-Control": "private, no-store"},
+            )
 
     @app.post("/jobs/{key}/clear", dependencies=[Depends(authenticate)])
     def clear(key: str, token: str = Form()) -> RedirectResponse:

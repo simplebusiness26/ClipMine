@@ -24,6 +24,8 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
     started = {name: Event() for name in ("clix", "second", "third", "fourth", "fifth")}
     release = Event()
     release_first = Event()
+    rendering = Event()
+    release_render = Event()
 
     class FakeChat:
         def __init__(self, channel):
@@ -62,6 +64,8 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
             "right",
             "top-left",
         )
+        rendering.set()
+        assert release_render.wait(5)
         output.write_bytes(b"branded clip")
         return TemplateResult("Written narration included.", HookSuggestion(hook))
 
@@ -150,9 +154,61 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
         original = client.get(preview, auth=AUTH).content
         assert len(original) == result["clips"][0]["bytes"]
         batch = result["id"]
+        edit_url = result["clips"][0]["edit_url"]
+        options = {
+            "kind": "reel",
+            "hook": "ROLL THAT BACK",
+            "narration": "Four bikes.",
+            "crop": "right",
+            "cam": "top-left",
+            "request_id": "a" * 32,
+        }
+        assert client.get(edit_url).status_code == 401
         assert (
             client.post(
-                monitor + "/saved", data={"token": token}, auth=AUTH
+                edit_url,
+                json=options,
+                headers={"X-ClipCast-Token": "invalid"},
+                auth=AUTH,
+            ).status_code
+            == 403
+        )
+        try:
+            for _ in range(2):
+                queued = client.post(
+                    edit_url,
+                    json=options,
+                    headers={"X-ClipCast-Token": token},
+                    auth=AUTH,
+                )
+                assert queued.status_code == 202
+                assert not queued.json()["done"]
+            assert rendering.wait(3)
+        finally:
+            release_render.set()
+
+        deadline = monotonic() + 3
+        while monotonic() < deadline:
+            reopened = client.get(monitor + "/manifest", auth=AUTH).json()
+            edit = reopened["clips"][0]["edit"]
+            if edit["done"]:
+                break
+            sleep(0.03)
+        assert edit["phase"] == "ready"
+        assert client.get(edit["url"], auth=AUTH).content == b"branded clip"
+        assert (
+            client.post(
+                monitor + "/saved",
+                data={"token": token, "revision": result["revision"]},
+                auth=AUTH,
+            ).status_code
+            == 409
+        )
+        assert (
+            client.post(
+                monitor + "/saved",
+                data={"token": token, "revision": reopened["revision"]},
+                auth=AUTH,
             ).status_code
             == 204
         )
