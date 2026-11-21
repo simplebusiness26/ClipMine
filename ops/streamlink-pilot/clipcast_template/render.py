@@ -89,6 +89,32 @@ def draw_hook(text: str, output: Path) -> None:
     canvas.save(output)
 
 
+def channel_vi_frame(text: str, output: Path) -> None:
+    with Image.open(ASSETS / "channel-vi-reel-frame.png") as asset:
+        frame = asset.convert("RGBA").resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
+    headline = " ".join(text.upper().split())
+    if headline:
+        font_path = Path("/usr/share/fonts/truetype/open-sans/OpenSans-CondBold.ttf")
+        if not font_path.is_file():
+            font_path = FONT_DIR / "DejaVuSansCondensed-Bold.ttf"
+        font = ImageFont.truetype(str(font_path), 31)
+        lines = fit_caption(headline, font, 610)
+        panel = Image.new("RGBA", frame.size)
+        draw = ImageDraw.Draw(panel)
+        x, y = 49, 840
+        width = math.ceil(max(font.getlength(line) for line in lines)) + 30
+        height = 14 + 32 * len(lines)
+        draw.rounded_rectangle(
+            (x, y, x + width, y + height), radius=11,
+            fill=(36, 20, 51, 246), outline=(226, 178, 246, 165),
+        )
+        draw.rounded_rectangle((x + 3, y + 11, x + 7, y + height - 11), radius=2, fill="#fd94aa")
+        for index, line in enumerate(lines):
+            draw.text((x + 17, y + 8 + 32 * index), line, font=font, fill="#fffafa", anchor="lt")
+        frame.alpha_composite(panel)
+    frame.save(output)
+
+
 def fit_caption(text: str, font: ImageFont.FreeTypeFont, limit: int) -> list[str]:
     rows = []
     for paragraph in text.splitlines():
@@ -319,29 +345,24 @@ def render_template(
         timeline = scratch / "captions.ffconcat"
         caption_timeline(timeline, cues, duration, 350 if headline else 520)
         captions_input = ["-f", "concat", "-safe", "1", "-i", str(timeline)]
-        camera = facecam_crop(source, duration, cam)
-        top = CAM_HEIGHT if camera else 0
-        game = (
-            f"{portrait_crop(crop, HEIGHT - top)},"
-            f"scale={WIDTH}:{HEIGHT - top}:flags=bicubic,setsar=1"
-        )
-        if camera:
-            layout = (
-                "[0:v]setpts=PTS-STARTPTS,fps=30,split=2[rawgame][rawcam];"
-                f"[rawgame]{game}[game];[rawcam]{camera},setsar=1[cam];"
-                "[cam][game]vstack=inputs=2[base];"
+        if template == CUSTOM_CHANNEL_VI_TEMPLATE or template in CHANNEL_VI_TEMPLATES:
+            art = scratch / "channel-vi.png"
+            channel_vi_frame(selected.text, art)
+            layers = ["-i", str(art), *captions_input]
+            graph = (
+                "[0:v]setpts=PTS-STARTPTS,fps=30,"
+                "scale=640:460:force_original_aspect_ratio=increase:flags=bicubic,"
+                f"crop=640:460:x=(iw-ow)*{CROP[crop]},setsar=1,pad={WIDTH}:{HEIGHT}:40:328[base];"
+                "[base][1:v]overlay[branded];[branded][2:v]overlay=x=49:y=958[out]"
             )
-        else:
-            layout = f"[0:v]setpts=PTS-STARTPTS,fps=30,{game}[base];"
-        if headline:
-            asset_name = "roll-that-back" if custom_headline else template
-            brand = "gta-clipcast" if template == CUSTOM_GTA_CLIPCAST_TEMPLATE else "channel-vi"
-            art = ASSETS / f"{brand}-{asset_name}.png"
-            if custom_headline and hook:
+        elif template == CUSTOM_GTA_CLIPCAST_TEMPLATE:
+            layout, _ = gameplay_layout(source, duration, crop, cam)
+            art = ASSETS / "gta-clipcast-roll-that-back.png"
+            if hook:
                 hook_image = scratch / "hook.png"
                 draw_hook(selected.text, hook_image)
                 with Image.open(art) as image, Image.open(hook_image) as title:
-                    # All three assets use these rows for the baked-in headline.
+                    # Replace the stock headline in the GTA ClipCast artwork.
                     image.paste((0, 0, 0, 0), (0, 245, image.width, 360))
                     branded = image.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
                     branded.alpha_composite(title, (26, 165))
@@ -353,6 +374,7 @@ def render_template(
                 "[base][art]overlay[branded];[branded][2:v]overlay=x=32:y=884[out]"
             )
         else:
+            layout, top = gameplay_layout(source, duration, crop, cam)
             hook_image = scratch / "hook.png"
             draw_hook(selected.text, hook_image)
             wink = scratch / "scoop-wink.png"
@@ -423,3 +445,19 @@ def render_template(
     if not output.stat().st_size:
         raise ValueError("Template export produced no file")
     return TemplateResult(status, selected)
+
+
+def gameplay_layout(source: Path, duration: float, crop: str, cam: str) -> tuple[str, int]:
+    camera = facecam_crop(source, duration, cam)
+    top = CAM_HEIGHT if camera else 0
+    game = (
+        f"{portrait_crop(crop, HEIGHT - top)},"
+        f"scale={WIDTH}:{HEIGHT - top}:flags=bicubic,setsar=1"
+    )
+    if camera:
+        return (
+            "[0:v]setpts=PTS-STARTPTS,fps=30,split=2[rawgame][rawcam];"
+            f"[rawgame]{game}[game];[rawcam]{camera},setsar=1[cam];"
+            "[cam][game]vstack=inputs=2[base];"
+        ), top
+    return f"[0:v]setpts=PTS-STARTPTS,fps=30,{game}[base];", top

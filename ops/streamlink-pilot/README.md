@@ -61,9 +61,11 @@ rules against the finished export. The current portrait render is 720 × 1280.
 
 ClipCast displays the highlight and its timestamped transcript in the recording
 run. A missing or empty transcript means the Bot should use the preview.
-Each highlight can produce a **Channel VI** and a **GTA ClipCast** Reel. Each
-uses its own logo, Scoop overlay and headline. ClipCast shares the source
-and analysed dialogue, then encodes the two 720 × 1280 outputs in sequence.
+Each highlight can produce a **Channel VI** and a **GTA ClipCast** Reel.
+Channel VI uses the purple gradient, inset rounded video and fitted headline
+panel from the Channel VI Reels. The GTA ClipCast layout carries Scoop.
+ClipCast shares the source and analysed dialogue, then encodes the two
+720 × 1280 outputs in sequence.
 The Bot can run from an existing
 account every ten minutes and work through the private queue. This cadence
 uses the account's Grok Bot allowance. Once a downloadable attachment is

@@ -85,6 +85,10 @@ def test_template_keeps_audio_and_duration_and_draws_text(
     assert audio["codec_name"] == "aac"
     assert 2.95 <= float(video["duration"]) <= 3.05
     assert abs(float(video["duration"]) - float(audio["duration"])) < 0.05
+    channel_vi = (
+        template == render.CUSTOM_CHANNEL_VI_TEMPLATE
+        or template in render.CHANNEL_VI_TEMPLATES
+    )
 
     def has_narration(timestamp: str) -> bool:
         frame = subprocess.check_output(
@@ -100,7 +104,7 @@ def test_template_keeps_audio_and_duration_and_draws_text(
                 "-frames:v",
                 "1",
                 "-vf",
-                "crop=2:2:38:896",
+                "crop=2:2:55:970" if channel_vi else "crop=2:2:38:896",
                 "-pix_fmt",
                 "rgb24",
                 "-f",
@@ -138,6 +142,16 @@ def test_template_keeps_audio_and_duration_and_draws_text(
             timeout=10,
         )
         with Image.open(BytesIO(raw)).convert("RGB") as frame:
+            if channel_vi:
+                r, g, b = frame.getpixel((350, 550))
+                assert b > 180 and r < 55 and g < 55
+                logo = frame.crop((36, 154, 175, 283)).get_flattened_data()
+                assert sum(r > 85 and b > 125 for r, _, b in logo) > 60
+                panel = frame.crop((49, 840, 350, 920)).get_flattened_data()
+                assert sum(r > 190 and g > 175 and b > 175 for r, g, b in panel) > 60
+                bottom = frame.crop((460, 1010, 630, 1260)).get_flattened_data()
+                assert not any(r > 150 and r > b + 40 for r, _, b in bottom)
+                return
             for area in (
                 (28, 62, 125, 157),
                 (28, 166, 240, 228),
