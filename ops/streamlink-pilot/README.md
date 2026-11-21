@@ -4,59 +4,59 @@
 
 1. In Render, tap **+ → Blueprint** and connect the ClipMine GitHub repository.
 2. Choose branch `clipcast-streamlink-pilot` and Blueprint Path `ops/streamlink-pilot/render.yaml`.
-3. Enter a default Twitch username in `TWITCH_CHANNEL`. Confirm the service
+3. Enter a default Twitch username in `TWITCH_CHANNEL`. Confirm that
    `clipcast-streamlink-pilot` is on the **Free** plan and deploy.
 4. Open the service's **Environment** tab for the generated `RECORDER_PASSWORD`.
    Visit the service URL and sign in as `recorder` with that password.
 
-## Record and export
+## Record, review and export
 
-1. Enter up to five live Twitch usernames in **Twitch channels**, separated by
-   commas. Select **720p HD** or **Up to 1080p Full HD**, confirm permission,
-   then tap **Record and find clips**.
-2. Each streamer has a separate ten-minute capture and up to three highlights
-   of about 35 seconds. Tap play to watch the original highlight in the browser.
-   Use the player controls to scrub through it. Automatic refresh pauses while
-   you watch or edit if other jobs are running.
-3. Edit **Top hook** just below the player, or use **Suggest hook first**.
-   Tap **Make ClipCast version** when ready. The Reel is a 720 × 1280 MP4
-   with full-screen gameplay, the reference GTA 6 ClipCast badge, the opening
-   hook banner and cream caption boxes. The original audio plays at its source
-   speed. Character art and voice are paused in the current export.
-4. Leave **Top hook** blank to generate a title from sampled video frames and
-   relevant dialogue or written narration. Use **Suggest hook first** to review
-   and edit it before exporting. The local detector recognizes common subjects
-   such as bikes, cars and boats. If it finds too little evidence, the Reel
-   has no automatic hook. Enter your own in **Top hook**.
-5. Leave written narration blank to transcribe the clip's English dialogue
-   into timed captions. Enter a short line or two to use your own narration.
-   Open **Captions and framing** for these options and the portrait crop.
-6. Download the finished **ClipCast Reel**. Save any files you want before
-   clearing a recording. Results require the recorder login.
+1. Enter up to five live Twitch usernames, separated by commas. Pick **720p HD**
+   or **Up to 1080p Full HD**, confirm permission, and tap **Record and find clips**.
+2. Keep the run tab open while ClipCast records, analyses the sources, and saves
+   its picks. It selects a maximum of ten clips total across the run. Action
+   sounds, strong gameplay movement, speech cues, laughter and chat can all
+   contribute. Timing follows dialogue and pauses where enough evidence is
+   available. Longer exchanges can run past 60 or 90 seconds.
+3. Once every selected clip is saved in the browser, the review page opens
+   automatically. It has no auto-refresh. Watch the clips, edit **Top hook** or
+   use **Suggest hook first**, and tap **Make ClipCast version** when ready.
+   Hook text and framing choices save to the browser as you edit.
+4. The Gameplay First template uses a slim top camera strip when a steady corner
+   facecam is detected. The gameplay fills the rest of the frame, with Scoop
+   standing at the bottom right and making one brief wink and head tilt.
+   Under **Captions and framing**, choose the facecam corner manually or turn
+   the camera off, reposition the gameplay crop, or type written narration.
+5. Download the finished 720 × 1280 Reel. It also saves with the run on this
+   device. Tap **New recording** to capture again, or **Saved clips** to reopen
+   a previous run in the same browser.
 
 [Render dashboard](https://dashboard.render.com/) · [Render free compute limits](https://render.com/docs/free)
 
-## Pilot limits
+## Storage, privacy and capacity
 
-Starts are manual. Five channels can capture at once, with six recordings
-retained at a time when temporary storage has room. Streamlink shares the web
-process but gives each channel its own HTTP session and HLS buffer. Rendering,
-transcription and highlight analysis run one job at a time on the Free instance.
-Per-capture limits are 500 MiB for the 720p preset and 650 MiB for the 1080p
-preset. An offline channel or a size limit may end a capture early.
+The archive stores clip files, run details, drafts, and Reel files in the active
+browser's IndexedDB. Saved runs can be reopened after a page reload or recorder
+restart on that browser. Clearing site data, private browsing or browser storage
+eviction can remove that device's copies. Save important finished Reels
+separately. **Delete this saved run** frees storage for additional runs.
+Capture files on the server are temporary and are released after the archive
+confirms a successful save. Keep the capture tab available until then.
+Selected clip files can be uploaded back through the authenticated recorder
+when the operator requests a new hook or Reel.
 
-Public Twitch chat counts and local audio analysis inform highlight selection.
-Chat can lag the video. If a capture has no strong signals it may have no
-highlights. The portrait export uses local Whisper English speech recognition.
-It can miss or mishear dialogue. Media remains on temporary disk and can be
-cleared after inactivity, restart or redeploy. The recorder starts no social
-publishing jobs.
+Five channels can capture in parallel with independent HLS buffers. Footage
+analysis, cut creation, hook checks and branded exports are serialised on the
+Free instance. Each raw source is limited to ten minutes and 500 MiB (720p) or
+650 MiB (1080p). An offline channel or size limit can end the capture early.
+Twitch chat can lag the broadcast. Action and story cues are best-effort, and
+automatic transcript words and facecam framing may need review. ClipCast
+starts no social publishing jobs.
 
 ## Test
 
 Install `requirements.txt`, `httpx` and `pytest`, plus FFmpeg, FFprobe and the
-DejaVu Sans bold and bold oblique fonts. Run `pytest -q`. The packaged model
-for local transcription is `ggml-tiny.en-q5_1.bin`. Set
-`CLIPCAST_TRANSCRIPT_MODEL` to its path when working outside the Docker image.
-The vision model is EfficientDet-Lite0. Set `CLIPCAST_OBJECT_MODEL` to its
-local `.tflite` path when running outside the image.
+DejaVu Sans bold and bold oblique fonts. Run `pytest -q`. The packaged models
+for transcript, hook subjects, and facecam are included by the Docker build.
+For local runs set `CLIPCAST_TRANSCRIPT_MODEL`, `CLIPCAST_OBJECT_MODEL`, and
+`CLIPCAST_FACE_MODEL` to the corresponding model files.

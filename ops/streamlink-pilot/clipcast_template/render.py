@@ -1,4 +1,4 @@
-"""Compose the text-only ClipCast reference layout without changing clip audio."""
+"""Compose the Gameplay First ClipCast layout with the source audio."""
 
 import json
 import logging
@@ -11,6 +11,7 @@ from tempfile import TemporaryDirectory
 
 from PIL import Image, ImageDraw, ImageFont
 
+from clipcast_template.facecam import CAM_HEIGHT, facecam_crop
 from clipcast_template.hooks import HookSuggestion, suggest_hook
 
 ASSETS = Path(__file__).resolve().parent / "assets"
@@ -47,7 +48,7 @@ def probe_clip(path: Path) -> tuple[float, bool]:
     duration = float(video.get("duration", "nan"))
     if not math.isfinite(duration):
         duration = float(metadata["format"]["duration"])
-    if not video or not math.isfinite(duration) or not 0 < duration <= 40:
+    if not video or not math.isfinite(duration) or not 0 < duration <= 120:
         raise ValueError("Invalid highlight duration")
     return duration, any(s["codec_type"] == "audio" for s in metadata["streams"])
 
@@ -121,7 +122,7 @@ def draw_caption(text: str, output: Path) -> None:
     canvas.save(output)
 
 
-def auto_captions(source: Path, scratch: Path) -> list:
+def auto_captions(source: Path, scratch: Path, *, long_source: bool = False) -> list:
     audio = scratch / "speech.wav"
     subprocess.run(
         [
@@ -143,14 +144,14 @@ def auto_captions(source: Path, scratch: Path) -> list:
         ],
         check=True,
         capture_output=True,
-        timeout=22,
+        timeout=90 if long_source else 40,
     )
     result = subprocess.run(
         [sys.executable, "-m", "clipcast_template.transcript", str(audio)],
         check=True,
         capture_output=True,
         text=True,
-        timeout=225,
+        timeout=720 if long_source else 300,
     )
     return json.loads(result.stdout)
 
@@ -182,9 +183,9 @@ class TemplateResult:
     hook: HookSuggestion
 
 
-def portrait_crop(crop: str) -> str:
+def portrait_crop(crop: str, height: int = HEIGHT) -> str:
     return (
-        "crop=w='min(iw,ih*9/16)':h='min(ih,iw*16/9)':"
+        f"crop=w='min(iw,ih*{WIDTH}/{height})':h='min(ih,iw*{height}/{WIDTH})':"
         f"x='(iw-ow)*{CROP[crop]}':y='(ih-oh)*0.5'"
     )
 
@@ -223,8 +224,44 @@ def suggest_template_hook(source: Path, narration: str, crop: str) -> HookSugges
         return suggest_hook(source, duration, portrait_crop(crop), dialogue)
 
 
+def draw_scoop_wink(output: Path) -> None:
+    with Image.open(ASSETS / "scoop-stand.png") as asset:
+        original = asset.convert("RGBA")
+    expression = original.copy()
+    eye = ImageDraw.Draw(expression)
+    eye.polygon(
+        [
+            (94, 73),
+            (106, 73),
+            (122, 74),
+            (146, 75),
+            (143, 84),
+            (138, 89),
+            (131, 94),
+            (121, 97),
+            (113, 96),
+            (105, 92),
+            (99, 85),
+        ],
+        fill=(243, 74, 107, 255),
+    )
+    eye.arc((97, 68, 148, 90), 14, 170, fill=(75, 22, 48, 255), width=4)
+    turned = expression.rotate(5, resample=Image.Resampling.BICUBIC, center=(160, 181))
+    # Blend the tilt into the neck so the feet and standing pose stay fixed.
+    mask = Image.new("L", (1, original.height))
+    mask.putdata(
+        [round(255 * max(0, min(1, (213 - y) / 43))) for y in range(original.height)]
+    )
+    Image.composite(turned, original, mask.resize(original.size)).save(output)
+
+
 def render_template(
-    source: Path, output: Path, hook: str, narration: str, crop: str
+    source: Path,
+    output: Path,
+    hook: str,
+    narration: str,
+    crop: str,
+    cam: str = "auto",
 ) -> TemplateResult:
     duration, has_audio = probe_clip(source)
     with TemporaryDirectory(prefix="template-", dir=output.parent) as temp:
@@ -245,15 +282,31 @@ def render_template(
         draw_hook(selected.text, hook_image)
         timeline = scratch / "captions.ffconcat"
         caption_timeline(timeline, cues, duration)
+        camera = facecam_crop(source, duration, cam)
+        top = CAM_HEIGHT if camera else 0
         game = (
-            f"setpts=PTS-STARTPTS,{portrait_crop(crop)},"
-            f"scale={WIDTH}:{HEIGHT}:flags=bicubic,setsar=1,fps={FPS}"
+            f"{portrait_crop(crop, HEIGHT - top)},"
+            f"scale={WIDTH}:{HEIGHT - top}:flags=bicubic,setsar=1"
         )
+        if camera:
+            layout = (
+                "[0:v]setpts=PTS-STARTPTS,fps=30,split=2[rawgame][rawcam];"
+                f"[rawgame]{game}[game];[rawcam]{camera},setsar=1[cam];"
+                "[cam][game]vstack=inputs=2[base];"
+            )
+        else:
+            layout = f"[0:v]setpts=PTS-STARTPTS,fps=30,{game}[base];"
+        wink = scratch / "scoop-wink.png"
+        draw_scoop_wink(wink)
+        wink_start = min(3.1, duration * 0.48)
+        wink_window = f"between(t,{wink_start:.2f},{wink_start + 0.45:.2f})"
         graph = (
-            f"[0:v]{game}[game];"
-            "[game][1:v]overlay=x=29:y=76[logo];"
-            "[logo][2:v]overlay=x=26:y=166:enable='lt(t,4)'[hook];"
-            "[hook][3:v]overlay=x=32:y=884[out]"
+            f"{layout}[base][1:v]overlay=x=29:y={top + 55}[logo];"
+            f"[logo][2:v]overlay=x=26:y={top + 132}:enable='lt(t,4)'[hook];"
+            "[hook][3:v]overlay=x=32:y=884[text];"
+            "[4:v]scale=-1:235:flags=lanczos[scoop];[5:v]scale=-1:235:flags=lanczos[wink];"
+            f"[text][scoop]overlay=x=W-w-59:y=H-h-87:enable='not({wink_window})'[stood];"
+            f"[stood][wink]overlay=x=W-w-59:y=H-h-87:enable='{wink_window}'[out]"
         )
         subprocess.run(
             [
@@ -276,6 +329,10 @@ def render_template(
                 "1",
                 "-i",
                 str(timeline),
+                "-i",
+                str(ASSETS / "scoop-stand.png"),
+                "-i",
+                str(wink),
                 "-filter_complex_threads",
                 "1",
                 "-filter_complex",
@@ -304,7 +361,7 @@ def render_template(
             ],
             check=True,
             capture_output=True,
-            timeout=360,
+            timeout=560,
         )
     if not output.stat().st_size:
         raise ValueError("Template export produced no file")

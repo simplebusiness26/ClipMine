@@ -9,12 +9,13 @@ RUN apt-get update \
     && useradd --uid 10001 --create-home recorder
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY app.py highlights.py .
+COPY app.py highlights.py saved_views.py saved_clips.js .
 COPY clipcast_template ./clipcast_template
 ADD --checksum=sha256:10c95ea3eb9a7bb4cb8bddf6feb023250381008177ac162ce169694d05c317de https://storage.googleapis.com/download.tensorflow.org/models/tflite/task_library/audio_classification/android/lite-model_yamnet_classification_tflite_1.tflite /app/yamnet.tflite
 ADD --checksum=sha256:c77c5766f1cef09b6b7d47f21b546cbddd4157886b3b5d6d4f709e91e66c7c2b https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin /app/ggml-tiny.en-q5_1.bin
 ADD --checksum=sha256:2e04c53bfeac0ac2a30c057c7e2a777594ce39baaac35a92f74fb1e8c4fc4e0b https://storage.googleapis.com/download.tensorflow.org/models/tflite/task_library/object_detection/android/lite-model_efficientdet_lite0_detection_metadata_1.tflite /app/efficientdet-lite0.tflite
-RUN chmod 644 /app/yamnet.tflite /app/ggml-tiny.en-q5_1.bin /app/efficientdet-lite0.tflite
+ADD --checksum=sha256:3bc182eb9f33925d9e58b5c8d59308a760f4adea8f282370e428c51212c26633 https://storage.googleapis.com/mediapipe-assets/face_detection_short_range.tflite /app/facecam.tflite
+RUN chmod 644 /app/yamnet.tflite /app/ggml-tiny.en-q5_1.bin /app/efficientdet-lite0.tflite /app/facecam.tflite
 # Verify the bundled model and the image's ability to encode a branded clip.
 RUN set -eu; work="$(mktemp -d)"; \
     ffmpeg -nostdin -v error -f lavfi -i color=c=blue:s=320x180:r=30 \

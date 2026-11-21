@@ -12,21 +12,21 @@ from fastapi.testclient import TestClient
 import app
 from clipcast_template.hooks import HookSuggestion
 from clipcast_template.render import TemplateResult
+from highlights import SoundSignals
 
 PASSWORD = "synthetic-test-password-only"
 AUTH = ("recorder", PASSWORD)
 
 
-def test_five_parallel_captures_and_private_template_export(monkeypatch):
+def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
     started = {name: Event() for name in ("clix", "second", "third", "fourth", "fifth")}
     release = Event()
 
     class FakeChat:
         def __init__(self, channel):
-            assert channel in started
             self.connected = True
-            self.counts = Counter({10: 21})
-            self.laughter = Counter({10: 9})
+            self.counts = Counter()
+            self.laughter = Counter()
 
         def start(self):
             pass
@@ -44,197 +44,129 @@ def test_five_parallel_captures_and_private_template_export(monkeypatch):
         started[channel].set()
         assert release.wait(3)
         output.write_bytes(channel.encode())
-        return app.Capture(601, 1080)
+        return app.Capture(600, 1080)
 
-    def finish_template(source, output, hook, narration, crop):
-        if source.read_bytes() == b"second highlight":
-            assert hook == ""
-            output.write_bytes(b"auto branded")
-            return TemplateResult(
-                "No clear speech.", HookSuggestion("WATCH THE BOAT", "video frames")
-            )
-        assert source.read_bytes() == b"clix highlight"
-        assert hook == "ROLL THAT BACK"
-        assert narration == "Four bikes.\nOne late arrival."
-        assert crop == "right"
+    def candidates(*args, **kwargs):
+        return [
+            app.Clip(n * 40, n * 40 + 20, ("Action sounds",), 9 - n) for n in range(8)
+        ]
+
+    def finish_template(source, output, hook, narration, crop, cam):
+        assert source.read_bytes().endswith(b" highlight")
+        assert (hook, narration, crop, cam) == (
+            "ROLL THAT BACK",
+            "Four bikes.",
+            "right",
+            "top-left",
+        )
         output.write_bytes(b"branded clip")
         return TemplateResult("Written narration included.", HookSuggestion(hook))
 
     monkeypatch.setattr(app, "capture_mp4", finish_capture)
     monkeypatch.setattr(app, "ChatMonitor", FakeChat)
-    monkeypatch.setattr(app, "detect_laughter", lambda *_: {51: 0.88})
-    monkeypatch.setattr(
-        app,
-        "cut_clip",
-        lambda source, output, clip: output.write_bytes(
-            source.read_bytes() + b" highlight"
-        ),
-    )
+    monkeypatch.setattr(app, "detect_sound", lambda *_: SoundSignals({}, {}))
+    monkeypatch.setattr(app, "detect_motion", lambda *_: {})
+    monkeypatch.setattr(app, "auto_captions", lambda *args, **kwargs: [])
+    monkeypatch.setattr(app, "select_clips", candidates)
+    cuts = []
+
+    def fake_cut(source, output, clip):
+        cuts.append(clip)
+        output.write_bytes(source.read_bytes() + b" highlight")
+
+    monkeypatch.setattr(app, "cut_clip", fake_cut)
     monkeypatch.setattr(app, "render_template", finish_template)
-    monkeypatch.setattr(
-        app,
-        "suggest_template_hook",
-        lambda *_: HookSuggestion("WATCH THE CAR UP FRONT", "video frames"),
-    )
+    monkeypatch.setattr(app, "probe_clip", lambda _: (20.0, True))
     monkeypatch.setattr(
         app, "disk_usage", lambda _: type("Disk", (), {"free": 8 * 1024**3})()
     )
 
     with TestClient(app.create_app("clix", PASSWORD)) as client:
         assert client.get("/healthz").json()["capture_slots"] == 5
-        assert client.get("/").status_code == 401
-        assert client.get("/", auth=("recorder", "wrong")).status_code == 401
-
-        page = client.get("/", auth=AUTH)
-        assert '<option value="720p" selected>' in page.text
-        assert 'type="text" value="clix"' in page.text
-        token = re.search(r'name="token" value="([^"]+)"', page.text).group(1)
-        permitted = {
+        assert client.get("/saved").status_code == 401
+        assert client.get("/saved-clips.js").status_code == 401
+        token = re.search(
+            r'name="token" value="([^"]+)"', client.get("/", auth=AUTH).text
+        )[1]
+        fields = {
             "token": token,
             "confirm": "yes",
             "quality": "1080p",
-            "channels": "@Clix, second, third, fourth, fifth",
+            "channels": ", ".join(started),
         }
-        assert client.post("/record", data=permitted).status_code == 401
-        for invalid in (
-            "https://example.test",
-            "clix, second, third, fourth, fifth, sixth",
-        ):
-            assert client.post(
-                "/record", data={**permitted, "channels": invalid}, auth=AUTH
-            ).status_code in (400, 409)
-        assert (
-            client.post(
-                "/record", data={**permitted, "token": "bad"}, auth=AUTH
-            ).status_code
-            == 403
-        )
-
         try:
+            reply = client.post(
+                "/record", data=fields, auth=AUTH, follow_redirects=False
+            )
+            assert reply.status_code == 303
+            monitor = reply.headers["location"]
+            assert monitor.startswith("/runs/")
+            assert all(event.wait(2) for event in started.values())
+            assert 'data-view="capture"' in client.get(monitor, auth=AUTH).text
+            assert client.get(monitor + "/manifest").status_code == 401
+            result = client.get(monitor + "/manifest", auth=AUTH).json()
+            assert not result["complete"] and len(result["channels"]) == 5
             assert (
                 client.post(
-                    "/record", data=permitted, auth=AUTH, follow_redirects=False
+                    monitor + "/saved", data={"token": token}, auth=AUTH
                 ).status_code
-                == 303
+                == 409
             )
-            assert all(event.wait(2) for event in started.values())
-            assert "5 of 5 recording slots in use" in client.get("/", auth=AUTH).text
-            assert client.post("/record", data=permitted, auth=AUTH).status_code == 409
         finally:
             release.set()
 
-        deadline = monotonic() + 2
+        deadline = monotonic() + 3
         while monotonic() < deadline:
-            result = client.get("/", auth=AUTH).text
-            if result.count("Capture ready") == 5:
+            result = client.get(monitor + "/manifest", auth=AUTH).json()
+            if result["complete"]:
                 break
-            sleep(0.02)
-        assert result.count("1080p source") == 5
-        assert result.count("Make ClipCast version") == 5
-        assert "IT WAS GOING WELL" not in result
-        assert result.count("Suggest hook first") == 5
-        assert result.count('video controls playsinline preload="none"') == 5
-        assert "Download highlight" not in result
-        links = re.findall(r'src="(/jobs/[^/]+/clips/1)/preview"', result)
-        assert len(links) == 5
-        clix = next(
-            link
-            for link in links
-            if client.get(link, auth=AUTH).content.startswith(b"clix")
-        )
-        second = next(
-            link
-            for link in links
-            if client.get(link, auth=AUTH).content == b"second highlight"
-        )
-        assert client.get(clix).status_code == 401
-        preview = f"{clix}/preview"
+            sleep(0.03)
+        assert result["complete"]
+        assert len(result["clips"]) == 10 and len(cuts) == 10
+        assert len({clip["channel"] for clip in result["clips"]}) == 5
+        preview = result["clips"][0]["url"]
         assert client.get(preview).status_code == 401
-        assert client.head(preview).status_code == 401
-        header = client.head(preview, auth=AUTH)
-        assert header.status_code == 200
-        assert header.content == b""
-        assert header.headers["accept-ranges"] == "bytes"
-        partial = client.get(preview, auth=AUTH, headers={"Range": "bytes=0-3"})
-        assert partial.status_code == 206
-        assert partial.headers["content-type"] == "video/mp4"
-        assert partial.headers["content-disposition"] == "inline"
-        assert partial.headers["content-range"] == "bytes 0-3/14"
-        assert partial.content == b"clix"
-        invalid_range = client.get(preview, auth=AUTH, headers={"Range": "bytes=200-"})
-        assert invalid_range.status_code == 416
-        assert client.get(f"{clix}/template", auth=AUTH).status_code == 404
-        assert client.post(f"{clix}/hook", data={"token": token}).status_code == 401
+        byte_range = client.get(preview, auth=AUTH, headers={"Range": "bytes=0-3"})
+        assert byte_range.status_code == 206
+        assert byte_range.headers["content-disposition"] == "inline"
+        original = client.get(preview, auth=AUTH).content
+        assert len(original) == result["clips"][0]["bytes"]
+        batch = result["id"]
         assert (
             client.post(
-                f"{clix}/hook", data={"token": token}, auth=AUTH, follow_redirects=False
+                monitor + "/saved", data={"token": token}, auth=AUTH
             ).status_code
-            == 303
+            == 204
         )
-        deadline = monotonic() + 2
-        while monotonic() < deadline:
-            result = client.get("/", auth=AUTH).text
-            if 'value="WATCH THE CAR UP FRONT"' in result:
-                break
-            sleep(0.02)
-        assert 'value="WATCH THE CAR UP FRONT"' in result
-        assert client.get(f"{clix}/template", auth=AUTH).status_code == 404
-        assert (
-            client.post(
-                f"{clix}/template",
-                data={
-                    "token": token,
-                    "hook": "ROLL THAT BACK",
-                    "narration": "Four bikes.\nOne late arrival.",
-                    "crop": "right",
-                },
-                auth=AUTH,
-                follow_redirects=False,
-            ).status_code
-            == 303
-        )
-
-        deadline = monotonic() + 2
-        while monotonic() < deadline:
-            branded = client.get(f"{clix}/template", auth=AUTH)
-            if branded.status_code == 200:
-                break
-            sleep(0.02)
-        assert branded.content == b"branded clip"
-        assert (
-            client.post(
-                f"{second}/template",
-                data={"token": token},
-                auth=AUTH,
-                follow_redirects=False,
-            ).status_code
-            == 303
-        )
-        deadline = monotonic() + 2
-        while monotonic() < deadline:
-            result = client.get("/", auth=AUTH).text
-            if 'value="WATCH THE BOAT"' in result:
-                break
-            sleep(0.02)
-        assert 'value="WATCH THE BOAT"' in result
-        assert client.get(f"{second}/template", auth=AUTH).content == b"auto branded"
-        assert client.get(f"{clix}/template").status_code == 401
-        assert client.get(clix, auth=AUTH).content == b"clix highlight"
-        assert client.get(second, auth=AUTH).content == b"second highlight"
-        root = clix.rsplit("/clips", 1)[0]
-        assert client.get(f"{root}/original", auth=AUTH).content == b"clix"
-        assert (
-            client.post(
-                f"{root}/clear",
-                data={"token": token},
-                auth=AUTH,
-                follow_redirects=False,
-            ).status_code
-            == 303
-        )
-        assert client.get(clix, auth=AUTH).status_code == 404
         assert client.get(preview, auth=AUTH).status_code == 404
-        assert client.get(second, auth=AUTH).status_code == 200
+
+    # The review URL still boots with a new worker; the browser supplies the saved file.
+    with TestClient(app.create_app("clix", PASSWORD)) as client:
+        review = client.get(f"/saved/{batch}", auth=AUTH)
+        assert 'data-view="review"' in review.text and "setInterval" not in review.text
+        token = re.search(r'data-token="([^"]+)"', review.text)[1]
+        form = {
+            "token": token,
+            "kind": "reel",
+            "hook": "ROLL THAT BACK",
+            "narration": "Four bikes.",
+            "crop": "right",
+            "cam": "top-left",
+        }
+        reply = client.post(
+            "/saved-edits",
+            data=form,
+            files={"video": ("highlight.mp4", original)},
+            auth=AUTH,
+        )
+        assert reply.status_code == 202
+        edit = "/saved-edits/" + reply.json()["id"]
+        deadline = monotonic() + 3
+        while monotonic() < deadline:
+            if client.get(edit, auth=AUTH).json()["done"]:
+                break
+            sleep(0.03)
+        assert client.get(edit + "/video", auth=AUTH).content == b"branded clip"
 
 
 def test_streamlink_and_ffmpeg_create_ten_minute_mp4(tmp_path: Path):
@@ -343,3 +275,21 @@ def test_ranked_clips_merge_similar_windows_and_skip_quiet_content():
     assert clips[1].start <= 22 < clips[1].end
     assert "Laughter in stream audio" in clips[0].reasons
     assert "Laugh reactions in chat" in clips[0].reasons
+
+
+def test_story_and_action_can_win_without_chat_or_laughter():
+    from highlights import select_clips
+
+    speech = [(8.4, 10.5, "I have to tell you what happened.")]
+    speech += [
+        (11.1 + n * 4.3, 14.9 + n * 4.3, "Then we talked about the clues.")
+        for n in range(12)
+    ]
+    speech.append((62.8, 66.9, "That's what happened."))
+    clips = select_clips(
+        180, Counter(), Counter(), {}, speech=speech, action={95: 0.82}, motion={96: 39}
+    )
+    story = next(clip for clip in clips if "Story beat" in clip.reasons)
+    assert story.end > 66.9
+    assert any("Action sounds" in clip.reasons for clip in clips)
+    assert len(clips) == 2

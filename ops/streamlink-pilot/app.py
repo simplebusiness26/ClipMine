@@ -9,18 +9,21 @@ import subprocess
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from shutil import copyfileobj, disk_usage, rmtree
 from tempfile import TemporaryDirectory
 from threading import Lock, Thread
+from time import monotonic
 from typing import Annotated, BinaryIO
 from zipfile import BadZipFile
 
-from fastapi import Depends, FastAPI, Form, HTTPException
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     RedirectResponse,
+    Response,
     StreamingResponse,
 )
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -28,14 +31,26 @@ from streamlink import Streamlink
 from streamlink.exceptions import StreamlinkError
 from streamlink.options import Options
 
+from clipcast_template.facecam import FACECAM_OPTIONS
 from clipcast_template.render import (
     CROP,
     HOOK_LIMIT,
     NARRATION_LIMIT,
+    auto_captions,
+    probe_clip,
     render_template,
     suggest_template_hook,
 )
-from highlights import ChatMonitor, Clip, cut_clip, detect_laughter, select_clips
+from highlights import (
+    MAX_CLIPS,
+    ChatMonitor,
+    Clip,
+    cut_clip,
+    detect_motion,
+    detect_sound,
+    select_clips,
+)
+from saved_views import SCRIPT, saved_page
 
 CAPTURE_SECONDS = 600
 MIB = 1024 * 1024
@@ -207,7 +222,9 @@ MAX_ACTIVE = 5
 MAX_RUNS = 6
 CAPTURE_HEADROOM = 192 * MIB
 HANDLE = re.compile(r"[a-z0-9_]{3,25}", re.ASCII)
-BUSY = {"capturing", "analysing"}
+BUSY = {"capturing", "analysing", "ranked", "cutting"}
+ARCHIVE_EDIT_MAX_BYTES = 192 * MIB
+ARCHIVE_EDIT_MAX_JOBS = 3
 TEMPLATE_BUSY = {"queued", "rendering", "hook_queued", "suggesting"}
 
 
@@ -221,6 +238,7 @@ class Highlight:
     narration: str = ""
     crop: str = "center"
     caption_status: str = ""
+    cam: str = "auto"
 
 
 @dataclass
@@ -232,7 +250,24 @@ class Recording:
     phase: str = "capturing"
     capture: Capture | None = None
     highlights: list[Highlight] = field(default_factory=list)
+    candidates: list[Clip] = field(default_factory=list)
     signals: str = ""
+    run: str = ""
+
+
+@dataclass
+class Run:
+    key: str
+    created_at: str
+    jobs: list[str] = field(default_factory=list)
+    finalizing: bool = False
+
+
+@dataclass
+class ArchiveEdit:
+    highlight: Highlight
+    started_at: float
+    kind: str
 
 
 def channels_from_input(names: str) -> list[str]:
@@ -264,6 +299,8 @@ def create_app(
     processor = Lock()
     work = TemporaryDirectory(prefix="clipcast-capture-")
     jobs: dict[str, Recording] = {}
+    runs: dict[str, Run] = {}
+    edits: dict[str, ArchiveEdit] = {}
     selected_channels = default_channels
     selected_quality = DEFAULT_QUALITY
 
@@ -309,6 +346,7 @@ def create_app(
             LOGGER.warning("Capture failed (%s)", type(error).__name__)
             with state:
                 job.phase = "failed"
+            prepare_run(job.run)
             return
         finally:
             chat.close()
@@ -318,10 +356,11 @@ def create_app(
             job.phase = "analysing"
 
         # Serialize audio analysis and branded encodes on Render's small free instance.
-        audio_status = "Audio checked for laughter."
+        audio_status = "Audio checked for laughter and action."
         with processor:
             try:
-                audio = detect_laughter(job.path, model)
+                sounds = detect_sound(job.path, model)
+                audio, actions = sounds.laughter, sounds.action
             except (
                 OSError,
                 ValueError,
@@ -333,8 +372,34 @@ def create_app(
                 LOGGER.warning(
                     "Laughter analysis unavailable (%s)", type(error).__name__
                 )
-                audio = {}
-                audio_status = "Audio laughter check was unavailable."
+                audio, actions = {}, {}
+                audio_status = "Audio analysis was unavailable."
+
+            speech = []
+            try:
+                with TemporaryDirectory(prefix="scan-", dir=job.path.parent) as scan:
+                    speech = auto_captions(job.path, Path(scan), long_source=True)
+            except (
+                OSError,
+                ValueError,
+                RuntimeError,
+                subprocess.SubprocessError,
+            ) as error:
+                LOGGER.info(
+                    "Recording transcript unavailable (%s)", type(error).__name__
+                )
+            try:
+                motion = detect_motion(job.path)
+            except (
+                OSError,
+                ValueError,
+                RuntimeError,
+                subprocess.SubprocessError,
+            ) as error:
+                LOGGER.info(
+                    "Recording motion check unavailable (%s)", type(error).__name__
+                )
+                motion = {}
 
             chat_status = "Twitch chat checked."
             if not chat.connected:
@@ -344,28 +409,60 @@ def create_app(
                     "No Twitch chat messages were received during this capture."
                 )
 
-            results = []
             candidates = select_clips(
-                recorded.duration, chat.counts, chat.laughter, audio
+                recorded.duration,
+                chat.counts,
+                chat.laughter,
+                audio,
+                speech=speech,
+                action=actions,
+                motion=motion,
             )
-            for rank, clip in enumerate(candidates, 1):
-                output = job.path.with_name(f"highlight-{rank}.mp4")
+        with state:
+            job.candidates = candidates
+            job.signals = f"{chat_status} {audio_status}"
+            job.phase = "ranked"
+        prepare_run(job.run)
+
+    def prepare_run(run_key: str) -> None:
+        with state:
+            run = runs[run_key]
+            batch = [jobs[key] for key in run.jobs]
+            if run.finalizing or any(
+                job.phase in {"capturing", "analysing"} for job in batch
+            ):
+                return
+            run.finalizing = True
+            for job in batch:
+                if job.phase == "ranked":
+                    job.phase = "cutting"
+        Thread(target=cut_run, args=(batch,), daemon=True).start()
+
+    def cut_run(batch: list[Recording]) -> None:
+        candidates = sorted(
+            ((job, clip) for job in batch for clip in job.candidates),
+            key=lambda entry: (-entry[1].score, entry[1].start),
+        )
+        count = 0
+        with processor:
+            for job, clip in candidates:
+                if count == MAX_CLIPS:
+                    break
+                output = job.path.with_name(f"highlight-{len(job.highlights) + 1}.mp4")
                 try:
                     cut_clip(job.path, output, clip)
                 except (OSError, ValueError, subprocess.SubprocessError) as error:
                     output.unlink(missing_ok=True)
                     LOGGER.warning("Highlight cut failed (%s)", type(error).__name__)
                     continue
-                results.append(Highlight(clip, output))
-            if not results and candidates:
-                audio_status += (
-                    " Clip export failed. The original recording is still available."
-                )
-
+                with state:
+                    job.highlights.append(Highlight(clip, output))
+                count += 1
         with state:
-            job.highlights = results
-            job.signals = f"{chat_status} {audio_status}"
-            job.phase = "ready"
+            for job in batch:
+                if job.phase == "cutting":
+                    job.phase = "ready"
+                job.candidates.clear()
 
     def run_template(highlight: Highlight, output: Path) -> None:
         phase = "ready"
@@ -380,6 +477,7 @@ def create_app(
                     highlight.hook,
                     highlight.narration,
                     highlight.crop,
+                    highlight.cam,
                 )
                 candidate.replace(output)
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
@@ -454,144 +552,27 @@ def create_app(
             "mode": "highlights",
             "quality_options": "hd",
             "capture_slots": MAX_ACTIVE,
-            "template": "text-only",
+            "template": "gameplay-first",
+            "saved_runs": "browser",
+            "clip_cap_per_run": MAX_CLIPS,
             "hooks": "clip-aware",
             "previews": "inline",
         }
 
     hidden = f'<input type="hidden" name="token" value="{csrf}">'
 
-    def job_card(job: Recording) -> str:
-        channel_name = html.escape(job.channel)
-        actions = f'<form method="post" action="/jobs/{job.key}/clear">{hidden}'
-        actions += '<button class="secondary" type="submit">Clear this recording</button></form>'
-        if job.phase == "capturing":
-            return f"<section><h2>{channel_name}</h2><p>Recording and watching chat…</p></section>"
-        if job.phase == "analysing":
-            return f"<section><h2>{channel_name}</h2><p>Finding and cutting highlights…</p></section>"
-        if job.phase == "failed":
-            return (
-                f"<section><h2>{channel_name}</h2><p>No playable recording was saved. "
-                f"Check that the channel is live and its video is available.</p>{actions}</section>"
-            )
-
-        assert job.capture is not None
-        length = int(job.capture.duration)
-        length_text = f"{length // 60}:{length % 60:02d}"
-        cards = []
-        for rank, highlight in enumerate(job.highlights, 1):
-            clip = highlight.clip
-            reasons = " · ".join(clip.reasons)
-            stamp = f"{clip.start // 60}:{clip.start % 60:02d}"
-            base = f"/jobs/{job.key}/clips/{rank}"
-            export_status = {
-                "queued": '<p role="status">Waiting to render the ClipCast version.</p>',
-                "rendering": '<p role="status">Making the ClipCast version…</p>',
-                "failed": "<p>The template export failed. Your highlight is still available.</p>",
-                "hook_queued": '<p role="status">Waiting to look at the clip.</p>',
-                "suggesting": '<p role="status">Looking for a clip-specific hook…</p>',
-            }.get(highlight.phase, "")
-            has_export = template_path(highlight).is_file()
-            if has_export:
-                export_status += f'<a href="{base}/template">Download ClipCast Reel</a>'
-                if highlight.caption_status:
-                    export_status += f"<p>{html.escape(highlight.caption_status)}</p>"
-            template_form = ""
-            if highlight.phase not in TEMPLATE_BUSY:
-                framing = []
-                for key, title in (
-                    ("center", "Centre"),
-                    ("left", "Left"),
-                    ("right", "Right"),
-                ):
-                    selected = " selected" if key == highlight.crop else ""
-                    framing.append(f'<option value="{key}"{selected}>{title}</option>')
-                hook_status = (
-                    f"<small>{html.escape(highlight.hook_status)}</small>"
-                    if highlight.hook_status
-                    else ""
-                )
-                action = (
-                    "Redo ClipCast version" if has_export else "Make ClipCast version"
-                )
-                template_form = (
-                    f'<form method="post" action="{base}/template">{hidden}'
-                    f'<label>Top hook <input type="text" name="hook" maxlength="{HOOK_LIMIT}" '
-                    f'placeholder="Generate from this clip" value="{html.escape(highlight.hook, quote=True)}"></label>'
-                    "<small>Leave blank to make a hook from this clip when you export.</small>"
-                    f'{hook_status}<button class="secondary" type="submit" '
-                    f'formaction="{base}/hook">Suggest hook first</button>'
-                    "<details><summary>Captions and framing</summary>"
-                    f'<label>Written narration <textarea name="narration" rows="2" '
-                    f'maxlength="{NARRATION_LIMIT}" placeholder="Four bikes.&#10;One late arrival.">'
-                    f"{html.escape(highlight.narration)}</textarea></label>"
-                    "<small>Leave blank for timed English captions from the clip audio.</small>"
-                    '<label>Gameplay framing <select name="crop">'
-                    f"{''.join(framing)}</select></label></details>"
-                    f'<button type="submit">{action}</button></form>'
-                )
-            cards.append(
-                f'<li id="clip-{job.key}-{rank}"><strong>Clip {rank} · {stamp}</strong>'
-                f"<p>{html.escape(reasons)}</p>"
-                f'<video controls playsinline preload="none" aria-label="Preview clip {rank}" src="{base}/preview">'
-                f'<a href="{base}/preview">Open clip preview</a></video>'
-                f"{export_status}{template_form}</li>"
-            )
-        result = (
-            f"<h3>Best bits</h3><ol>{''.join(cards)}</ol>"
-            if cards
-            else "<p>No strong highlight signals found in this capture.</p>"
-        )
-        if any(item.phase in TEMPLATE_BUSY for item in job.highlights):
-            actions = ""
-        return (
-            f"<section><h2>{channel_name}</h2><p>Capture ready · {length_text} · "
-            f"{job.capture.height}p source</p>{result}<p>{html.escape(job.signals)}</p>"
-            "<details><summary>Original recording</summary>"
-            f'<a class="secondary" href="/jobs/{job.key}/original">Download full recording</a>'
-            f"</details>{actions}</section>"
-        )
-
     def show_home(error: str = "", status: int = 200) -> HTMLResponse:
         # This handler is also used with a fixed message for invalid form submissions.
         with state:
             active = sum(job.phase in BUSY for job in jobs.values())
-            refresh = bool(active) or any(
-                item.phase in TEMPLATE_BUSY
-                for job in jobs.values()
-                for item in job.highlights
+            cards = "".join(
+                f'<p><a class="secondary" href="/runs/{run.key}">Open recording run</a> '
+                f"{html.escape(', '.join(jobs[key].channel for key in run.jobs if key in jobs))}</p>"
+                for run in reversed(list(runs.values()))
             )
-            cards = "".join(job_card(job) for job in reversed(list(jobs.values())))
             form_channels = html.escape(", ".join(selected_channels), quote=True)
             quality = selected_quality
         notice = f'<p role="alert">{html.escape(error)}</p>' if error else ""
-        script = ""
-        refresh_control = ""
-        if refresh:
-            refresh_control = '<p id="refresh-results" hidden><a class="secondary" href="/">Refresh results</a></p>'
-            script = """
-                <script>
-                let reviewing = false;
-                const pauseRefresh = () => {
-                    reviewing = true;
-                    document.getElementById("refresh-results").hidden = false;
-                };
-                document.addEventListener("play", event => {
-                    if (event.target instanceof HTMLVideoElement) pauseRefresh();
-                }, true);
-                document.addEventListener("seeking", event => {
-                    if (event.target instanceof HTMLVideoElement) pauseRefresh();
-                }, true);
-                document.addEventListener("input", event => {
-                    if (event.target.closest("form")) pauseRefresh();
-                });
-                setInterval(() => {
-                    if (reviewing || document.activeElement.closest("form, video")) return;
-                    if (location.pathname === "/") location.reload();
-                    else location.replace("/");
-                }, 10000);
-                </script>
-            """
         options = "".join(
             f'<option value="{value}"{" selected" if value == quality else ""}>{title}</option>'
             for value, title in (("720p", "720p HD"), ("1080p", "Up to 1080p Full HD"))
@@ -619,7 +600,8 @@ def create_app(
             "background:#0e0912;border-radius:.6rem;object-fit:contain;margin:.5rem 0 .9rem}"
             "[role=alert]{color:#ffbaa5}</style></head><body><main>"
             "<h1>ClipCast recorder</h1>"
-            f"<p>{active} of {MAX_ACTIVE} recording slots in use</p>{notice}{refresh_control}"
+            '<a class="secondary" href="/saved">Saved clips</a>'
+            f"<p>{active} of {MAX_ACTIVE} recording slots in use</p>{notice}"
             f'<form method="post" action="/record">{hidden}'
             '<label for="channels">Twitch channels</label>'
             f'<input id="channels" name="channels" type="text" value="{form_channels}" '
@@ -632,7 +614,7 @@ def create_app(
             "I have permission to capture these streams.</label>"
             f'<button type="submit"{" disabled" if active >= MAX_ACTIVE else ""}>'
             "Record and find clips</button></form>"
-            f'<div id="recordings">{cards}</div>{script}</main></body></html>',
+            f'<div id="recordings">{cards}</div></main></body></html>',
             status_code=status,
             headers={"Cache-Control": "private, no-store", "X-Frame-Options": "DENY"},
         )
@@ -683,16 +665,22 @@ def create_app(
                 error_message = "There is not enough temporary storage. Save and clear an older recording."
             else:
                 selected_channels, selected_quality = requested, quality
+                run_key = secrets.token_hex(8)
+                run = Run(run_key, datetime.now(UTC).isoformat())
+                runs[run_key] = run
                 for name in requested:
                     key = secrets.token_hex(8)
                     folder = Path(work.name) / key
                     folder.mkdir()
-                    job = Recording(key, name, folder / "capture.mp4", byte_cap)
+                    job = Recording(
+                        key, name, folder / "capture.mp4", byte_cap, run=run_key
+                    )
                     jobs[key] = job
+                    run.jobs.append(key)
                     Thread(target=run_capture, args=(job, quality), daemon=True).start()
         if error_message:
             return show_home(error_message, 409)
-        return RedirectResponse("/", status_code=303)
+        return RedirectResponse(f"/runs/{run_key}", status_code=303)
 
     @app.post("/jobs/{key}/clips/{rank}/hook", dependencies=[Depends(authenticate)])
     def preview_hook(
@@ -706,7 +694,8 @@ def create_app(
         if crop not in CROP:
             return show_home("Choose left, centre or right framing.", 400)
         with state:
-            item = get_highlight(get_job(key), rank)
+            job = get_job(key)
+            item = get_highlight(job, rank)
             if item.phase not in TEMPLATE_BUSY:
                 item.narration = "\n".join(
                     " ".join(line.split()) for line in narration.splitlines()
@@ -714,7 +703,7 @@ def create_app(
                 item.crop = crop
                 item.phase = "hook_queued"
                 Thread(target=run_hook, args=(item,), daemon=True).start()
-        return RedirectResponse(f"/#clip-{key}-{rank}", status_code=303)
+        return RedirectResponse(f"/runs/{job.run}", status_code=303)
 
     @app.post("/jobs/{key}/clips/{rank}/template", dependencies=[Depends(authenticate)])
     def make_template(
@@ -729,7 +718,8 @@ def create_app(
         if crop not in CROP:
             return show_home("Choose left, centre or right framing.", 400)
         with state:
-            item = get_highlight(get_job(key), rank)
+            job = get_job(key)
+            item = get_highlight(job, rank)
             if item.phase not in TEMPLATE_BUSY:
                 cleaned_hook = " ".join(hook.split())
                 if cleaned_hook != item.hook:
@@ -743,7 +733,207 @@ def create_app(
                 Thread(
                     target=run_template, args=(item, template_path(item)), daemon=True
                 ).start()
-        return RedirectResponse(f"/#clip-{key}-{rank}", status_code=303)
+        return RedirectResponse(f"/runs/{job.run}", status_code=303)
+
+    def get_run(key: str) -> Run:
+        run = runs.get(key)
+        if run is None:
+            raise HTTPException(
+                404,
+                "This recording run is no longer on the recorder. Check Saved clips on this device.",
+            )
+        return run
+
+    @app.get("/saved-clips.js", dependencies=[Depends(authenticate)])
+    def archive_script() -> FileResponse:
+        return FileResponse(
+            SCRIPT,
+            media_type="text/javascript",
+            headers={"Cache-Control": "private, no-cache"},
+        )
+
+    @app.get("/saved", dependencies=[Depends(authenticate)])
+    def archive_index() -> HTMLResponse:
+        return saved_page("index", csrf)
+
+    @app.get("/saved/{key}", dependencies=[Depends(authenticate)])
+    def archive_review(key: str) -> HTMLResponse:
+        if not re.fullmatch(r"[a-f0-9]{16}", key):
+            raise HTTPException(404, "This saved run is unavailable.")
+        return saved_page("review", csrf, key)
+
+    @app.get("/runs/{key}", dependencies=[Depends(authenticate)])
+    def capture_progress(key: str) -> HTMLResponse:
+        if not re.fullmatch(r"[a-f0-9]{16}", key):
+            raise HTTPException(404, "This recording run is unavailable.")
+        return saved_page("capture", csrf, key)
+
+    @app.get("/runs/{key}/manifest", dependencies=[Depends(authenticate)])
+    def capture_manifest(key: str) -> dict:
+        with state:
+            run = get_run(key)
+            batch = [jobs[job] for job in run.jobs if job in jobs]
+            complete = all(job.phase not in BUSY for job in batch)
+            clips = []
+            if complete:
+                ranked = sorted(
+                    (
+                        (job, rank, item)
+                        for job in batch
+                        for rank, item in enumerate(job.highlights, 1)
+                    ),
+                    key=lambda entry: (-entry[2].clip.score, entry[2].clip.start),
+                )[:MAX_CLIPS]
+                clips = [
+                    {
+                        "id": f"{job.key}-{rank}",
+                        "channel": job.channel,
+                        "seconds": round(item.clip.end - item.clip.start, 1),
+                        "reasons": item.clip.reasons,
+                        "bytes": item.path.stat().st_size,
+                        "url": f"/jobs/{job.key}/clips/{rank}/preview",
+                    }
+                    for job, rank, item in ranked
+                ]
+            statuses = {
+                "capturing": "Recording",
+                "analysing": "Checking footage for highlights",
+                "ranked": "Highlights found. Waiting for other streams",
+                "cutting": "Preparing your best clips",
+                "failed": "No playable recording",
+                "ready": "Processed",
+            }
+            return {
+                "id": key,
+                "created_at": run.created_at,
+                "complete": complete,
+                "clips": clips,
+                "channels": [
+                    {"name": job.channel, "status": statuses[job.phase]}
+                    for job in batch
+                ],
+            }
+
+    @app.post("/runs/{key}/saved", dependencies=[Depends(authenticate)])
+    def acknowledge_saved(key: str, token: str = Form()) -> Response:
+        authorize_form(token)
+        with state:
+            run = get_run(key)
+            batch = [jobs[job] for job in run.jobs if job in jobs]
+            if any(
+                job.phase in BUSY
+                or any(clip.phase in TEMPLATE_BUSY for clip in job.highlights)
+                for job in batch
+            ):
+                raise HTTPException(409, "This run is still processing.")
+            for job in batch:
+                rmtree(job.path.parent)
+                del jobs[job.key]
+            del runs[run.key]
+        return Response(status_code=204)
+
+    @app.post("/saved-edits", dependencies=[Depends(authenticate)], status_code=202)
+    def make_saved_edit(
+        video: Annotated[UploadFile, File()],
+        token: str = Form(),
+        kind: str = Form(),
+        hook: str = Form("", max_length=HOOK_LIMIT),
+        narration: str = Form("", max_length=NARRATION_LIMIT),
+        crop: str = Form("center"),
+        cam: str = Form("auto"),
+    ) -> dict:
+        authorize_form(token)
+        if (
+            kind not in {"hook", "reel"}
+            or crop not in CROP
+            or cam not in FACECAM_OPTIONS
+        ):
+            raise HTTPException(400, "Check your clip options.")
+        if not video.size or video.size > ARCHIVE_EDIT_MAX_BYTES:
+            raise HTTPException(413, "This clip is outside the recorder's size limit.")
+        key = secrets.token_hex(8)
+        with state:
+            expired = [
+                name
+                for name, edit in edits.items()
+                if edit.highlight.phase not in TEMPLATE_BUSY
+                and monotonic() - edit.started_at > 1800
+            ]
+            for name in expired:
+                rmtree(edits[name].highlight.path.parent, ignore_errors=True)
+                del edits[name]
+            if (
+                sum(edit.highlight.phase in TEMPLATE_BUSY for edit in edits.values())
+                >= ARCHIVE_EDIT_MAX_JOBS
+            ):
+                raise HTTPException(
+                    409, "ClipCast is busy with other edits. Try again in a moment."
+                )
+            if disk_usage(work.name).free < video.size + ARCHIVE_EDIT_MAX_BYTES:
+                raise HTTPException(
+                    409,
+                    "The recorder is low on working space. Try again after the current run saves.",
+                )
+            folder = Path(work.name) / key
+            folder.mkdir()
+            item = Highlight(
+                Clip(0, 0),
+                folder / "highlight.mp4",
+                phase="hook_queued" if kind == "hook" else "queued",
+                hook=" ".join(hook.split()),
+                narration="\n".join(
+                    " ".join(line.split()) for line in narration.splitlines()
+                ).strip(),
+                crop=crop,
+                cam=cam,
+            )
+            edits[key] = ArchiveEdit(item, monotonic(), kind)
+        try:
+            with item.path.open("wb") as output:
+                copyfileobj(video.file, output, length=256 * 1024)
+            probe_clip(item.path)
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            with state:
+                del edits[key]
+                rmtree(folder, ignore_errors=True)
+            raise HTTPException(
+                400, "This file is not a playable highlight."
+            ) from error
+        target = run_hook if kind == "hook" else run_template
+        args = (item,) if kind == "hook" else (item, template_path(item))
+        Thread(target=target, args=args, daemon=True).start()
+        return {"id": key}
+
+    def get_saved_edit(key: str) -> ArchiveEdit:
+        edit = edits.get(key)
+        if edit is None:
+            raise HTTPException(
+                404, "This edit expired. Your original is still in Saved clips."
+            )
+        return edit
+
+    @app.get("/saved-edits/{key}", dependencies=[Depends(authenticate)])
+    def saved_edit_status(key: str) -> dict:
+        with state:
+            edit = get_saved_edit(key)
+            item = edit.highlight
+            return {
+                "done": item.phase not in TEMPLATE_BUSY,
+                "error": "The Reel could not be made. Try again."
+                if item.phase == "failed"
+                else "",
+                "hook": item.hook,
+                "message": item.hook_status,
+            }
+
+    @app.get("/saved-edits/{key}/video", dependencies=[Depends(authenticate)])
+    def saved_edit_video(key: str) -> StreamingResponse:
+        with state:
+            item = get_saved_edit(key).highlight
+            path = template_path(item)
+            if item.phase != "ready" or not path.is_file():
+                raise HTTPException(404, "This Reel is not ready.")
+            return media_response(path, "clipcast-reel.mp4")
 
     def media_response(path: Path, filename: str) -> StreamingResponse:
         file = path.open("rb")
@@ -824,6 +1014,9 @@ def create_app(
                 )
             rmtree(job.path.parent)
             del jobs[key]
+            run = runs.get(job.run)
+            if run and not any(item in jobs for item in run.jobs):
+                del runs[run.key]
         return RedirectResponse("/", status_code=303)
 
     return app
