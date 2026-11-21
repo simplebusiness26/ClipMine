@@ -7,17 +7,17 @@ import re
 import secrets
 import subprocess
 from collections.abc import AsyncIterator, Callable, Iterator
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from shutil import copyfileobj, disk_usage, rmtree
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, TemporaryFile
 from threading import Event, Lock, Thread
 from time import monotonic
 from typing import Annotated, BinaryIO
 from urllib.parse import unquote
-from zipfile import BadZipFile
+from zipfile import BadZipFile, ZipFile
 
 from fastapi import (
     Depends,
@@ -353,9 +353,25 @@ class RunEditOptions(EditOptions):
 
 
 class BrandReelOptions(BaseModel):
-    channel_vi_hook: str = Field(min_length=1, max_length=HOOK_LIMIT)
-    gta_clipcast_hook: str = Field(min_length=1, max_length=HOOK_LIMIT)
+    channel_vi_hook: str = Field(default="", max_length=HOOK_LIMIT)
+    gta_clipcast_hook: str = Field(default="", max_length=HOOK_LIMIT)
     request_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+
+class CampaignSettings(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    brief: str = Field(min_length=1, max_length=12000)
+    min_seconds: int | None = Field(default=None, ge=1, le=MAX_HIGHLIGHT_SECONDS)
+    max_seconds: int | None = Field(default=None, ge=1, le=MAX_HIGHLIGHT_SECONDS)
+
+    def brief_for_run(self) -> CampaignBrief:
+        name, brief = self.name.strip(), self.brief.strip()
+        if not name or not brief:
+            raise ValueError("Add both the campaign name and its brief.")
+        if self.min_seconds is not None and self.max_seconds is not None:
+            if self.min_seconds > self.max_seconds:
+                raise ValueError("The minimum duration must be at most the maximum.")
+        return CampaignBrief(name, brief, self.min_seconds, self.max_seconds)
 
 
 def channels_from_input(names: str) -> list[str]:
@@ -375,10 +391,14 @@ def create_app(
     channel: str,
     password: str,
     model: Path = MODEL_PATH,
+    *,
+    locked_campaign: CampaignBrief | None = None,
 ) -> FastAPI:
     default_channels = channels_from_input(channel)
     if len(default_channels) > MAX_ACTIVE:
         raise ValueError("TWITCH_CHANNEL can prefill up to five usernames")
+    if locked_campaign and len(default_channels) != 1:
+        raise ValueError("A locked campaign requires one TWITCH_CHANNEL")
     if len(password) < 20 or not password.isascii():
         raise ValueError("RECORDER_PASSWORD must be at least 20 ASCII characters")
 
@@ -706,7 +726,7 @@ def create_app(
             "status": "ok",
             "mode": "highlights",
             "quality_options": "hd",
-            "capture_slots": MAX_ACTIVE,
+            "capture_slots": 1 if locked_campaign else MAX_ACTIVE,
             "template": DEFAULT_TEMPLATE,
             "channel_vi_templates": len(REEL_TEMPLATES) - 1,
             "saved_runs": "browser",
@@ -721,6 +741,8 @@ def create_app(
             "previews": "inline",
             "continuous_capture": "supported",
             "branded_reel_pair": "supported",
+            "branded_reel_bundle": "supported",
+            "campaign_lock": "enabled" if locked_campaign else "optional",
         }
 
     hidden = f'<input type="hidden" name="token" value="{csrf}">'
@@ -728,7 +750,10 @@ def create_app(
     def show_home(error: str = "", status: int = 200) -> HTMLResponse:
         # This handler is also used with a fixed message for invalid form submissions.
         with state:
-            active = sum(job.phase in BUSY for job in jobs.values())
+            active = sum(
+                job.phase == "capturing" if locked_campaign else job.phase in BUSY
+                for job in jobs.values()
+            )
             continuous_status = ""
             if continuous:
                 label = "Stopping after this capture" if continuous.stop.is_set() else continuous.status
@@ -754,6 +779,36 @@ def create_app(
             f'<option value="{value}"{" selected" if value == quality else ""}>{title}</option>'
             for value, title in (("720p", "720p HD"), ("1080p", "Up to 1080p Full HD"))
         )
+        if locked_campaign:
+            campaign_fields = (
+                f"<p><strong>Locked campaign</strong> · {html.escape(locked_campaign.name)}</p>"
+                '<details><summary>View locked brief</summary>'
+                f'<p style="white-space:pre-wrap">{html.escape(locked_campaign.brief)}</p></details>'
+            )
+            recording_button = ""
+            slots = 1
+        else:
+            campaign_fields = (
+                "<details><summary>Campaign brief and clip length</summary>"
+                '<label for="campaign">Campaign name</label>'
+                '<input id="campaign" name="campaign_name" type="text" maxlength="120">'
+                '<label for="brief">Campaign brief</label>'
+                '<textarea id="brief" name="campaign_brief" rows="5" maxlength="12000"></textarea>'
+                '<label for="min-seconds">Minimum clip seconds</label>'
+                f'<input id="min-seconds" name="min_seconds" type="number" min="1" max="{MAX_HIGHLIGHT_SECONDS}">'
+                '<label for="max-seconds">Maximum clip seconds</label>'
+                f'<input id="max-seconds" name="max_seconds" type="number" min="1" max="{MAX_HIGHLIGHT_SECONDS}">'
+                "</details>"
+            )
+            disabled = " disabled" if active >= MAX_ACTIVE else ""
+            recording_button = f'<button type="submit"{disabled}>Record and find clips</button>'
+            slots = MAX_ACTIVE
+        form_action = "/continuous/start" if locked_campaign else "/record"
+        readonly = " readonly" if locked_campaign else ""
+        channel_hint = (
+            "This worker is assigned to one Twitch channel."
+            if locked_campaign else "Enter one Twitch username for continuous recording."
+        )
         return HTMLResponse(
             '<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -778,30 +833,18 @@ def create_app(
             "[role=alert]{color:#ffbaa5}</style></head><body><main>"
             "<h1>ClipCast recorder</h1>"
             '<a class="secondary" href="/saved">Saved clips</a>'
-            f"<p>{active} of {MAX_ACTIVE} recording slots in use</p>{notice}"
-            f'<form method="post" action="/record">{hidden}'
+            f"<p>{active} of {slots} recording slots in use</p>{notice}"
+            f'<form method="post" action="{form_action}">{hidden}'
             '<label for="channels">Twitch channels</label>'
             f'<input id="channels" name="channels" type="text" value="{form_channels}" '
             'placeholder="clix, secondchannel" maxlength="160" autocomplete="off" '
-            'autocapitalize="none" spellcheck="false" required>'
-            "<small>Enter up to five live usernames, separated by a comma.</small>"
+            f'autocapitalize="none" spellcheck="false" required{readonly}>'
+            f"<small>{channel_hint}</small>"
             f'<label for="quality">Recording quality</label><select id="quality" '
             f'name="quality">{options}</select>'
             '<label><input type="checkbox" name="confirm" value="yes" required> '
             "I have permission to capture these streams.</label>"
-            f'<button type="submit"{" disabled" if active >= MAX_ACTIVE else ""}>'
-            "Record and find clips</button>"
-            "<details><summary>Campaign brief and clip length</summary>"
-            '<label for="campaign">Campaign name</label>'
-            '<input id="campaign" name="campaign_name" type="text" maxlength="120">'
-            '<label for="brief">Campaign brief</label>'
-            '<textarea id="brief" name="campaign_brief" rows="5" maxlength="12000"></textarea>'
-            '<label for="min-seconds">Minimum clip seconds</label>'
-            f'<input id="min-seconds" name="min_seconds" type="number" min="1" max="{MAX_HIGHLIGHT_SECONDS}">'
-            '<label for="max-seconds">Maximum clip seconds</label>'
-            f'<input id="max-seconds" name="max_seconds" type="number" min="1" max="{MAX_HIGHLIGHT_SECONDS}">'
-            "<small>These settings apply to consecutive recordings for this campaign.</small>"
-            "</details>"
+            f"{recording_button}{campaign_fields}"
             '<button class="secondary" type="submit" formaction="/continuous/start">'
             "Record consecutive 10-minute windows</button>"
             "<small>Continuous recording takes one username. Windows without a highlight "
@@ -825,6 +868,8 @@ def create_app(
     ):
         nonlocal selected_channels, selected_quality
         authorize_form(token)
+        if locked_campaign:
+            return show_home("Use continuous recording for this locked campaign.", 409)
         if confirm != "yes":
             return show_home("Confirm permission to record first.", 400)
         if quality not in QUALITY_OPTIONS:
@@ -937,19 +982,26 @@ def create_app(
         if confirm != "yes" or quality not in QUALITY_OPTIONS:
             return show_home("Confirm permission and choose a recording quality.", 400)
         try:
-            requested = channels_from_input(channels)
+            requested = channels_from_input(channels) if channels else default_channels
         except ValueError as error:
             return show_home(str(error), 400)
         if len(requested) != 1:
             return show_home("Enter one Twitch username for continuous recording.", 400)
-        campaign = None
+        if locked_campaign and requested != default_channels:
+            return show_home("This worker is locked to a different Twitch username.", 409)
+        campaign = locked_campaign
         name, brief = campaign_name.strip(), campaign_brief.strip()
         if name or brief or min_seconds is not None or max_seconds is not None:
-            if not name or not brief:
+            try:
+                campaign = CampaignSettings(
+                    name=name, brief=brief, min_seconds=min_seconds, max_seconds=max_seconds,
+                ).brief_for_run()
+            except ValidationError:
                 return show_home("Add both the campaign name and its brief.", 400)
-            if min_seconds is not None and max_seconds is not None and min_seconds > max_seconds:
-                return show_home("The minimum duration must be at most the maximum.", 400)
-            campaign = CampaignBrief(name, brief, min_seconds, max_seconds)
+            except ValueError as error:
+                return show_home(str(error), 400)
+            if locked_campaign and campaign != locked_campaign:
+                return show_home("This worker already has a locked campaign brief.", 409)
         with state:
             available = not continuous and all(job.phase != "capturing" for job in jobs.values())
             if available:
@@ -1102,6 +1154,7 @@ def create_app(
                 "label": REEL_TEMPLATES[template].split(" · ")[0],
                 "phase": phase,
                 "download_url": url,
+                "hook": reel.hook if reel else "",
             }
         return result
 
@@ -1136,6 +1189,7 @@ def create_app(
                     "preview_url": f"{base}/preview",
                     "edit_url": f"{base}/edit",
                     "reels_url": f"{base}/reels",
+                    "bundle_url": f"{base}/reels/download",
                     "reels": brand_reels_status(item, base),
                     "delivery_url": f"/continuous/{job.key}/delivered",
                     "skip_url": f"/continuous/{job.key}/skipped",
@@ -1146,6 +1200,10 @@ def create_app(
             return {
                 "channel": continuous.channel if continuous else None,
                 "status": continuous.status if continuous else "Stopped",
+                "locked_campaign": (
+                    {"channel": default_channels[0], **asdict(locked_campaign)}
+                    if locked_campaign else None
+                ),
                 "token": csrf,
                 "highlights": waiting,
             }
@@ -1252,8 +1310,6 @@ def create_app(
             "channel-vi": " ".join(options.channel_vi_hook.split()),
             "gta-clipcast": " ".join(options.gta_clipcast_hook.split()),
         }
-        if not all(hooks.values()):
-            raise HTTPException(400, "Enter a headline for each Reel.")
         base = f"/jobs/{key}/clips/{rank}"
         with state:
             job = get_job(key)
@@ -1293,6 +1349,43 @@ def create_app(
         with state:
             item = get_highlight(get_job(key), rank)
             return brand_reels_status(item, f"/jobs/{key}/clips/{rank}")
+
+    @app.get("/jobs/{key}/clips/{rank}/reels/download", dependencies=[Depends(authenticate)])
+    def download_reel_bundle(key: str, rank: int) -> StreamingResponse:
+        with ExitStack() as sources:
+            with state:
+                job = get_job(key)
+                item = get_highlight(job, rank)
+                reels = brand_reels_status(item, "")
+                if not all(reel["download_url"] for reel in reels.values()):
+                    raise HTTPException(409, "Both Reels need to finish before downloading.")
+                stem = f"{job.channel}-{job.key}"
+                files = {
+                    f"{stem}-{brand}.mp4": sources.enter_context(
+                        brand_reel_path(item, brand).open("rb")
+                    )
+                    for brand in BRAND_REEL_TEMPLATES
+                }
+            bundle = TemporaryFile(dir=work.name)
+            try:
+                with ZipFile(bundle, "w") as archive:
+                    for name, source in files.items():
+                        with archive.open(name, "w") as entry:
+                            copyfileobj(source, entry)
+                length = bundle.tell()
+                bundle.seek(0)
+            except OSError as error:
+                bundle.close()
+                raise HTTPException(507, "ClipCast could not prepare the ZIP download.") from error
+            return StreamingResponse(
+                download_chunks(bundle),
+                media_type="application/zip",
+                headers={
+                    "Content-Length": str(length),
+                    "Content-Disposition": f'attachment; filename="{stem}-both-reels.zip"',
+                    "Cache-Control": "private, no-store",
+                },
+            )
 
     @app.get("/jobs/{key}/clips/{rank}/reels/{brand}", dependencies=[Depends(authenticate)])
     def download_brand_reel(key: str, rank: int, brand: str) -> StreamingResponse:
@@ -1357,7 +1450,11 @@ def create_app(
                     "edit": run_edit_status(item, f"/jobs/{job.key}/clips/{rank}"),
                     "reels": brand_reels_status(item, f"/jobs/{job.key}/clips/{rank}")
                     if item.brand_reels else {},
-                    **({"transcript": item.transcript} if run.continuous else {}),
+                    **({
+                        "transcript": item.transcript,
+                        "reels_url": f"/jobs/{job.key}/clips/{rank}/reels",
+                        "bundle_url": f"/jobs/{job.key}/clips/{rank}/reels/download",
+                    } if run.continuous and job.phase == "ready" else {}),
                 }
                 for job, rank, item in ranked
             ]
@@ -1791,6 +1888,12 @@ def create_app(
 
 
 def create_render_app() -> FastAPI:
+    configured_campaign = os.environ.get("CLIPCAST_CAMPAIGN", "")
     return create_app(
-        os.environ.get("TWITCH_CHANNEL", ""), os.environ.get("RECORDER_PASSWORD", "")
+        os.environ.get("TWITCH_CHANNEL", ""),
+        os.environ.get("RECORDER_PASSWORD", ""),
+        locked_campaign=(
+            CampaignSettings.model_validate_json(configured_campaign).brief_for_run()
+            if configured_campaign else None
+        ),
     )

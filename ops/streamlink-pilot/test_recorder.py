@@ -4,10 +4,12 @@ import subprocess
 from collections import Counter
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
 from threading import Event, Thread
 from time import monotonic, sleep
 from urllib.parse import quote
+from zipfile import ZipFile
 
 from fastapi.testclient import TestClient
 
@@ -125,6 +127,8 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_one_reel(monkeypat
             }
             assert clip["transcript"] == [[0.6, 2.4, "That was my getaway vehicle."]]
             assert not clip["reels"]["channel-vi"]["download_url"]
+            assert client.get(clip["bundle_url"]).status_code == 401
+            assert client.get(clip["bundle_url"], auth=AUTH).status_code == 409
             assert client.post(
                 clip["delivery_url"], data={"token": token, "revision": clip["revision"]},
                 auth=AUTH,
@@ -166,6 +170,17 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_one_reel(monkeypat
                 assert f"-{brand}.mp4" in download.headers["content-disposition"]
             assert render_attempts.count(app.CUSTOM_CHANNEL_VI_TEMPLATE) == 1
             assert render_attempts.count(app.CUSTOM_GTA_CLIPCAST_TEMPLATE) == 2
+            bundle = client.get(edit["bundle_url"], auth=AUTH)
+            assert bundle.headers["content-type"] == "application/zip"
+            assert bundle.headers["content-disposition"].endswith('-both-reels.zip"')
+            with ZipFile(BytesIO(bundle.content)) as files:
+                assert {
+                    name.rsplit(edit["id"] + "-", 1)[-1]: files.read(name)
+                    for name in files.namelist()
+                } == {
+                    f"{brand}.mp4": template.encode()
+                    for brand, template in app.BRAND_REEL_TEMPLATES.items()
+                }
             assert client.post(
                 edit["delivery_url"], data={"token": token, "revision": edit["revision"]},
                 auth=AUTH,
@@ -183,6 +198,40 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_one_reel(monkeypat
         assert pending() == []
         manifest = client.get(next_clip["run_url"] + "/manifest", auth=AUTH).json()
         assert manifest["channels"][0]["status"].endswith("Lacks gameplay.")
+
+
+def test_campaign_configuration_locks_one_worker_to_its_stream_and_brief(monkeypatch):
+    monkeypatch.setenv("TWITCH_CHANNEL", "clix")
+    monkeypatch.setenv("RECORDER_PASSWORD", PASSWORD)
+    profile = {"name": "First Campaign", "brief": "Keep the dialogue.", "min_seconds": 30}
+    monkeypatch.setenv("CLIPCAST_CAMPAIGN", json.dumps(profile))
+    first = app.create_render_app()
+    monkeypatch.setenv("TWITCH_CHANNEL", "second")
+    monkeypatch.setenv("CLIPCAST_CAMPAIGN", json.dumps({"name": "Second", "brief": "Show the payoff."}))
+    second = app.create_render_app()
+
+    with TestClient(first) as client, TestClient(second) as other:
+        health = client.get("/healthz").json()
+        assert health["capture_slots"] == 1
+        assert health["campaign_lock"] == "enabled"
+        home = client.get("/", auth=AUTH).text
+        assert "Locked campaign" in home and "Keep the dialogue." in home
+        assert "Record and find clips" not in home
+        token = re.search(r'name="token" value="([^"]+)"', home)[1]
+        data = {"token": token, "confirm": "yes"}
+        assert client.post("/record", data=data, auth=AUTH).status_code == 409
+        assert client.post(
+            "/continuous/start", data={**data, "channels": "second"}, auth=AUTH
+        ).status_code == 409
+        assert client.post(
+            "/continuous/start",
+            data={**data, "campaign_name": profile["name"], "campaign_brief": "Changed"},
+            auth=AUTH,
+        ).status_code == 409
+        locked = client.get("/continuous/queue", auth=AUTH).json()["locked_campaign"]
+        assert locked == {"channel": "clix", "max_seconds": None, **profile}
+        other_lock = other.get("/continuous/queue", auth=AUTH).json()["locked_campaign"]
+        assert (other_lock["channel"], other_lock["name"]) == ("second", "Second")
 
 
 def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):

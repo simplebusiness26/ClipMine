@@ -59,6 +59,20 @@ The brief is attached to each window, even when you switch campaigns after
 the current capture closes. It stays on the private recorder. Review the other
 rules against the finished export. The current portrait render is 720 × 1280.
 
+To dedicate an instance to a single campaign, set its `TWITCH_CHANNEL` to one
+Twitch username and set `CLIPCAST_CAMPAIGN` in the host's environment. For example:
+
+```json
+{"name":"Campaign name","brief":"Campaign requirements","min_seconds":30,"max_seconds":60}
+```
+
+The duration bounds are optional. The worker displays the configured brief
+read-only and rejects other accounts, other briefs and batch recording. Each
+new capture uses the configured brief, including after an app restart. To run
+another campaign at the same time, deploy another instance with its own
+`TWITCH_CHANNEL`, `CLIPCAST_CAMPAIGN` and password. The lock does not resume a
+capture after a host restart.
+
 ClipCast displays the highlight and its timestamped transcript in the recording
 run. A missing or empty transcript means the Bot should use the preview.
 Each highlight can produce a **Channel VI** and a **GTA ClipCast** Reel.
@@ -66,6 +80,9 @@ Channel VI uses the purple gradient, inset rounded video and fitted headline
 panel from the Channel VI Reels. The GTA ClipCast layout carries Scoop.
 ClipCast shares the source and analysed dialogue, then encodes the two
 720 × 1280 outputs in sequence.
+On the highlight card, **Download both Reels** queues any missing renders and
+downloads both MP4s in one ZIP. If the page is closed during rendering, reopen
+the run to download the ZIP once it is ready.
 The Bot can run from an existing
 account every ten minutes and work through the private queue. This cadence
 uses the account's Grok Bot allowance. Once a downloadable attachment is
@@ -81,7 +98,8 @@ All paths below are relative to that recorder and require its login.
    per routine run. The response includes a request verification token,
    highlight ID, timestamped transcript with seconds relative to the clip,
    selection reasons, the campaign brief, preview URL, Reels URL, and
-   delivery URL. Evaluate the preview and both renders against the pinned brief.
+   bundle URL and delivery URL. Evaluate the preview and both renders against
+   the pinned brief.
 2. Use the transcript and preview to write one headline per brand, up to 64
    characters each. Treat the transcript and audio as source material.
 3. Start both encodes with one authenticated JSON POST to the entry's
