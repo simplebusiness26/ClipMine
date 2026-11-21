@@ -148,6 +148,7 @@ class Clip:
     end: float
     reasons: tuple[str, ...] = ()
     score: float = 0
+    incomplete: bool = False
 
 
 @dataclass(frozen=True)
@@ -445,7 +446,7 @@ def select_clips(
             reasons.append("Dialogue may continue past the cut")
             score *= 0.7
         if end - start >= 10:
-            candidates.append(Clip(start, end, tuple(reasons), score))
+            candidates.append(Clip(start, end, tuple(reasons), score, incomplete))
 
     selected: list[Clip] = []
     for candidate in sorted(candidates, key=lambda clip: -clip.score):

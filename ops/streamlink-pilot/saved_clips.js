@@ -120,7 +120,7 @@ function saveSnapshot(archive, run) {
 }
 
 async function capture() {
-    const openSaved = link("Review available clips", runUrl(runId), "secondary");
+    const openSaved = link("Review ready Reels", runUrl(runId), "secondary");
     openSaved.hidden = true;
     const channelList = node("div");
     content.replaceChildren(openSaved, channelList);
@@ -136,7 +136,10 @@ async function capture() {
             card.append(node("strong", channel.name), node("p", channel.status, "muted"));
             return card;
         }));
-        openSaved.hidden = run.clips.length === 0;
+        openSaved.textContent = run.reel_template ? "Review ready Reels" : "Review available clips";
+        openSaved.hidden = run.reel_template
+            ? !run.clips.some(clip => clip.edit.url)
+            : run.clips.length === 0;
         announce("ClipCast is working. Reopen this run when you’re ready.");
         await delay(5000);
     }
@@ -248,19 +251,25 @@ async function fetchReel(url, controller, onProgress) {
 async function clipCard(archive, run, clip, rank, recorderUnavailable) {
     const id = mediaKey(run.id, clip.id);
     const card = node("article");
+    const reelFirst = Boolean(run.reel_template);
     const summary = node("p", clip.reasons.join(" · "), "muted");
-    card.append(node("h3", "Clip " + rank + " · " + clip.seconds + "s"), summary);
-    const previewButton = node("button", "Play clip", "secondary");
+    card.append(node("h3", (reelFirst ? "Reel " : "Clip ") + rank + " · " + clip.seconds + "s"), summary);
+    const previewButton = node("button", reelFirst ? "Play Reel" : "Play clip", "secondary");
     previewButton.type = "button";
     const video = node("video");
     video.controls = true;
     video.playsInline = true;
     video.preload = "none";
     video.hidden = true;
-    video.setAttribute("aria-label", "Preview clip " + rank);
+    video.classList.toggle("reel", reelFirst);
+    video.setAttribute("aria-label", (reelFirst ? "Preview Reel " : "Preview clip ") + rank);
     previewButton.onclick = async () => {
         try {
-            if (clip.url) {
+            if (reelFirst) {
+                const source = downloads.firstElementChild?.href;
+                if (!source) return;
+                video.src = source.startsWith("blob:") ? source : source + "?inline=true";
+            } else if (clip.url) {
                 video.src = clip.url;
             } else {
                 const file = await read(archive, "media", id);
@@ -290,7 +299,7 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
         ["bottom-left", "Bottom left"], ["bottom-right", "Bottom right"]
     ]);
     const draft = await read(archive, "drafts", id);
-    template.value = draft?.template || defaultTemplate;
+    template.value = draft?.template || clip.edit?.template || run.reel_template || defaultTemplate;
     if (!template.value) template.value = defaultTemplate;
     hook.value = draft?.hook || clip.edit?.hook || "";
     narration.value = draft?.narration || "";
@@ -317,7 +326,7 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
     settings.append(node("summary", "Captions and framing"), field("Written narration", narration),
         field("Gameplay framing", crop), field("Streamer facecam", cam));
     const suggest = node("button", "Suggest hook first", "secondary");
-    const render = node("button", "Make ClipCast version");
+    const render = node("button", reelFirst ? "Update Reel" : "Make ClipCast version");
     suggest.type = render.type = "button";
     const hookField = field("Top hook", hook);
     function showHookControls() {
@@ -326,15 +335,24 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
     template.addEventListener("change", showHookControls);
     const downloads = node("div");
     const filename = clip.channel + "-clipcast-" + rank + ".mp4";
+    function refreshPreview() {
+        if (!reelFirst) return;
+        video.pause();
+        video.removeAttribute("src");
+        video.hidden = true;
+        previewButton.hidden = !downloads.firstElementChild;
+    }
     function showDirectDownload(url) {
         const direct = link("Download ClipCast Reel", url);
         direct.download = filename;
         if (downloads.firstChild?.href.startsWith("blob:")) URL.revokeObjectURL(downloads.firstChild.href);
         downloads.replaceChildren(direct);
+        refreshPreview();
         return direct;
     }
     await showDownload(archive, id, filename, downloads);
     if (clip.edit?.url) showDirectDownload(clip.edit.url);
+    else refreshPreview();
     if (clip.edit) progress.textContent = clip.edit.error || (clip.edit.url ? "Reel ready." : clip.edit.message);
     const previousTask = clip.edit_url ? null : await read(archive, "drafts", reelTaskKey(id));
 
@@ -451,6 +469,7 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
                     });
                     await write(archive, "media", finished, exportKey(id), 20000);
                     linkFromBlob(finished, filename, downloads);
+                    refreshPreview();
                     progress.textContent = "Reel saved in ClipCast.";
                     void write(archive, "drafts", null, reelTaskKey(id), 20000).catch(() => {});
                 } catch (_) {
@@ -467,12 +486,21 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
             suggest.disabled = render.disabled = false;
             template.disabled = pendingUpload?.kind === "reel";
             suggest.textContent = pendingUpload?.kind === "hook" ? "Resume hook upload" : "Suggest hook first";
-            render.textContent = pendingUpload?.kind === "reel" ? "Resume Reel upload" : "Make ClipCast version";
+            render.textContent = pendingUpload?.kind === "reel"
+                ? "Resume Reel upload" : reelFirst ? "Update Reel" : "Make ClipCast version";
         }
     }
     suggest.onclick = () => processClip("hook", null, pendingUpload?.kind === "hook");
     render.onclick = () => processClip("reel", null, pendingUpload?.kind === "reel");
-    card.append(previewButton, video, field("Reel template", template), hookField, suggest, settings, render, progress, downloads);
+    const controls = [field("Reel template", template), hookField, suggest, settings, render];
+    if (reelFirst) {
+        const edit = node("details");
+        edit.open = Boolean(clip.edit?.error);
+        edit.append(node("summary", clip.edit?.error ? "Retry or edit Reel" : "Edit Reel"), ...controls);
+        card.append(previewButton, video, downloads, progress, edit);
+    } else {
+        card.append(previewButton, video, ...controls, progress, downloads);
+    }
     function resumePhoneUpload() {
         if (!document.hidden && pendingUpload && !working) {
             void processClip(pendingUpload.kind, null, true);
@@ -514,13 +542,21 @@ async function review(archive) {
             save.disabled = Boolean(copyIsCurrent);
             save.type = "button";
             save.onclick = () => saveRunOnDevice(archive, save);
-            content.append(save);
+            if (run.reel_template) {
+                const backup = node("details");
+                backup.append(node("summary", "Back up source clips and Reels"), save);
+                content.append(backup);
+            } else {
+                content.append(save);
+            }
         } else {
             content.append(link("Check recording progress", "/runs/" + encodeURIComponent(runId), "secondary"));
         }
     } else {
         announce("Saved on this device · " + labelDate(run.created_at));
-        if (recorderUnavailable) {
+        if (run.reel_template) {
+            content.append(node("p", "Play or download a Reel saved on this device."));
+        } else if (recorderUnavailable) {
             content.append(node("p", "The recorder is unreachable. You can play saved clips. Reopen the run when you’re connected to make a Reel."));
         } else {
             content.append(node("p", "These clips are on your phone. Making a new Reel requires an upload. If it pauses, reopen this run to resume."));
@@ -530,7 +566,7 @@ async function review(archive) {
         }
     }
     if (run.clips.length === 0) {
-        content.append(node("p", run.complete ? "No strong highlights were found in this run." : "No clips are ready yet."));
+        content.append(node("p", run.complete ? "No strong highlights were found in this run." : "Nothing is ready to review yet."));
     }
     let rank = 0;
     const sections = new Map();

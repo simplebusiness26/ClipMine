@@ -12,20 +12,20 @@
 ## Record, review and export
 
 1. Enter up to five live Twitch usernames, separated by commas. Pick **720p HD**
-   or **Up to 1080p Full HD**, confirm permission, and tap **Record and find clips**.
+   or **Up to 1080p Full HD** and a **Channel VI template**. Confirm permission
+   and tap **Record and make Reels**.
 2. You can close the tab after the run starts. Go back to the recorder and tap
-   **Open recording run** to check progress or review the clips. A queued channel
-   shows that it is waiting for its turn. **Review available clips** opens the clips
-   that are ready so far. ClipCast selects at most ten clips per run.
+   **Open recording run** to check progress. **Review ready Reels** opens the
+   Reels that are ready so far. ClipCast selects at most ten clips per run.
    Action sounds, gameplay movement, short speech windows, laughter and chat
    can all contribute. Timing follows dialogue and pauses where enough
-   evidence is available. Longer exchanges can run past 60 or 90 seconds.
-3. Watch the clips, edit **Top hook** or use **Suggest hook first**, and tap
-   **Make ClipCast version** when ready. For a run still on the recorder, ClipCast
-   renders from its copy. You can leave once it says the Reel is queued. Reopen the
-   run for its status and download. Hook text and framing choices save to the
-   browser as you edit.
-4. The Gameplay First template uses a slim top camera strip when a steady corner
+   evidence is available. Automatic rendering skips cuts flagged as having an
+   unfinished ending. Longer exchanges can run past 60 or 90 seconds.
+3. Select **Play Reel** to review the branded result and **Download ClipCast
+   Reel** to save the 720 × 1280 MP4. ClipCast renders directly from its recorder
+   copy in the background.
+4. Open **Edit Reel** to change a finished export. The Gameplay First template
+   uses a slim top camera strip when a steady corner
    facecam is detected. The gameplay fills the rest of the frame, with Scoop
    standing at the bottom right and making one brief wink and head tilt.
    Under **Reel template**, choose **It Was Going Well**, **Roll That Back** or
@@ -33,10 +33,10 @@
    artwork. The selected template is saved with the clip draft.
    Under **Captions and framing**, choose the facecam corner manually or turn
    the camera off, reposition the gameplay crop, or type written narration.
-5. Download the finished 720 × 1280 Reel. **Save run to this device** copies
-   the originals and any finished Reels to **Saved clips** in the current browser.
-   The recorder can still use its copy for edits. Keep the page open during the
-   optional transfer.
+5. To make a browser backup, open **Back up source clips and Reels** and choose
+   **Save run to this device**. This copies the source highlights and finished
+   Reels to **Saved clips** in the current browser. Keep the page open during
+   this optional transfer.
 
 [Render dashboard](https://dashboard.render.com/) · [Render free compute limits](https://render.com/docs/free)
 

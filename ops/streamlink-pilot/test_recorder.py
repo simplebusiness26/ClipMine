@@ -376,6 +376,93 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
         assert partial.content == b"branded"
 
 
+def test_recording_makes_channel_vi_reels_without_browser_requests(monkeypatch):
+    class FakeChat:
+        def __init__(self, *_):
+            self.connected = True
+            self.counts = Counter()
+            self.laughter = Counter()
+
+        def start(self):
+            pass
+
+        def close(self):
+            pass
+
+        def progress(self, _):
+            pass
+
+    rendered = Event()
+
+    def capture(_, output, **_options):
+        output.write_bytes(b"recording")
+        return app.Capture(60, 720)
+
+    def cut(source, output, clip):
+        assert source.read_bytes() == b"recording"
+        assert clip.start == 0
+        output.write_bytes(b"server-side highlight")
+
+    def render(source, output, _hook, _narration, _crop, _cam, template):
+        assert source.read_bytes() == b"server-side highlight"
+        assert template == "roll-that-back"
+        output.write_bytes(b"channel vi reel")
+        rendered.set()
+        return TemplateResult("Captions ready.", HookSuggestion("ROLL THAT BACK"))
+
+    monkeypatch.setattr(app, "ChatMonitor", FakeChat)
+    monkeypatch.setattr(app, "capture_mp4", capture)
+    monkeypatch.setattr(app, "detect_sound", lambda *_: SoundSignals({}, {}))
+    monkeypatch.setattr(app, "detect_motion", lambda *_: {})
+    monkeypatch.setattr(app, "auto_captions", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        app,
+        "select_clips",
+        lambda *args, **kwargs: [
+            app.Clip(30, 60, ("Story beat",), 10, incomplete=True),
+            app.Clip(0, 20, ("Action sounds",), 9),
+        ],
+    )
+    monkeypatch.setattr(app, "cut_clip", cut)
+    monkeypatch.setattr(app, "render_template", render)
+
+    with TestClient(app.create_app("clix", PASSWORD)) as client:
+        home = client.get("/", auth=AUTH).text
+        token = re.search(r'name="token" value="([^"]+)"', home)[1]
+        assert "Record and make Reels" in home
+        assert '<option value="roll-that-back" selected>' in home
+        reply = client.post(
+            "/record",
+            data={"token": token, "confirm": "yes", "reel_template": "roll-that-back"},
+            auth=AUTH,
+            follow_redirects=False,
+        )
+        assert reply.status_code == 303
+        assert rendered.wait(5)
+
+        manifest_url = reply.headers["location"] + "/manifest"
+        deadline = monotonic() + 3
+        while monotonic() < deadline:
+            manifest = client.get(manifest_url, auth=AUTH).json()
+            if manifest["complete"]:
+                break
+            sleep(0.03)
+        assert manifest["complete"]
+        assert manifest["reel_template"] == "roll-that-back"
+        [clip] = manifest["clips"]
+        assert clip["edit"]["phase"] == "ready"
+        reel_url = clip["edit"]["url"]
+        assert client.get(reel_url + "?inline=true").status_code == 401
+        playback = client.get(
+            reel_url + "?inline=true", headers={"Range": "bytes=0-6"}, auth=AUTH
+        )
+        assert playback.status_code == 206 and playback.content == b"channel"
+        assert playback.headers["content-disposition"].startswith("inline")
+        download = client.get(reel_url, auth=AUTH)
+        assert download.content == b"channel vi reel"
+        assert download.headers["content-disposition"].startswith("attachment")
+
+
 def test_streamlink_and_ffmpeg_create_ten_minute_mp4(tmp_path: Path):
     source = tmp_path / "synthetic"
     source.mkdir()
