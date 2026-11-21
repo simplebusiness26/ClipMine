@@ -71,6 +71,21 @@ async function response(url, options) {
     return result;
 }
 
+async function editStatus(url, connectionMessage) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+        try {
+            return await (await response(url, {
+                cache: "no-store", signal: AbortSignal.timeout(25000)
+            })).json();
+        } catch (error) {
+            if (error.status === 401) throw new Error("Sign in to ClipCast again, then retry this clip.");
+            if (error.status && error.status < 500) throw error;
+            if (attempt === 3) throw new Error(connectionMessage);
+            await delay(2000);
+        }
+    }
+}
+
 const runUrl = id => "/saved/" + encodeURIComponent(id);
 const mediaKey = (run, clip) => run + "/" + clip;
 const exportKey = id => "export/" + id;
@@ -284,18 +299,31 @@ async function clipCard(archive, run, clip, rank) {
             await saveDraft();
             const file = await read(archive, "media", id);
             if (!file) throw new Error("This clip's video is missing from this browser.");
-            const data = new FormData();
-            data.append("token", token);
-            data.append("video", file, "highlight.mp4");
-            for (const [key, value] of Object.entries(draftData())) data.append(key, value);
-            data.append("kind", kind);
+            progress.textContent = "Connecting to the ClipCast recorder…";
+            const session = await editStatus("/saved-edits/session", "Could not reach ClipCast. Try again shortly. Your original is still saved here.");
+            // Small clips use fresh bytes so Safari can upload without a disk-backed form part.
+            const body = file.size <= 24 * 1024 * 1024 ? await file.arrayBuffer() : file;
             progress.textContent = "Sending this clip to ClipCast…";
-            const task = await (await response("/saved-edits", {method: "POST", body: data})).json();
+            let task;
+            try {
+                task = await (await response("/saved-edits/video", {
+                    method: "POST", body,
+                    headers: {
+                        "Content-Type": "video/mp4",
+                        "X-ClipCast-Token": session.token,
+                        "X-ClipCast-Size": String(file.size),
+                        "X-ClipCast-Options": encodeURIComponent(JSON.stringify({...draftData(), kind}))
+                    }
+                })).json();
+            } catch (error) {
+                if (error.status) throw error;
+                throw new Error("The clip upload was interrupted. Your original is still saved here. Tap again to retry.");
+            }
             let state;
             for (;;) {
-                state = await (await response("/saved-edits/" + task.id)).json();
-                if (state.done) break;
                 progress.textContent = kind === "hook" ? "Looking for a hook…" : "Making your ClipCast Reel…";
+                state = await editStatus("/saved-edits/" + task.id, "Lost the connection while ClipCast was working. Your original is still saved here.");
+                if (state.done) break;
                 await delay(2500);
             }
             if (state.error) throw new Error(state.error);

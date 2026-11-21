@@ -16,9 +16,19 @@ from tempfile import TemporaryDirectory
 from threading import Lock, Thread
 from time import monotonic
 from typing import Annotated, BinaryIO
+from urllib.parse import unquote
 from zipfile import BadZipFile
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -27,6 +37,9 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from pydantic import BaseModel, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
+from starlette.requests import ClientDisconnect
 from streamlink import Streamlink
 from streamlink.exceptions import StreamlinkError
 from streamlink.options import Options
@@ -269,6 +282,14 @@ class ArchiveEdit:
     highlight: Highlight
     started_at: float
     kind: str
+
+
+class EditOptions(BaseModel):
+    kind: str
+    hook: str = Field(default="", max_length=HOOK_LIMIT)
+    narration: str = Field(default="", max_length=NARRATION_LIMIT)
+    crop: str = "center"
+    cam: str = "auto"
 
 
 def channels_from_input(names: str) -> list[str]:
@@ -579,6 +600,7 @@ def create_app(
             "saved_runs": "browser",
             "clip_cap_per_run": MAX_CLIPS,
             "batch_progress": "progressive",
+            "reel_upload": "direct",
             "hooks": "clip-aware",
             "previews": "inline",
         }
@@ -855,24 +877,14 @@ def create_app(
             del runs[run.key]
         return Response(status_code=204)
 
-    @app.post("/saved-edits", dependencies=[Depends(authenticate)], status_code=202)
-    def make_saved_edit(
-        video: Annotated[UploadFile, File()],
-        token: str = Form(),
-        kind: str = Form(),
-        hook: str = Form("", max_length=HOOK_LIMIT),
-        narration: str = Form("", max_length=NARRATION_LIMIT),
-        crop: str = Form("center"),
-        cam: str = Form("auto"),
-    ) -> dict:
-        authorize_form(token)
+    def reserve_edit(options: EditOptions, size: int) -> tuple[str, Highlight]:
         if (
-            kind not in {"hook", "reel"}
-            or crop not in CROP
-            or cam not in FACECAM_OPTIONS
+            options.kind not in {"hook", "reel"}
+            or options.crop not in CROP
+            or options.cam not in FACECAM_OPTIONS
         ):
             raise HTTPException(400, "Check your clip options.")
-        if not video.size or video.size > ARCHIVE_EDIT_MAX_BYTES:
+        if not 0 < size <= ARCHIVE_EDIT_MAX_BYTES:
             raise HTTPException(413, "This clip is outside the recorder's size limit.")
         key = secrets.token_hex(8)
         with state:
@@ -892,7 +904,7 @@ def create_app(
                 raise HTTPException(
                     409, "ClipCast is busy with other edits. Try again in a moment."
                 )
-            if disk_usage(work.name).free < video.size + ARCHIVE_EDIT_MAX_BYTES:
+            if disk_usage(work.name).free < size + ARCHIVE_EDIT_MAX_BYTES:
                 raise HTTPException(
                     409,
                     "The recorder is low on working space. Try again after the current run saves.",
@@ -902,29 +914,99 @@ def create_app(
             item = Highlight(
                 Clip(0, 0),
                 folder / "highlight.mp4",
-                phase="hook_queued" if kind == "hook" else "queued",
-                hook=" ".join(hook.split()),
+                phase="hook_queued" if options.kind == "hook" else "queued",
+                hook=" ".join(options.hook.split()),
                 narration="\n".join(
-                    " ".join(line.split()) for line in narration.splitlines()
+                    " ".join(line.split()) for line in options.narration.splitlines()
                 ).strip(),
-                crop=crop,
-                cam=cam,
+                crop=options.crop,
+                cam=options.cam,
             )
-            edits[key] = ArchiveEdit(item, monotonic(), kind)
+            edits[key] = ArchiveEdit(item, monotonic(), options.kind)
+        return key, item
+
+    def discard_edit(key: str, item: Highlight) -> None:
+        with state:
+            edits.pop(key, None)
+        rmtree(item.path.parent, ignore_errors=True)
+
+    def start_edit(kind: str, item: Highlight) -> None:
         try:
-            with item.path.open("wb") as output:
-                copyfileobj(video.file, output, length=256 * 1024)
             probe_clip(item.path)
         except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-            with state:
-                del edits[key]
-                rmtree(folder, ignore_errors=True)
             raise HTTPException(
                 400, "This file is not a playable highlight."
             ) from error
         target = run_hook if kind == "hook" else run_template
         args = (item,) if kind == "hook" else (item, template_path(item))
         Thread(target=target, args=args, daemon=True).start()
+
+    @app.get("/saved-edits/session", dependencies=[Depends(authenticate)])
+    def saved_edit_session(response: Response) -> dict[str, str]:
+        response.headers["Cache-Control"] = "private, no-store"
+        return {"token": csrf}
+
+    @app.post(
+        "/saved-edits/video", dependencies=[Depends(authenticate)], status_code=202
+    )
+    async def upload_saved_edit(
+        request: Request,
+        x_clipcast_token: Annotated[str, Header()],
+        x_clipcast_options: Annotated[str, Header(max_length=8192)],
+        x_clipcast_size: Annotated[int, Header()],
+    ) -> dict:
+        authorize_form(x_clipcast_token)
+        try:
+            options = EditOptions.model_validate_json(unquote(x_clipcast_options))
+        except ValidationError as error:
+            raise HTTPException(400, "Check your clip options.") from error
+        key, item = reserve_edit(options, x_clipcast_size)
+        started = False
+        try:
+            received = 0
+            with item.path.open("wb") as output:
+                async for chunk in request.stream():
+                    received += len(chunk)
+                    if received > x_clipcast_size:
+                        raise HTTPException(400, "The clip upload size did not match.")
+                    output.write(chunk)
+            if received != x_clipcast_size:
+                raise HTTPException(
+                    400, "The clip upload came through incomplete. Try again."
+                )
+            await run_in_threadpool(start_edit, options.kind, item)
+            started = True
+        except ClientDisconnect as error:
+            raise HTTPException(
+                400, "The clip upload was interrupted. Try again."
+            ) from error
+        finally:
+            if not started:
+                discard_edit(key, item)
+        return {"id": key}
+
+    @app.post("/saved-edits", dependencies=[Depends(authenticate)], status_code=202)
+    def make_saved_edit(
+        video: Annotated[UploadFile, File()],
+        token: str = Form(),
+        kind: str = Form(),
+        hook: str = Form("", max_length=HOOK_LIMIT),
+        narration: str = Form("", max_length=NARRATION_LIMIT),
+        crop: str = Form("center"),
+        cam: str = Form("auto"),
+    ) -> dict:
+        authorize_form(token)
+        options = EditOptions(
+            kind=kind, hook=hook, narration=narration, crop=crop, cam=cam
+        )
+        key, item = reserve_edit(options, video.size or 0)
+        try:
+            with item.path.open("wb") as output:
+                copyfileobj(video.file, output, length=256 * 1024)
+            start_edit(kind, item)
+        except (HTTPException, OSError):
+            discard_edit(key, item)
+            raise
         return {"id": key}
 
     def get_saved_edit(key: str) -> ArchiveEdit:

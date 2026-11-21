@@ -1,3 +1,4 @@
+import json
 import re
 import subprocess
 from collections import Counter
@@ -6,6 +7,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Event, Thread
 from time import monotonic, sleep
+from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
@@ -174,6 +176,33 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
             data=form,
             files={"video": ("highlight.mp4", original)},
             auth=AUTH,
+        )
+        assert reply.status_code == 202
+        edit = "/saved-edits/" + reply.json()["id"]
+        deadline = monotonic() + 3
+        while monotonic() < deadline:
+            if client.get(edit, auth=AUTH).json()["done"]:
+                break
+            sleep(0.03)
+        assert client.get(edit + "/video", auth=AUTH).content == b"branded clip"
+
+        session = client.get("/saved-edits/session", auth=AUTH)
+        assert session.headers["Cache-Control"] == "private, no-store"
+        assert session.json()["token"] == token
+        options = {key: value for key, value in form.items() if key != "token"}
+        headers = {
+            "Content-Type": "video/mp4",
+            "X-ClipCast-Token": token,
+            "X-ClipCast-Options": quote(json.dumps(options)),
+            "X-ClipCast-Size": str(len(original)),
+        }
+        for _ in range(3):
+            incomplete = client.post(
+                "/saved-edits/video", content=original[:-1], headers=headers, auth=AUTH
+            )
+            assert incomplete.status_code == 400
+        reply = client.post(
+            "/saved-edits/video", content=original, headers=headers, auth=AUTH
         )
         assert reply.status_code == 202
         edit = "/saved-edits/" + reply.json()["id"]
