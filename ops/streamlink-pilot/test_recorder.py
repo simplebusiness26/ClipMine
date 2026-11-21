@@ -213,6 +213,47 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
             sleep(0.03)
         assert client.get(edit + "/video", auth=AUTH).content == b"branded clip"
 
+        chunk_size = 4
+        monkeypatch.setattr(app, "ARCHIVE_CHUNK_BYTES", chunk_size)
+        upload = "/saved-edits/uploads/" + "a" * 32
+        token_header = {"X-ClipCast-Token": token}
+        begin = client.put(
+            upload,
+            json={**options, "size": len(original)},
+            headers=token_header,
+            auth=AUTH,
+        )
+        assert begin.json() == {"chunk_bytes": chunk_size, "received": 0}
+        assert (
+            client.post(upload + "/finish", headers=token_header, auth=AUTH).status_code
+            == 409
+        )
+        for offset in range(0, len(original), chunk_size):
+            part_url = f"{upload}/parts/{offset}"
+            data = original[offset : offset + chunk_size]
+            for _ in range(2):
+                part = client.put(
+                    part_url, content=data, headers=token_header, auth=AUTH
+                )
+                assert part.json() == {"received": offset + len(data)}
+        resume = client.put(
+            upload,
+            json={**options, "size": len(original)},
+            headers=token_header,
+            auth=AUTH,
+        )
+        assert resume.json()["received"] == len(original)
+        for _ in range(2):
+            reply = client.post(upload + "/finish", headers=token_header, auth=AUTH)
+            assert reply.status_code == 202
+        edit = "/saved-edits/" + reply.json()["id"]
+        deadline = monotonic() + 3
+        while monotonic() < deadline:
+            if client.get(edit, auth=AUTH).json()["done"]:
+                break
+            sleep(0.03)
+        assert client.get(edit + "/video", auth=AUTH).content == b"branded clip"
+
 
 def test_streamlink_and_ffmpeg_create_ten_minute_mp4(tmp_path: Path):
     source = tmp_path / "synthetic"

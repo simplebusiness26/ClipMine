@@ -238,7 +238,15 @@ HANDLE = re.compile(r"[a-z0-9_]{3,25}", re.ASCII)
 BUSY = {"capturing", "queued", "analysing", "ranked", "cutting"}
 ARCHIVE_EDIT_MAX_BYTES = 192 * MIB
 ARCHIVE_EDIT_MAX_JOBS = 3
-TEMPLATE_BUSY = {"queued", "rendering", "hook_queued", "suggesting"}
+ARCHIVE_CHUNK_BYTES = 512 * 1024
+TEMPLATE_BUSY = {
+    "uploading",
+    "verifying",
+    "queued",
+    "rendering",
+    "hook_queued",
+    "suggesting",
+}
 
 
 @dataclass
@@ -280,8 +288,10 @@ class Run:
 @dataclass
 class ArchiveEdit:
     highlight: Highlight
-    started_at: float
+    updated_at: float
     kind: str
+    size: int
+    received: int = 0
 
 
 class EditOptions(BaseModel):
@@ -290,6 +300,10 @@ class EditOptions(BaseModel):
     narration: str = Field(default="", max_length=NARRATION_LIMIT)
     crop: str = "center"
     cam: str = "auto"
+
+
+class UploadOptions(EditOptions):
+    size: int
 
 
 def channels_from_input(names: str) -> list[str]:
@@ -600,7 +614,7 @@ def create_app(
             "saved_runs": "browser",
             "clip_cap_per_run": MAX_CLIPS,
             "batch_progress": "progressive",
-            "reel_upload": "direct",
+            "reel_upload": "chunked",
             "hooks": "clip-aware",
             "previews": "inline",
         }
@@ -877,7 +891,9 @@ def create_app(
             del runs[run.key]
         return Response(status_code=204)
 
-    def reserve_edit(options: EditOptions, size: int) -> tuple[str, Highlight]:
+    def reserve_edit(
+        options: EditOptions, size: int, upload_id: str | None = None
+    ) -> tuple[str, Highlight]:
         if (
             options.kind not in {"hook", "reel"}
             or options.crop not in CROP
@@ -886,17 +902,28 @@ def create_app(
             raise HTTPException(400, "Check your clip options.")
         if not 0 < size <= ARCHIVE_EDIT_MAX_BYTES:
             raise HTTPException(413, "This clip is outside the recorder's size limit.")
-        key = secrets.token_hex(8)
+        key = upload_id or secrets.token_hex(8)
         with state:
+            now = monotonic()
             expired = [
                 name
                 for name, edit in edits.items()
-                if edit.highlight.phase not in TEMPLATE_BUSY
-                and monotonic() - edit.started_at > 1800
+                if (edit.highlight.phase == "uploading" and now - edit.updated_at > 180)
+                or (
+                    edit.highlight.phase not in TEMPLATE_BUSY
+                    and now - edit.updated_at > 1800
+                )
             ]
             for name in expired:
                 rmtree(edits[name].highlight.path.parent, ignore_errors=True)
                 del edits[name]
+            if upload_id and key in edits:
+                existing = edits[key]
+                if existing.size != size or existing.kind != options.kind:
+                    raise HTTPException(409, "Start a new upload for this clip.")
+                if existing.highlight.phase == "uploading":
+                    existing.updated_at = now
+                return key, existing.highlight
             if (
                 sum(edit.highlight.phase in TEMPLATE_BUSY for edit in edits.values())
                 >= ARCHIVE_EDIT_MAX_JOBS
@@ -922,7 +949,9 @@ def create_app(
                 crop=options.crop,
                 cam=options.cam,
             )
-            edits[key] = ArchiveEdit(item, monotonic(), options.kind)
+            if upload_id:
+                item.phase = "uploading"
+            edits[key] = ArchiveEdit(item, now, options.kind, size)
         return key, item
 
     def discard_edit(key: str, item: Highlight) -> None:
@@ -939,12 +968,92 @@ def create_app(
             ) from error
         target = run_hook if kind == "hook" else run_template
         args = (item,) if kind == "hook" else (item, template_path(item))
+        with state:
+            item.phase = "hook_queued" if kind == "hook" else "queued"
         Thread(target=target, args=args, daemon=True).start()
 
     @app.get("/saved-edits/session", dependencies=[Depends(authenticate)])
     def saved_edit_session(response: Response) -> dict[str, str]:
         response.headers["Cache-Control"] = "private, no-store"
         return {"token": csrf}
+
+    @app.put("/saved-edits/uploads/{key}", dependencies=[Depends(authenticate)])
+    def begin_upload(
+        key: str, options: UploadOptions, x_clipcast_token: Annotated[str, Header()]
+    ) -> dict[str, int]:
+        authorize_form(x_clipcast_token)
+        if not re.fullmatch(r"[a-f0-9]{32}", key):
+            raise HTTPException(400, "Invalid upload reference.")
+        reserve_edit(options, options.size, upload_id=key)
+        with state:
+            edit = get_saved_edit(key)
+            return {"chunk_bytes": ARCHIVE_CHUNK_BYTES, "received": edit.received}
+
+    @app.put(
+        "/saved-edits/uploads/{key}/parts/{offset}",
+        dependencies=[Depends(authenticate)],
+    )
+    async def put_upload_part(
+        key: str,
+        offset: int,
+        request: Request,
+        x_clipcast_token: Annotated[str, Header()],
+    ) -> dict[str, int]:
+        authorize_form(x_clipcast_token)
+        with state:
+            edit = get_saved_edit(key)
+            if (
+                edit.highlight.phase != "uploading"
+                or not 0 <= offset < edit.size
+                or offset % ARCHIVE_CHUNK_BYTES
+            ):
+                raise HTTPException(409, "This upload part is out of order.")
+            length = min(ARCHIVE_CHUNK_BYTES, edit.size - offset)
+        part = bytearray()
+        try:
+            async for chunk in request.stream():
+                if len(part) + len(chunk) > length:
+                    raise HTTPException(400, "The upload part was too large.")
+                part.extend(chunk)
+        except ClientDisconnect as error:
+            raise HTTPException(400, "The upload part was interrupted.") from error
+        if len(part) != length:
+            raise HTTPException(400, "The upload part was incomplete.")
+        with state:
+            edit = get_saved_edit(key)
+            if edit.highlight.phase != "uploading" or offset > edit.received:
+                raise HTTPException(409, "This upload part is out of order.")
+            if edit.received == offset:
+                path = edit.highlight.path
+                with path.open("r+b" if path.exists() else "wb") as output:
+                    output.seek(offset)
+                    output.write(part)
+                edit.received += length
+            edit.updated_at = monotonic()
+            return {"received": edit.received}
+
+    @app.post(
+        "/saved-edits/uploads/{key}/finish",
+        dependencies=[Depends(authenticate)],
+        status_code=202,
+    )
+    def finish_upload(
+        key: str, x_clipcast_token: Annotated[str, Header()]
+    ) -> dict[str, str]:
+        authorize_form(x_clipcast_token)
+        with state:
+            edit = get_saved_edit(key)
+            if edit.received != edit.size:
+                raise HTTPException(409, "The clip upload is still incomplete.")
+            if edit.highlight.phase != "uploading":
+                return {"id": key}
+            edit.highlight.phase = "verifying"
+        try:
+            start_edit(edit.kind, edit.highlight)
+        except (HTTPException, OSError):
+            discard_edit(key, edit.highlight)
+            raise
+        return {"id": key}
 
     @app.post(
         "/saved-edits/video", dependencies=[Depends(authenticate)], status_code=202
@@ -1024,6 +1133,7 @@ def create_app(
             item = edit.highlight
             return {
                 "done": item.phase not in TEMPLATE_BUSY,
+                "phase": item.phase,
                 "error": "The Reel could not be made. Try again."
                 if item.phase == "failed"
                 else "",
