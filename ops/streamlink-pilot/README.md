@@ -2,6 +2,13 @@
 
 ## Deploy from a phone
 
+For a new dedicated campaign recorder, use the `clipcast-lacy` branch or a
+branch based on it. Set `TWITCH_CHANNEL` and `CLIPCAST_CAMPAIGN` on a separate
+Render service and share its main URL. Dedicated campaign recorders open
+without a login. Anyone with the URL can access clips and operate the recorder.
+
+For the general recorder with restricted access:
+
 1. In Render, tap **+ → Blueprint** and connect the ClipMine GitHub repository.
 2. Choose branch `clipcast-streamlink-pilot` and Blueprint Path `ops/streamlink-pilot/render.yaml`.
 3. Enter a default Twitch username in `TWITCH_CHANNEL`. Confirm that
@@ -9,7 +16,7 @@
 4. Open the service's **Environment** tab for the generated `RECORDER_PASSWORD`.
    Visit the service URL and sign in as `recorder` with that password.
 
-For a passwordless worker, generate a private key with `secrets.token_urlsafe(32)`
+For a general recorder with private link access, generate a private key with `secrets.token_urlsafe(32)`
 and set `RECORDER_ACCESS_LINK_HASH` in the service environment to the lowercase
 SHA-256 hex digest of that key. Share `https://YOUR-HOST/open#YOUR-KEY` privately
 with the operator. Opening it sets an HTTPS-only session cookie. The link can be
@@ -65,7 +72,7 @@ For campaign work, expand **Campaign brief and clip length** and enter the
 name and brief. If the campaign has a duration limit, enter it in seconds.
 ClipCast checks the cut media's actual duration before queuing a highlight.
 The brief is attached to each window, even when you switch campaigns after
-the current capture closes. It stays on the private recorder. Review the other
+the current capture closes. Review the other
 rules against the finished export. The current portrait render is 720 × 1280.
 
 To dedicate an instance to a single campaign, set its `TWITCH_CHANNEL` to one
@@ -79,7 +86,7 @@ The duration bounds are optional. The worker displays the configured brief
 read-only and rejects other accounts, other briefs and batch recording. Each
 new capture uses the configured brief, including after an app restart. To run
 another campaign at the same time, deploy another instance with its own
-`TWITCH_CHANNEL`, `CLIPCAST_CAMPAIGN` and password. The lock does not resume a
+`TWITCH_CHANNEL` and `CLIPCAST_CAMPAIGN`. The lock does not resume a
 capture after a host restart.
 
 Optional `required_category` checks the Twitch game category at both ends of

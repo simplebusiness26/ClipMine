@@ -230,7 +230,8 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_distinct_highlight
 
 def test_campaign_configuration_locks_one_worker_to_its_stream_and_brief(monkeypatch):
     monkeypatch.setenv("TWITCH_CHANNEL", "clix")
-    monkeypatch.setenv("RECORDER_PASSWORD", PASSWORD)
+    monkeypatch.delenv("RECORDER_PASSWORD", raising=False)
+    monkeypatch.delenv("RECORDER_ACCESS_LINK_HASH", raising=False)
     profile = {"name": "First Campaign", "brief": "Keep the dialogue.", "min_seconds": 30}
     monkeypatch.setenv("CLIPCAST_CAMPAIGN", json.dumps(profile))
     first = app.create_render_app()
@@ -242,7 +243,9 @@ def test_campaign_configuration_locks_one_worker_to_its_stream_and_brief(monkeyp
         health = client.get("/healthz").json()
         assert health["capture_slots"] == 1
         assert health["campaign_lock"] == "enabled"
-        home = client.get("/", auth=AUTH).text
+        response = client.get("/")
+        assert response.status_code == 200
+        home = response.text
         assert "Locked campaign" in home and "Keep the dialogue." in home
         assert "Record and find clips" not in home
         token = re.search(r'name="token" value="([^"]+)"', home)[1]
