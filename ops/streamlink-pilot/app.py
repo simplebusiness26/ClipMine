@@ -47,8 +47,10 @@ from streamlink.options import Options
 from clipcast_template.facecam import FACECAM_OPTIONS
 from clipcast_template.render import (
     CROP,
+    DEFAULT_TEMPLATE,
     HOOK_LIMIT,
     NARRATION_LIMIT,
+    REEL_TEMPLATES,
     auto_captions,
     probe_clip,
     render_template,
@@ -260,6 +262,7 @@ class Highlight:
     crop: str = "center"
     caption_status: str = ""
     cam: str = "auto"
+    template: str = DEFAULT_TEMPLATE
     edit_request: str = ""
     edit_kind: str = ""
     edit_revision: int = 0
@@ -304,6 +307,7 @@ class EditOptions(BaseModel):
     narration: str = Field(default="", max_length=NARRATION_LIMIT)
     crop: str = "center"
     cam: str = "auto"
+    template: str = DEFAULT_TEMPLATE
 
 
 class UploadOptions(EditOptions):
@@ -544,6 +548,7 @@ def create_app(
                     highlight.narration,
                     highlight.crop,
                     highlight.cam,
+                    highlight.template,
                 )
                 candidate.replace(output)
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
@@ -553,7 +558,7 @@ def create_app(
         with state:
             if phase == "ready":
                 highlight.caption_status = result.caption_status
-                if not highlight.hook:
+                if not highlight.hook and highlight.template == DEFAULT_TEMPLATE:
                     highlight.hook = result.hook.text
                     highlight.hook_status = (
                         f"Hook suggested from {result.hook.source}."
@@ -618,7 +623,8 @@ def create_app(
             "mode": "highlights",
             "quality_options": "hd",
             "capture_slots": MAX_ACTIVE,
-            "template": "gameplay-first",
+            "template": DEFAULT_TEMPLATE,
+            "channel_vi_templates": len(REEL_TEMPLATES) - 1,
             "saved_runs": "browser",
             "background_review": "server",
             "clip_cap_per_run": MAX_CLIPS,
@@ -791,10 +797,13 @@ def create_app(
         hook: str = Form("", max_length=HOOK_LIMIT),
         narration: str = Form("", max_length=NARRATION_LIMIT),
         crop: str = Form("center"),
+        template: str = Form(DEFAULT_TEMPLATE),
     ):
         authorize_form(token)
         if crop not in CROP:
             return show_home("Choose left, centre or right framing.", 400)
+        if template not in REEL_TEMPLATES:
+            return show_home("Choose an available Reel template.", 400)
         with state:
             job = get_job(key)
             item = get_highlight(job, rank)
@@ -807,6 +816,7 @@ def create_app(
                     " ".join(line.split()) for line in narration.splitlines()
                 ).strip()
                 item.crop = crop
+                item.template = template
                 item.edit_kind = "reel"
                 item.edit_revision += 1
                 item.phase = "queued"
@@ -890,6 +900,7 @@ def create_app(
             ).strip()
             item.crop = options.crop
             item.cam = options.cam
+            item.template = options.template
             queue_edit(options.kind, item)
             return run_edit_status(item, base)
 
@@ -1001,6 +1012,7 @@ def create_app(
             options.kind not in {"hook", "reel"}
             or options.crop not in CROP
             or options.cam not in FACECAM_OPTIONS
+            or options.template not in REEL_TEMPLATES
         ):
             raise HTTPException(400, "Check your clip options.")
 
@@ -1062,6 +1074,7 @@ def create_app(
                 ).strip(),
                 crop=options.crop,
                 cam=options.cam,
+                template=options.template,
             )
             if upload_id:
                 item.phase = "uploading"
@@ -1220,10 +1233,16 @@ def create_app(
         narration: str = Form("", max_length=NARRATION_LIMIT),
         crop: str = Form("center"),
         cam: str = Form("auto"),
+        template: str = Form(DEFAULT_TEMPLATE),
     ) -> dict:
         authorize_form(token)
         options = EditOptions(
-            kind=kind, hook=hook, narration=narration, crop=crop, cam=cam
+            kind=kind,
+            hook=hook,
+            narration=narration,
+            crop=crop,
+            cam=cam,
+            template=template,
         )
         key, item = reserve_edit(options, video.size or 0)
         try:

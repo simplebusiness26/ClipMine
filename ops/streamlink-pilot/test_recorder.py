@@ -56,7 +56,7 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
             app.Clip(n * 40, n * 40 + 20, ("Action sounds",), 9 - n) for n in range(8)
         ]
 
-    def finish_template(source, output, hook, narration, crop, cam):
+    def finish_template(source, output, hook, narration, crop, cam, template):
         assert source.read_bytes().endswith(b" highlight")
         assert (hook, narration, crop, cam) == (
             "ROLL THAT BACK",
@@ -64,6 +64,7 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
             "right",
             "top-left",
         )
+        assert template == "it-was-going-well"
         rendering.set()
         assert release_render.wait(5)
         output.write_bytes(b"branded clip")
@@ -161,9 +162,19 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
             "narration": "Four bikes.",
             "crop": "right",
             "cam": "top-left",
+            "template": "it-was-going-well",
             "request_id": "a" * 32,
         }
         assert client.get(edit_url).status_code == 401
+        assert (
+            client.post(
+                edit_url,
+                json={**options, "template": "../unknown"},
+                headers={"X-ClipCast-Token": token},
+                auth=AUTH,
+            ).status_code
+            == 400
+        )
         assert (
             client.post(
                 edit_url,
@@ -254,6 +265,7 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
     with TestClient(app.create_app("clix", PASSWORD)) as client:
         review = client.get(f"/saved/{batch}", auth=AUTH)
         assert 'data-view="review"' in review.text and "setInterval" not in review.text
+        assert "Channel VI · It Was Going Well" in review.text
         token = re.search(r'data-token="([^"]+)"', review.text)[1]
         form = {
             "token": token,
@@ -262,6 +274,7 @@ def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
             "narration": "Four bikes.",
             "crop": "right",
             "cam": "top-left",
+            "template": "it-was-going-well",
         }
         reply = client.post(
             "/saved-edits",

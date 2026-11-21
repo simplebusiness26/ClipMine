@@ -5,6 +5,8 @@ const statusLine = document.querySelector("#status");
 const content = document.querySelector("#content");
 const runId = root.dataset.run;
 const token = root.dataset.token;
+const reelTemplates = JSON.parse(root.dataset.templates);
+const defaultTemplate = reelTemplates[0][0];
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
 function openArchive() {
@@ -280,6 +282,7 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
     const narration = node("textarea");
     narration.rows = 2;
     narration.maxLength = 110;
+    const template = select(reelTemplates);
     const crop = select([["center", "Centre"], ["left", "Left"], ["right", "Right"]]);
     const cam = select([
         ["auto", "Detect facecam"], ["off", "Gameplay only"],
@@ -287,11 +290,15 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
         ["bottom-left", "Bottom left"], ["bottom-right", "Bottom right"]
     ]);
     const draft = await read(archive, "drafts", id);
+    template.value = draft?.template || defaultTemplate;
+    if (!template.value) template.value = defaultTemplate;
     hook.value = draft?.hook || clip.edit?.hook || "";
     narration.value = draft?.narration || "";
     crop.value = draft?.crop || "center";
     cam.value = draft?.cam || "auto";
-    const draftData = () => ({hook: hook.value, narration: narration.value, crop: crop.value, cam: cam.value});
+    const draftData = () => ({
+        hook: hook.value, narration: narration.value, crop: crop.value, cam: cam.value, template: template.value
+    });
 
     const progress = node("p", "", "muted");
     progress.setAttribute("role", "status");
@@ -301,7 +308,7 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
         draftWrites = draftWrites.catch(() => {}).then(() => write(archive, "drafts", snapshot, id));
         return draftWrites;
     }
-    for (const control of [hook, narration, crop, cam]) {
+    for (const control of [hook, narration, crop, cam, template]) {
         control.addEventListener("input", () => {
             void saveDraft().catch(() => { progress.textContent = "The draft could not be saved on this device."; });
         });
@@ -312,6 +319,11 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
     const suggest = node("button", "Suggest hook first", "secondary");
     const render = node("button", "Make ClipCast version");
     suggest.type = render.type = "button";
+    const hookField = field("Top hook", hook);
+    function showHookControls() {
+        hookField.hidden = suggest.hidden = template.value !== defaultTemplate;
+    }
+    template.addEventListener("change", showHookControls);
     const downloads = node("div");
     const filename = clip.channel + "-clipcast-" + rank + ".mp4";
     function showDirectDownload(url) {
@@ -327,6 +339,12 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
     const previousTask = clip.edit_url ? null : await read(archive, "drafts", reelTaskKey(id));
 
     let pendingUpload = clip.edit_url ? null : await read(archive, "drafts", uploadTaskKey(id));
+    if (pendingUpload?.kind === "reel") {
+        template.value = JSON.parse(pendingUpload.options).template || defaultTemplate;
+        if (!template.value) template.value = defaultTemplate;
+        template.disabled = true;
+    }
+    showHookControls();
     let working = false;
     async function uploadClip(file, kind, resume) {
         const options = resume ? pendingUpload.options : JSON.stringify({...draftData(), kind, size: file.size});
@@ -364,7 +382,7 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
     async function processClip(kind, resumeTask, resumeUpload = false) {
         if (working) return;
         working = true;
-        suggest.disabled = render.disabled = true;
+        suggest.disabled = render.disabled = template.disabled = true;
         try {
             let statusUrl = clip.edit_url;
             if (!resumeTask) {
@@ -447,13 +465,14 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
         } finally {
             working = false;
             suggest.disabled = render.disabled = false;
+            template.disabled = pendingUpload?.kind === "reel";
             suggest.textContent = pendingUpload?.kind === "hook" ? "Resume hook upload" : "Suggest hook first";
             render.textContent = pendingUpload?.kind === "reel" ? "Resume Reel upload" : "Make ClipCast version";
         }
     }
     suggest.onclick = () => processClip("hook", null, pendingUpload?.kind === "hook");
     render.onclick = () => processClip("reel", null, pendingUpload?.kind === "reel");
-    card.append(previewButton, video, field("Top hook", hook), suggest, settings, render, progress, downloads);
+    card.append(previewButton, video, field("Reel template", template), hookField, suggest, settings, render, progress, downloads);
     function resumePhoneUpload() {
         if (!document.hidden && pendingUpload && !working) {
             void processClip(pendingUpload.kind, null, true);

@@ -28,6 +28,9 @@
 4. The Gameplay First template uses a slim top camera strip when a steady corner
    facecam is detected. The gameplay fills the rest of the frame, with Scoop
    standing at the bottom right and making one brief wink and head tilt.
+   Under **Reel template**, choose **It Was Going Well**, **Roll That Back** or
+   **Scoop Was There** for a Channel VI design with a fixed headline and Scoop
+   artwork. The selected template is saved with the clip draft.
    Under **Captions and framing**, choose the facecam corner manually or turn
    the camera off, reposition the gameplay crop, or type written narration.
 5. Download the finished 720 × 1280 Reel. **Save run to this device** copies
