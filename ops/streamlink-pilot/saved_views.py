@@ -40,7 +40,7 @@ def saved_page(view: str, token: str, batch: str = "") -> HTMLResponse:
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f"<title>{title} · ClipCast</title><style>{STYLE}</style>"
-        '<script src="/saved-clips.js" defer></script></head>'
+        '<script src="/saved-clips.js?v=2" defer></script></head>'
         f'<body><main data-view="{view}" data-run="{html.escape(batch, quote=True)}" '
         f'data-token="{html.escape(token, quote=True)}">'
         '<nav><a href="/" class="secondary">New recording</a>'

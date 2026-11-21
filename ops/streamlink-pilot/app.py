@@ -238,7 +238,7 @@ HANDLE = re.compile(r"[a-z0-9_]{3,25}", re.ASCII)
 BUSY = {"capturing", "queued", "analysing", "ranked", "cutting"}
 ARCHIVE_EDIT_MAX_BYTES = 192 * MIB
 ARCHIVE_EDIT_MAX_JOBS = 3
-ARCHIVE_CHUNK_BYTES = 512 * 1024
+ARCHIVE_CHUNK_BYTES = 2 * MIB
 TEMPLATE_BUSY = {
     "uploading",
     "verifying",
@@ -286,6 +286,7 @@ class Run:
     created_at: str
     jobs: list[str] = field(default_factory=list)
     finalizing: bool = False
+    saved_revision: str | None = None
 
 
 @dataclass
@@ -623,6 +624,8 @@ def create_app(
             "clip_cap_per_run": MAX_CLIPS,
             "batch_progress": "progressive",
             "reel_upload": "chunked",
+            "phone_upload_resume": "enabled",
+            "saved_copy_retention": "until_space_needed",
             "reel_download": "direct",
             "hooks": "clip-aware",
             "previews": "inline",
@@ -728,11 +731,15 @@ def create_app(
                 error_message = (
                     "Five recordings can run at a time. Try again when a slot is free."
                 )
-            elif len(requested) + len(jobs) > MAX_RUNS:
-                error_message = "Download and clear a finished recording to make room."
-            elif disk_usage(work.name).free < needed:
-                error_message = "There is not enough temporary storage. Save and clear an older recording."
             else:
+                reclaim_saved_runs(len(requested), needed)
+                if len(requested) + len(jobs) > MAX_RUNS:
+                    error_message = (
+                        "Save an older finished run to this device to make room."
+                    )
+                elif disk_usage(work.name).free < needed:
+                    error_message = "The recorder is low on space. Save an older finished run to this device."
+            if not error_message:
                 selected_channels, selected_quality = requested, quality
                 run_key = secrets.token_hex(8)
                 run = Run(run_key, datetime.now(UTC).isoformat())
@@ -824,6 +831,28 @@ def create_app(
             for item in job.highlights
         )
 
+    def run_is_busy(batch: list[Recording]) -> bool:
+        return any(
+            job.phase in BUSY
+            or any(clip.phase in TEMPLATE_BUSY for clip in job.highlights)
+            for job in batch
+        )
+
+    def reclaim_saved_runs(incoming: int, needed: int) -> None:
+        for run in list(runs.values()):
+            if (
+                len(jobs) + incoming <= MAX_RUNS
+                and disk_usage(work.name).free >= needed
+            ):
+                return
+            batch = [jobs[key] for key in run.jobs if key in jobs]
+            if run_is_busy(batch) or run.saved_revision != run_revision(batch):
+                continue
+            for job in batch:
+                rmtree(job.path.parent)
+                del jobs[job.key]
+            del runs[run.key]
+
     def run_edit_status(item: Highlight, base: str) -> dict:
         return {
             **edit_status(item),
@@ -875,7 +904,7 @@ def create_app(
         return FileResponse(
             SCRIPT,
             media_type="text/javascript",
-            headers={"Cache-Control": "private, no-cache"},
+            headers={"Cache-Control": "private, no-store"},
         )
 
     @app.get("/saved", dependencies=[Depends(authenticate)])
@@ -935,6 +964,7 @@ def create_app(
                 "created_at": run.created_at,
                 "complete": complete,
                 "revision": run_revision(batch),
+                "saved_revision": run.saved_revision,
                 "clips": clips,
                 "channels": [
                     {"name": job.channel, "status": job.detail or statuses[job.phase]}
@@ -950,18 +980,20 @@ def create_app(
         with state:
             run = get_run(key)
             batch = [jobs[job] for job in run.jobs if job in jobs]
-            if any(
-                job.phase in BUSY
-                or any(clip.phase in TEMPLATE_BUSY for clip in job.highlights)
-                for job in batch
-            ):
+            if run_is_busy(batch):
                 raise HTTPException(409, "This run is still processing.")
-            if revision is not None and revision != run_revision(batch):
+            current_revision = run_revision(batch)
+            if revision is not None and revision != current_revision:
                 raise HTTPException(409, "This run has a newer edit. Save it again.")
-            for job in batch:
-                rmtree(job.path.parent)
-                del jobs[job.key]
-            del runs[run.key]
+            run.saved_revision = current_revision
+        return Response(status_code=204)
+
+    @app.post("/runs/{key}/saved/forget", dependencies=[Depends(authenticate)])
+    def forget_saved(key: str, token: str = Form()) -> Response:
+        authorize_form(token)
+        with state:
+            if key in runs:
+                runs[key].saved_revision = None
         return Response(status_code=204)
 
     def validate_options(options: EditOptions) -> None:
@@ -984,10 +1016,16 @@ def create_app(
             expired = [
                 name
                 for name, edit in edits.items()
-                if (edit.highlight.phase == "uploading" and now - edit.updated_at > 180)
-                or (
-                    edit.highlight.phase not in TEMPLATE_BUSY
-                    and now - edit.updated_at > 1800
+                if name != key
+                and (
+                    (
+                        edit.highlight.phase == "uploading"
+                        and now - edit.updated_at > 180
+                    )
+                    or (
+                        edit.highlight.phase not in TEMPLATE_BUSY
+                        and now - edit.updated_at > 1800
+                    )
                 )
             ]
             for name in expired:
@@ -1095,9 +1133,9 @@ def create_app(
                     raise HTTPException(400, "The upload part was too large.")
                 part.extend(chunk)
         except ClientDisconnect as error:
-            raise HTTPException(400, "The upload part was interrupted.") from error
+            raise HTTPException(408, "The upload part was interrupted.") from error
         if len(part) != length:
-            raise HTTPException(400, "The upload part was incomplete.")
+            raise HTTPException(408, "The upload part was incomplete.")
         with state:
             edit = get_saved_edit(key)
             if edit.highlight.phase != "uploading" or offset > edit.received:

@@ -31,8 +31,9 @@
    Under **Captions and framing**, choose the facecam corner manually or turn
    the camera off, reposition the gameplay crop, or type written narration.
 5. Download the finished 720 × 1280 Reel. **Save run to this device** copies
-   the originals and any finished Reels to **Saved clips** in the current browser
-   and frees the recorder's space. Keep the page open during that optional transfer.
+   the originals and any finished Reels to **Saved clips** in the current browser.
+   The recorder can still use its copy for edits. Keep the page open during the
+   optional transfer.
 
 [Render dashboard](https://dashboard.render.com/) · [Render free compute limits](https://render.com/docs/free)
 
@@ -42,13 +43,17 @@ The archive stores clip files, run details, drafts, and Reel files in the active
 browser's IndexedDB. Saved runs can be reopened after a page reload or recorder
 restart on that browser. Clearing site data, private browsing or browser storage
 eviction can remove that device's copies. Save important finished Reels
-separately. **Delete this saved run** frees storage for additional runs.
-Capture files on the server are temporary. Render Free can spin down after 15
+separately. **Delete copy on this device** clears that browser's copy.
+Capture files on the server are temporary. The recorder reclaims older copies
+when a new run needs space, prioritising runs saved to the device with their
+latest edits. Render Free can spin down after 15
 minutes without incoming traffic, and its temporary files and jobs are lost on
 spin-down, restart, or redeploy. A recording or Reel continues with the tab closed
 while the recorder stays running. Save important media before it expires.
-For a run saved only in the browser, starting a hook or Reel requires uploading
-that clip again. Once the upload is complete, processing runs on the recorder.
+For a run saved only in the browser, starting a hook or Reel requires sending
+that clip to the recorder. Mobile browsers can pause this upload when the page
+is closed or hidden. Reopen the clip to resume from the last received part if
+the recorder still has it. Once it is queued, processing runs on the recorder.
 
 Five channels can capture in parallel with independent HLS buffers. Footage
 analysis, cut creation, hook checks and branded exports are serialised on the

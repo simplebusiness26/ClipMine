@@ -74,11 +74,11 @@ async function response(url, options) {
     return result;
 }
 
-async function editRequest(url, connectionMessage, options = {}, onRetry = () => {}) {
+async function editRequest(url, connectionMessage, options = {}, {onRetry = () => {}, timeout = 35000} = {}) {
     for (let attempt = 0; attempt < 3; attempt++) {
         try {
             return await (await response(url, {
-                ...options, cache: "no-store", signal: AbortSignal.timeout(35000)
+                ...options, cache: "no-store", signal: AbortSignal.timeout(timeout)
             })).json();
         } catch (error) {
             if (error.status === 401) throw new Error("Sign in to ClipCast again, then retry this clip.");
@@ -95,6 +95,7 @@ const runUrl = id => "/saved/" + encodeURIComponent(id);
 const mediaKey = (run, clip) => run + "/" + clip;
 const exportKey = id => "export/" + id;
 const reelTaskKey = id => "reel-task/" + id;
+const uploadTaskKey = id => "upload-task/" + id;
 const labelDate = value => new Date(value).toLocaleString([], {dateStyle: "medium", timeStyle: "short"});
 
 function saveSnapshot(archive, run) {
@@ -242,7 +243,7 @@ async function fetchReel(url, controller, onProgress) {
     }
 }
 
-async function clipCard(archive, run, clip, rank) {
+async function clipCard(archive, run, clip, rank, recorderUnavailable) {
     const id = mediaKey(run.id, clip.id);
     const card = node("article");
     const summary = node("p", clip.reasons.join(" · "), "muted");
@@ -325,36 +326,44 @@ async function clipCard(archive, run, clip, rank) {
     if (clip.edit) progress.textContent = clip.edit.error || (clip.edit.url ? "Reel ready." : clip.edit.message);
     const previousTask = clip.edit_url ? null : await read(archive, "drafts", reelTaskKey(id));
 
-    let pendingUpload;
-    async function uploadClip(file, kind) {
-        progress.textContent = "Connecting to the ClipCast recorder…";
-        const session = await editRequest("/saved-edits/session", "Could not reach ClipCast. Try again shortly. Your original is still saved here.");
-        const options = JSON.stringify({...draftData(), kind, size: file.size});
+    let pendingUpload = clip.edit_url ? null : await read(archive, "drafts", uploadTaskKey(id));
+    let working = false;
+    async function uploadClip(file, kind, resume) {
+        const options = resume ? pendingUpload.options : JSON.stringify({...draftData(), kind, size: file.size});
         if (pendingUpload?.options !== options) {
-            pendingUpload = {options, key: crypto.randomUUID().replaceAll("-", "")};
+            const next = {options, kind, key: crypto.randomUUID().replaceAll("-", "")};
+            await write(archive, "drafts", next, uploadTaskKey(id), 20000);
+            pendingUpload = next;
         }
+        progress.textContent = "Connecting to the ClipCast recorder…";
+        const paused = "Upload paused. Return to this clip or tap Resume to continue.";
+        const session = await editRequest("/saved-edits/session", paused, {}, {timeout: 65000});
         const url = "/saved-edits/uploads/" + pendingUpload.key;
         const tokenHeader = {"X-ClipCast-Token": session.token};
-        const failed = "The upload paused. Tap again to retry. Your original is still saved here.";
-        const upload = await editRequest(url, failed, {
+        const upload = await editRequest(url, paused, {
             method: "PUT", body: options, headers: {...tokenHeader, "Content-Type": "application/json"}
         });
         for (let offset = upload.received; offset < file.size;) {
             const percent = Math.floor(100 * offset / file.size) + "%";
-            progress.textContent = "Uploading clip · " + percent;
+            progress.textContent = "Uploading from this phone · " + percent;
             const body = await file.slice(offset, offset + upload.chunk_bytes).arrayBuffer();
-            const part = await editRequest(url + "/parts/" + offset, failed, {
+            const part = await editRequest(url + "/parts/" + offset, paused, {
                 method: "PUT", body, headers: {...tokenHeader, "Content-Type": "video/mp4"}
-            }, () => { progress.textContent = "Connection interrupted. Retrying upload · " + percent; });
+            }, {onRetry: () => { progress.textContent = "Reconnecting · " + percent + " uploaded"; }});
             offset = part.received;
         }
         progress.textContent = "Upload complete. Checking the clip…";
-        const task = await editRequest(url + "/finish", failed, {method: "POST", headers: tokenHeader});
-        pendingUpload = undefined;
-        return task;
+        return editRequest(url + "/finish", paused, {method: "POST", headers: tokenHeader});
     }
 
-    async function processClip(kind, resumeTask) {
+    async function clearPendingUpload() {
+        await write(archive, "drafts", null, uploadTaskKey(id), 20000);
+        pendingUpload = null;
+    }
+
+    async function processClip(kind, resumeTask, resumeUpload = false) {
+        if (working) return;
+        working = true;
         suggest.disabled = render.disabled = true;
         try {
             let statusUrl = clip.edit_url;
@@ -372,14 +381,18 @@ async function clipCard(archive, run, clip, rank) {
                     await saveDraft();
                     const file = await read(archive, "media", id);
                     if (!file) throw new Error("This clip's video is missing from this browser.");
-                    const task = await uploadClip(file, kind);
+                    const task = await uploadClip(file, kind, resumeUpload);
                     statusUrl = "/saved-edits/" + task.id;
                     if (kind === "reel") {
                         await write(archive, "drafts", task, reelTaskKey(id), 20000);
                     }
+                    await clearPendingUpload();
                 }
             } else {
-                if (!statusUrl) statusUrl = "/saved-edits/" + resumeTask.id;
+                if (!statusUrl) {
+                    statusUrl = "/saved-edits/" + resumeTask.id;
+                    if (pendingUpload?.key === resumeTask.id) await clearPendingUpload();
+                }
                 progress.textContent = kind === "hook" ? "Checking the hook…" : "Checking your ClipCast Reel…";
             }
             let state;
@@ -432,24 +445,42 @@ async function clipCard(archive, run, clip, rank) {
             }
             progress.textContent = storageError(error);
         } finally {
+            working = false;
             suggest.disabled = render.disabled = false;
+            suggest.textContent = pendingUpload?.kind === "hook" ? "Resume hook upload" : "Suggest hook first";
+            render.textContent = pendingUpload?.kind === "reel" ? "Resume Reel upload" : "Make ClipCast version";
         }
     }
-    suggest.onclick = () => processClip("hook");
-    render.onclick = () => processClip("reel");
+    suggest.onclick = () => processClip("hook", null, pendingUpload?.kind === "hook");
+    render.onclick = () => processClip("reel", null, pendingUpload?.kind === "reel");
     card.append(previewButton, video, field("Top hook", hook), suggest, settings, render, progress, downloads);
-    if (clip.edit && !clip.edit.done) void processClip(clip.edit.kind, clip.edit);
-    else if (previousTask?.id) void processClip("reel", previousTask);
+    function resumePhoneUpload() {
+        if (!document.hidden && pendingUpload && !working) {
+            void processClip(pendingUpload.kind, null, true);
+        }
+    }
+    if (recorderUnavailable) {
+        suggest.disabled = render.disabled = true;
+    } else if (clip.edit && !clip.edit.done) {
+        void processClip(clip.edit.kind, clip.edit);
+    } else if (!clip.edit_url) {
+        document.addEventListener("visibilitychange", resumePhoneUpload);
+        window.addEventListener("online", resumePhoneUpload);
+        if (previousTask?.id) void processClip("reel", previousTask);
+        else resumePhoneUpload();
+    }
     return card;
 }
 
 async function review(archive) {
     const local = await read(archive, "runs", runId);
     let remote;
+    let recorderUnavailable = false;
     try {
-        remote = await (await response(manifestUrl(runId), {cache: "no-store"})).json();
+        remote = await editRequest(manifestUrl(runId), "The recorder did not respond. Try reopening this run.", {}, {timeout: 65000});
     } catch (error) {
         if (error.status !== 404 && !local) throw error;
+        recorderUnavailable = error.status !== 404;
     }
     const run = remote || local;
     if (!run) {
@@ -459,7 +490,9 @@ async function review(archive) {
     if (remote) {
         announce("On the recorder · " + labelDate(run.created_at));
         if (remote.complete) {
-            const save = node("button", "Save run to this device", "secondary");
+            const copyIsCurrent = local?.complete && local.revision === remote.revision;
+            const save = node("button", copyIsCurrent ? "Run saved to this device" : "Save run to this device", "secondary");
+            save.disabled = Boolean(copyIsCurrent);
             save.type = "button";
             save.onclick = () => saveRunOnDevice(archive, save);
             content.append(save);
@@ -468,6 +501,11 @@ async function review(archive) {
         }
     } else {
         announce("Saved on this device · " + labelDate(run.created_at));
+        if (recorderUnavailable) {
+            content.append(node("p", "The recorder is unreachable. You can play saved clips. Reopen the run when you’re connected to make a Reel."));
+        } else {
+            content.append(node("p", "These clips are on your phone. Making a new Reel requires an upload. If it pauses, reopen this run to resume."));
+        }
         if (!run.complete) {
             content.append(node("p", "This device only saved part of this run."));
         }
@@ -487,15 +525,22 @@ async function review(archive) {
         content.append(section);
     }
     for (const clip of run.clips) {
-        sections.get(clip.channel).append(await clipCard(archive, run, clip, ++rank));
+        sections.get(clip.channel).append(await clipCard(archive, run, clip, ++rank, recorderUnavailable));
     }
-    if (remote) return;
-    const remove = node("button", "Delete this saved run", "secondary");
+    if (!local) return;
+    const remove = node("button", "Delete copy on this device", "secondary");
     remove.type = "button";
     remove.onclick = async () => {
         if (!window.confirm("Delete this run and its clips from this browser?")) return;
         try {
-            await deleteRun(archive, run);
+            if (remote) {
+                await response("/runs/" + encodeURIComponent(runId) + "/saved/forget", {
+                    method: "POST", body: new URLSearchParams({token})
+                });
+            } else if (recorderUnavailable) {
+                throw new Error("Reconnect to the recorder before deleting this copy.");
+            }
+            await deleteRun(archive, local);
             location.assign("/saved");
         } catch (error) {
             announce(storageError(error), true);
@@ -515,6 +560,7 @@ function deleteRun(archive, run) {
             media.delete(exportKey(id));
             drafts.delete(id);
             drafts.delete(reelTaskKey(id));
+            drafts.delete(uploadTaskKey(id));
         }
         transaction.objectStore("runs").delete(run.id);
         transaction.oncomplete = () => resolve();
