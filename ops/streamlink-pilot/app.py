@@ -260,6 +260,8 @@ def download_chunks(file: BinaryIO) -> Iterator[bytes]:
 
 MAX_ACTIVE = 5
 MAX_RUNS = 6
+DEFAULT_CONTINUOUS_HIGHLIGHTS = 3
+MAX_CONTINUOUS_HIGHLIGHTS = 5
 CONTINUOUS_RETRY_SECONDS = 60
 CAPTURE_HEADROOM = 192 * MIB
 HANDLE = re.compile(r"[a-z0-9_]{3,25}", re.ASCII)
@@ -296,6 +298,8 @@ class Highlight:
     duration: float | None = None
     brand_reels: dict[str, "Highlight"] = field(default_factory=dict)
     brand_request: str = ""
+    resolved_revision: int | None = None
+    skip_reason: str = ""
 
 
 @dataclass
@@ -334,8 +338,6 @@ class Run:
     saved_revision: str | None = None
     continuous: bool = False
     campaign: CampaignBrief | None = None
-    delivered_revision: str | None = None
-    skipped_revision: str | None = None
 
 
 @dataclass
@@ -420,6 +422,7 @@ def create_app(
     model: Path = MODEL_PATH,
     *,
     locked_campaign: CampaignBrief | None = None,
+    continuous_highlight_limit: int = DEFAULT_CONTINUOUS_HIGHLIGHTS,
 ) -> FastAPI:
     default_channels = channels_from_input(channel)
     if len(default_channels) > MAX_ACTIVE:
@@ -428,6 +431,8 @@ def create_app(
         raise ValueError("A locked campaign requires one TWITCH_CHANNEL")
     if len(password) < 20 or not password.isascii():
         raise ValueError("RECORDER_PASSWORD must be at least 20 ASCII characters")
+    if not 1 <= continuous_highlight_limit <= MAX_CONTINUOUS_HIGHLIGHTS:
+        raise ValueError("CLIPCAST_HIGHLIGHTS_PER_WINDOW must be between 1 and 5")
 
     csrf = secrets.token_urlsafe(32)
     state = Lock()
@@ -588,9 +593,10 @@ def create_app(
             remaining = []
             if run.continuous:
                 for clip in candidates:
+                    if len(job.highlights) >= continuous_highlight_limit:
+                        break
                     if "Dialogue may continue past the cut" not in clip.reasons:
-                        if append_highlight(job, clip, transcribe=True, campaign=run.campaign):
-                            break
+                        append_highlight(job, clip, transcribe=True, campaign=run.campaign)
             else:
                 for clip in candidates:
                     if len(job.highlights) >= share:
@@ -773,6 +779,7 @@ def create_app(
             "saved_runs": "browser",
             "background_review": "server",
             "clip_cap_per_run": MAX_CLIPS,
+            "clip_cap_per_continuous_window": continuous_highlight_limit,
             "batch_progress": "progressive",
             "reel_upload": "chunked",
             "phone_upload_resume": "enabled",
@@ -1142,6 +1149,9 @@ def create_app(
             for item in job.highlights
         )
 
+    def highlight_revision(key: str, rank: int, item: Highlight) -> str:
+        return f"{key}-{rank}:{item.edit_revision}"
+
     def run_is_busy(batch: list[Recording]) -> bool:
         return any(
             job.phase in BUSY
@@ -1164,14 +1174,13 @@ def create_app(
             batch = [jobs[key] for key in run.jobs if key in jobs]
             if run_is_busy(batch):
                 continue
-            revision = run_revision(batch)
-            saved = run.saved_revision == revision
-            processed = run.continuous and run.finalizing and (
-                not revision or revision in (run.delivered_revision, run.skipped_revision)
-            )
-            if any(item.brand_reels for job in batch for item in job.highlights):
-                saved = False
-            if not (saved or processed):
+            if run.continuous:
+                if not run.finalizing or any(
+                    item.resolved_revision != item.edit_revision
+                    for job in batch for item in job.highlights
+                ):
+                    continue
+            elif run.saved_revision != run_revision(batch):
                 continue
             for job in batch:
                 rmtree(job.path.parent)
@@ -1215,34 +1224,9 @@ def create_app(
                 job = jobs[run.jobs[0]]
                 if job.phase != "ready" or not job.highlights:
                     continue
-                revision = run_revision([job])
-                if revision in (run.delivered_revision, run.skipped_revision):
-                    continue
-                item = job.highlights[0]
-                base = f"/jobs/{job.key}/clips/1"
-                waiting.append({
-                    "id": job.key,
-                    "channel": job.channel,
-                    "created_at": run.created_at,
-                    "clip_seconds": (
-                        item.duration if item.duration is not None
-                        else round(item.clip.end - item.clip.start, 1)
-                    ),
-                    "campaign": asdict(run.campaign) if run.campaign else None,
-                    "reasons": item.clip.reasons,
-                    "transcript": item.transcript,
-                    "run_url": f"/runs/{run.key}",
-                    "preview_url": f"{base}/preview",
-                    "edit_url": f"{base}/edit",
-                    "reels_url": f"{base}/reels",
-                    "bundle_url": f"{base}/reels/download",
-                    "reels": brand_reels_status(item, base),
-                    "delivery_url": f"/continuous/{job.key}/delivered",
-                    "skip_url": f"/continuous/{job.key}/skipped",
-                    "template": CUSTOM_CHANNEL_VI_TEMPLATE,
-                    "revision": revision,
-                    "edit": run_edit_status(item, base),
-                })
+                for rank, item in enumerate(job.highlights, 1):
+                    if item.resolved_revision != item.edit_revision:
+                        waiting.append(queued_highlight(run, job, rank, item))
             return {
                 "channel": continuous.channel if continuous else None,
                 "status": continuous.status if continuous else "Stopped",
@@ -1254,13 +1238,39 @@ def create_app(
                 "highlights": waiting,
             }
 
+    def queued_highlight(run: Run, job: Recording, rank: int, item: Highlight) -> dict:
+        base = f"/jobs/{job.key}/clips/{rank}"
+        return {
+            "id": f"{job.key}-{rank}",
+            "channel": job.channel,
+            "created_at": run.created_at,
+            "clip_seconds": (
+                item.duration if item.duration is not None
+                else round(item.clip.end - item.clip.start, 1)
+            ),
+            "campaign": asdict(run.campaign) if run.campaign else None,
+            "reasons": item.clip.reasons,
+            "transcript": item.transcript,
+            "run_url": f"/runs/{run.key}",
+            "preview_url": f"{base}/preview",
+            "edit_url": f"{base}/edit",
+            "reels_url": f"{base}/reels",
+            "bundle_url": f"{base}/reels/download",
+            "reels": brand_reels_status(item, base),
+            "delivery_url": f"/continuous/{job.key}/delivered?rank={rank}",
+            "skip_url": f"/continuous/{job.key}/skipped?rank={rank}",
+            "template": CUSTOM_CHANNEL_VI_TEMPLATE,
+            "revision": highlight_revision(job.key, rank, item),
+            "edit": run_edit_status(item, base),
+        }
+
     @app.post(
         "/continuous/{key}/delivered",
         dependencies=[Depends(authenticate)],
         status_code=204,
     )
     def acknowledge_delivery(
-        key: str, revision: str = Form(), token: str = Form()
+        key: str, revision: str = Form(), token: str = Form(), rank: int = 1,
     ) -> Response:
         authorize_form(token)
         with state:
@@ -1268,14 +1278,15 @@ def create_app(
             run = get_run(job.run)
             if not run.continuous:
                 raise HTTPException(404, "This is not a continuous recording.")
-            item = get_highlight(job, 1)
+            item = get_highlight(job, rank)
             reels = brand_reels_status(item, "")
             if (
-                revision != run_revision([job])
+                revision != highlight_revision(key, rank, item)
                 or not all(reel["download_url"] for reel in reels.values())
             ):
                 raise HTTPException(409, "Download both current finished Reels first.")
-            run.delivered_revision = revision
+            item.resolved_revision = item.edit_revision
+            item.skip_reason = ""
         return Response(status_code=204)
 
     @app.post(
@@ -1288,6 +1299,7 @@ def create_app(
         revision: str = Form(),
         token: str = Form(),
         reason: str = Form(min_length=1, max_length=300),
+        rank: int = 1,
     ) -> Response:
         authorize_form(token)
         reason = reason.strip()
@@ -1296,12 +1308,16 @@ def create_app(
         with state:
             job = get_job(key)
             run = get_run(job.run)
-            if not run.continuous or not run.campaign or not job.highlights:
+            if not run.continuous or not run.campaign:
                 raise HTTPException(404, "This is not a campaign highlight.")
-            if run_is_busy([job]) or revision != run_revision([job]):
+            item = get_highlight(job, rank)
+            if (
+                job.phase != "ready" or highlight_is_busy(item)
+                or revision != highlight_revision(key, rank, item)
+            ):
                 raise HTTPException(409, "Refresh to check the current highlight.")
-            run.skipped_revision = revision
-            job.detail = f"Skipped for {run.campaign.name}. {reason}"
+            item.resolved_revision = item.edit_revision
+            item.skip_reason = reason
         return Response(status_code=204)
 
     @app.post(
@@ -1408,7 +1424,7 @@ def create_app(
                 reels = brand_reels_status(item, "")
                 if not all(reel["download_url"] for reel in reels.values()):
                     raise HTTPException(409, "Both Reels need to finish before downloading.")
-                stem = f"{job.channel}-{job.key}"
+                stem = f"{job.channel}-{job.key}-{rank}"
                 files = {
                     f"{stem}-{brand}.mp4": sources.enter_context(
                         brand_reel_path(item, brand).open("rb")
@@ -1447,7 +1463,7 @@ def create_app(
             path = brand_reel_path(item, brand)
             if not reel or reel.phase != "ready" or not path.is_file():
                 raise HTTPException(404, "This branded Reel is not ready.")
-            return media_response(path, f"{job.channel}-{job.key}-{brand}.mp4")
+            return media_response(path, f"{job.channel}-{job.key}-{rank}-{brand}.mp4")
 
     @app.get("/saved-clips.js", dependencies=[Depends(authenticate)])
     def archive_script() -> FileResponse:
@@ -1501,6 +1517,10 @@ def create_app(
                     if item.brand_reels else {},
                     **({
                         "transcript": item.transcript,
+                        "skip_reason": (
+                            item.skip_reason
+                            if item.resolved_revision == item.edit_revision else ""
+                        ),
                         "reels_url": f"/jobs/{job.key}/clips/{rank}/reels",
                         "bundle_url": f"/jobs/{job.key}/clips/{rank}/reels/download",
                     } if run.continuous and job.phase == "ready" else {}),
@@ -1944,5 +1964,8 @@ def create_render_app() -> FastAPI:
         locked_campaign=(
             CampaignSettings.model_validate_json(configured_campaign).brief_for_run()
             if configured_campaign else None
+        ),
+        continuous_highlight_limit=int(
+            os.environ.get("CLIPCAST_HIGHLIGHTS_PER_WINDOW", DEFAULT_CONTINUOUS_HIGHLIGHTS)
         ),
     )

@@ -22,7 +22,7 @@ PASSWORD = "synthetic-test-password-only"
 AUTH = ("recorder", PASSWORD)
 
 
-def test_continuous_recording_overlaps_analysis_and_hands_off_one_reel(monkeypatch):
+def test_continuous_recording_overlaps_analysis_and_hands_off_distinct_highlights(monkeypatch):
     second_started = Event()
     finish_second = Event()
     sources = []
@@ -78,6 +78,9 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_one_reel(monkeypat
         app.Clip(25, 50, ("Story beat",), 10),
         app.Clip(45, 60, ("Gameplay movement",), 9),
         app.Clip(70, 80, ("Action sounds",), 7),
+        app.Clip(100, 114, ("Laughter in stream audio",), 6),
+        app.Clip(140, 153, ("Chat spike",), 5),
+        app.Clip(200, 215, ("Story beat",), 4),
     ])
     monkeypatch.setattr(app, "disk_usage", lambda _: type("Disk", (), {"free": 8 * 1024**3})())
 
@@ -117,8 +120,10 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_one_reel(monkeypat
                 "/record", data={**data, "channels": "second"}, auth=AUTH,
             ).status_code == 409
             clips = wait_for(pending)
-            assert len(clips) == 1
-            clip = clips[0]
+            assert [item["clip_seconds"] for item in clips] == [15, 14, 13]
+            clip, sibling, other = clips
+            assert len({entry["id"] for entry in clips}) == 3
+            assert len({entry["bundle_url"] for entry in clips}) == 3
             assert clip["clip_seconds"] == 15
             assert clip["reasons"] == ["Gameplay movement"]
             assert clip["campaign"] == {
@@ -135,6 +140,17 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_one_reel(monkeypat
                 clip["delivery_url"], data={"token": token, "revision": clip["revision"]},
                 auth=AUTH,
             ).status_code == 409
+            assert client.post(
+                sibling["skip_url"],
+                data={"token": token, "revision": clip["revision"], "reason": "Wrong case"},
+                auth=AUTH,
+            ).status_code == 409
+            assert client.post(
+                sibling["skip_url"],
+                data={"token": token, "revision": sibling["revision"], "reason": "Lacks gameplay."},
+                auth=AUTH,
+            ).status_code == 204
+            assert [item["id"] for item in pending()] == [clip["id"], other["id"]]
             options = {
                 "channel_vi_hook": "SUSPECT LOSES GETAWAY VEHICLE",
                 "gta_clipcast_hook": "WORST GETAWAY IN LEONIDA",
@@ -187,19 +203,22 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_one_reel(monkeypat
                 edit["delivery_url"], data={"token": token, "revision": edit["revision"]},
                 auth=AUTH,
             ).status_code == 204
+            assert [item["id"] for item in pending()] == [other["id"]]
+            assert client.post(
+                other["skip_url"],
+                data={"token": token, "revision": other["revision"], "reason": "Weak hook."},
+                auth=AUTH,
+            ).status_code == 204
+            manifest = client.get(clip["run_url"] + "/manifest", auth=AUTH).json()
+            reasons = {item["id"]: item["skip_reason"] for item in manifest["clips"]}
+            assert reasons == {clip["id"]: "", sibling["id"]: "Lacks gameplay.", other["id"]: "Weak hook."}
             assert pending() == []
         finally:
             finish_second.set()
-        next_clip = wait_for(pending)[0]
+        next_clips = wait_for(pending)
         assert len(sources) == 2
-        assert next_clip["campaign"] == clip["campaign"]
-        assert client.post(
-            next_clip["skip_url"], auth=AUTH,
-            data={"token": token, "revision": next_clip["revision"], "reason": "Lacks gameplay."},
-        ).status_code == 204
-        assert pending() == []
-        manifest = client.get(next_clip["run_url"] + "/manifest", auth=AUTH).json()
-        assert manifest["channels"][0]["status"].endswith("Lacks gameplay.")
+        assert len(next_clips) == 3
+        assert all(item["campaign"] == clip["campaign"] for item in next_clips)
 
 
 def test_campaign_configuration_locks_one_worker_to_its_stream_and_brief(monkeypatch):

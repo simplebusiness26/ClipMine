@@ -47,8 +47,9 @@ and choose **Record consecutive 10-minute windows**. ClipCast starts the next
 capture as soon as the preceding one is saved. Captures reconnect to Twitch at
 the boundary, so a reconnect can cause a gap or overlap. Analysis runs
 independently and still uses chat reactions, audio, dialogue and gameplay.
-Each window offers at most one highlight with a natural ending. A window
-without a suitable highlight is skipped. If the stream is unavailable,
+Each window offers up to three distinct highlights with natural endings by
+default. Set `CLIPCAST_HIGHLIGHTS_PER_WINDOW` to a number from 1 to 5 to adjust
+the cap. A window without a suitable highlight is skipped. If the stream is unavailable,
 ClipCast retries after one minute. **Stop after this capture** lets the current
 window finish and stops new ones.
 
@@ -101,8 +102,10 @@ Set the recorder's base URL once. Use the existing authenticated browser
 session or a credential supplied through the Bot's secure secret form.
 All paths below are relative to that recorder and require its login.
 
-1. Get `/continuous/queue`. Process entries oldest first, at most one
-   per routine run. The response includes a request verification token,
+1. Get `/continuous/queue`. Work through the oldest eligible highlights, up
+   to one window's worth per worker per routine run. Each highlight has
+   its own revision and is delivered or skipped independently. The response
+   includes a request verification token,
    highlight ID, timestamped transcript with seconds relative to the clip,
    selection reasons, the campaign brief, preview URL, Reels URL, and
    bundle URL and delivery URL. Evaluate the preview and both renders against
@@ -120,7 +123,7 @@ All paths below are relative to that recorder and require its login.
    `campaign.brief` for each highlight before writing captions. Copy required
    calls to action, mentions and hashtags verbatim. Pause if the brief is
    unavailable. Leave publishing to the user.
-5. Once both attachments are present in chat, get the current `revision` from
+5. Once both attachments for a highlight are present in chat, get that item's current `revision` from
    the queue and POST `token` and `revision` as form fields to
    `delivery_url`. If a routine has to return before confirming both
    attachments, its next run can acknowledge the existing chat result.

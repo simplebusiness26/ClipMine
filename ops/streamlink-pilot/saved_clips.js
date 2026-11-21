@@ -250,6 +250,7 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
     const card = node("article");
     const summary = node("p", clip.reasons.join(" · "), "muted");
     card.append(node("h3", "Clip " + rank + " · " + clip.seconds + "s"), summary);
+    if (clip.skip_reason) card.append(node("p", "Skipped for the campaign. " + clip.skip_reason, "muted"));
     const previewButton = node("button", "Play clip", "secondary");
     previewButton.type = "button";
     const video = node("video");
@@ -509,7 +510,7 @@ function pairDownload(clip, hook, progress) {
     const label = "Download both Reels";
     const area = node("div");
     const download = link(label, clip.bundle_url);
-    download.download = clip.channel + "-both-reels.zip";
+    download.download = "";
     const ready = reels => reels["channel-vi"]?.download_url && reels["gta-clipcast"]?.download_url;
     if (ready(clip.reels || {})) {
         area.append(download);
