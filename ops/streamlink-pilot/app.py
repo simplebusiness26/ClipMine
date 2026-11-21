@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import ExitStack, asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from shutil import copyfileobj, disk_usage, rmtree
 from tempfile import TemporaryDirectory, TemporaryFile
@@ -87,6 +88,20 @@ QUALITY_OPTIONS = {
 }
 LOGGER = logging.getLogger(__name__)
 BASIC = HTTPBasic(realm="ClipCast recorder")
+ACCESS_COOKIE = "clipcast_access"
+ACCESS_LINK_PAGE = """<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open ClipCast</title></head><body><p id="status">Opening ClipCast…</p>
+<script>
+const token = location.hash.slice(1);
+history.replaceState(null, '', location.pathname);
+fetch('/open', {method: 'POST', body: new URLSearchParams({token})}).then(response => {
+    if (!response.ok) throw new Error('ClipCast access failed');
+    location.replace('/');
+}).catch(() => {
+    document.getElementById('status').textContent = 'Open ClipCast using your private link.';
+});
+</script><noscript>Enable JavaScript and reopen your ClipCast link.</noscript></body></html>"""
 MODEL_PATH = Path(__file__).with_name("yamnet.tflite")
 
 
@@ -425,13 +440,16 @@ def create_app(
     *,
     locked_campaign: CampaignBrief | None = None,
     continuous_highlight_limit: int = DEFAULT_CONTINUOUS_HIGHLIGHTS,
+    access_link_hash: str = "",
 ) -> FastAPI:
     default_channels = channels_from_input(channel)
     if len(default_channels) > MAX_ACTIVE:
         raise ValueError("TWITCH_CHANNEL can prefill up to five usernames")
     if locked_campaign and len(default_channels) != 1:
         raise ValueError("A locked campaign requires one TWITCH_CHANNEL")
-    if len(password) < 20 or not password.isascii():
+    if access_link_hash and re.fullmatch(r"[0-9a-f]{64}", access_link_hash) is None:
+        raise ValueError("RECORDER_ACCESS_LINK_HASH must be a lowercase SHA-256 hex digest")
+    if not access_link_hash and (len(password) < 20 or not password.isascii()):
         raise ValueError("RECORDER_PASSWORD must be at least 20 ASCII characters")
     if not 1 <= continuous_highlight_limit <= MAX_CONTINUOUS_HIGHLIGHTS:
         raise ValueError("CLIPCAST_HIGHLIGHTS_PER_WINDOW must be between 1 and 5")
@@ -460,15 +478,37 @@ def create_app(
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
-    def authenticate(
-        credentials: Annotated[HTTPBasicCredentials, Depends(BASIC)],
-    ) -> None:
+    def valid_access_link(token: str) -> bool:
+        return (
+            re.fullmatch(r"[A-Za-z0-9_-]{43}", token) is not None
+            and secrets.compare_digest(sha256(token.encode("ascii")).hexdigest(), access_link_hash)
+        )
+
+    async def authenticate(request: Request) -> None:
+        if access_link_hash:
+            if not valid_access_link(request.cookies.get(ACCESS_COOKIE, "")):
+                raise HTTPException(status_code=403, detail="Open ClipCast using your private link.")
+            return
+        credentials: HTTPBasicCredentials = await BASIC(request)
         valid_password = secrets.compare_digest(credentials.password, password)
         if credentials.username != "recorder" or not valid_password:
             raise HTTPException(
                 status_code=401,
                 headers={"WWW-Authenticate": 'Basic realm="ClipCast recorder"'},
             )
+
+    if access_link_hash:
+        @app.get("/open", response_class=HTMLResponse)
+        def open_access_link() -> HTMLResponse:
+            return HTMLResponse(ACCESS_LINK_PAGE, headers={"Cache-Control": "no-store"})
+
+        @app.post("/open", status_code=204)
+        def accept_access_link(token: str = Form("", max_length=43)) -> Response:
+            if not valid_access_link(token):
+                raise HTTPException(status_code=403, detail="Open ClipCast using your private link.")
+            response = Response(status_code=204, headers={"Cache-Control": "no-store"})
+            response.set_cookie(ACCESS_COOKIE, token, secure=True, httponly=True, samesite="lax")
+            return response
 
     def authorize_form(token: str) -> None:
         if not secrets.compare_digest(token.encode("utf-8"), csrf.encode("ascii")):
@@ -2046,4 +2086,5 @@ def create_render_app() -> FastAPI:
         continuous_highlight_limit=int(
             os.environ.get("CLIPCAST_HIGHLIGHTS_PER_WINDOW", DEFAULT_CONTINUOUS_HIGHLIGHTS)
         ),
+        access_link_hash=os.environ.get("RECORDER_ACCESS_LINK_HASH", ""),
     )

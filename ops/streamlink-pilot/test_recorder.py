@@ -3,6 +3,7 @@ import re
 import subprocess
 from collections import Counter
 from functools import partial
+from hashlib import sha256
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
@@ -262,6 +263,32 @@ def test_campaign_configuration_locks_one_worker_to_its_stream_and_brief(monkeyp
         }
         other_lock = other.get("/continuous/queue", auth=AUTH).json()["locked_campaign"]
         assert (other_lock["channel"], other_lock["name"]) == ("second", "Second")
+
+
+def test_private_access_link_replaces_basic_auth(monkeypatch):
+    token = "a" * 43
+    monkeypatch.setenv("TWITCH_CHANNEL", "clix")
+    monkeypatch.setenv("RECORDER_PASSWORD", PASSWORD)
+    monkeypatch.setenv("RECORDER_ACCESS_LINK_HASH", sha256(token.encode()).hexdigest())
+    with TestClient(app.create_render_app(), base_url="https://recorder.test") as client:
+        rejected = client.get("/", auth=AUTH)
+        assert rejected.status_code == 403
+        assert "WWW-Authenticate" not in rejected.headers
+        assert client.get("/continuous/queue").status_code == 403
+        assert client.get("/open").status_code == 200
+        invalid = client.post("/open", data={"token": "b" * 43})
+        assert invalid.status_code == 403 and "Set-Cookie" not in invalid.headers
+        accepted = client.post("/open", data={"token": token})
+        assert accepted.status_code == 204
+        assert all(flag in accepted.headers["Set-Cookie"] for flag in ("HttpOnly", "Secure", "SameSite=lax"))
+        assert 'id="channels"' in client.get("/").text
+        assert client.get("/continuous/queue").status_code == 200
+
+    monkeypatch.delenv("RECORDER_ACCESS_LINK_HASH")
+    with TestClient(app.create_render_app()) as client:
+        assert client.get("/open").status_code == 404
+        assert client.get("/").status_code == 401
+        assert client.get("/", auth=AUTH).status_code == 200
 
 
 def test_campaign_rejects_wrong_twitch_category_before_capture(monkeypatch):

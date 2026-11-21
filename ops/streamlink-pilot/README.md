@@ -9,6 +9,14 @@
 4. Open the service's **Environment** tab for the generated `RECORDER_PASSWORD`.
    Visit the service URL and sign in as `recorder` with that password.
 
+For a passwordless worker, generate a private key with `secrets.token_urlsafe(32)`
+and set `RECORDER_ACCESS_LINK_HASH` in the service environment to the lowercase
+SHA-256 hex digest of that key. Share `https://YOUR-HOST/open#YOUR-KEY` privately
+with the operator. Opening it sets an HTTPS-only session cookie. The link can be
+reopened if the browser clears its session. Only store the digest in hosting
+configuration. Remove the unused `RECORDER_PASSWORD` from that worker. Changing
+the digest revokes the previous link and any sessions opened with it.
+
 ## Record, review and export
 
 1. Enter up to five live Twitch usernames, separated by commas. Pick **720p HD**
