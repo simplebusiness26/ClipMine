@@ -318,6 +318,7 @@ def render_template(
     template: str = DEFAULT_TEMPLATE,
     *,
     cached_cues: list | None = None,
+    preserve_source_frame: bool = False,
 ) -> TemplateResult:
     if template not in REEL_TEMPLATES:
         raise ValueError("Unknown Reel template")
@@ -349,14 +350,22 @@ def render_template(
             art = scratch / "channel-vi.png"
             channel_vi_frame(selected.text, art)
             layers = ["-i", str(art), *captions_input]
+            frame = (
+                "scale=608:426:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+                "pad=640:460:(ow-iw)/2:(oh-ih)/2"
+                if preserve_source_frame
+                else (
+                    "scale=640:460:force_original_aspect_ratio=increase:flags=bicubic,"
+                    f"crop=640:460:x=(iw-ow)*{CROP[crop]}"
+                )
+            )
             graph = (
-                "[0:v]setpts=PTS-STARTPTS,fps=30,"
-                "scale=640:460:force_original_aspect_ratio=increase:flags=bicubic,"
-                f"crop=640:460:x=(iw-ow)*{CROP[crop]},setsar=1,pad={WIDTH}:{HEIGHT}:40:328[base];"
+                f"[0:v]setpts=PTS-STARTPTS,fps=30,{frame},"
+                f"setsar=1,pad={WIDTH}:{HEIGHT}:40:328[base];"
                 "[base][1:v]overlay[branded];[branded][2:v]overlay=x=49:y=958[out]"
             )
         elif template == CUSTOM_GTA_CLIPCAST_TEMPLATE:
-            layout, _ = gameplay_layout(source, duration, crop, cam)
+            layout, _ = gameplay_layout(source, duration, crop, cam, preserve_source_frame)
             art = ASSETS / "gta-clipcast-roll-that-back.png"
             if hook:
                 hook_image = scratch / "hook.png"
@@ -374,7 +383,7 @@ def render_template(
                 "[base][art]overlay[branded];[branded][2:v]overlay=x=32:y=884[out]"
             )
         else:
-            layout, top = gameplay_layout(source, duration, crop, cam)
+            layout, top = gameplay_layout(source, duration, crop, cam, preserve_source_frame)
             hook_image = scratch / "hook.png"
             draw_hook(selected.text, hook_image)
             wink = scratch / "scoop-wink.png"
@@ -447,7 +456,15 @@ def render_template(
     return TemplateResult(status, selected)
 
 
-def gameplay_layout(source: Path, duration: float, crop: str, cam: str) -> tuple[str, int]:
+def gameplay_layout(
+    source: Path, duration: float, crop: str, cam: str, preserve_source_frame: bool = False
+) -> tuple[str, int]:
+    if preserve_source_frame:
+        return (
+            "[0:v]setpts=PTS-STARTPTS,fps=30,"
+            f"scale={WIDTH}:480:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+            f"setsar=1,pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2[base];"
+        ), 0
     camera = facecam_crop(source, duration, cam)
     top = CAM_HEIGHT if camera else 0
     game = (

@@ -73,6 +73,13 @@ another campaign at the same time, deploy another instance with its own
 `TWITCH_CHANNEL`, `CLIPCAST_CAMPAIGN` and password. The lock does not resume a
 capture after a host restart.
 
+Optional `required_category` checks the Twitch game category at both ends of
+each capture. `preserve_source_frame` fits the whole input picture into each
+branded layout, with headlines and captions outside it so source overlays
+can survive reframing. Review the actual finished Reel for logo legibility
+and verify the content against the brief. Set `require_custom_hook` to require
+non-empty headlines for both branded exports.
+
 ClipCast displays the highlight and its timestamped transcript in the recording
 run. A missing or empty transcript means the Bot should use the preview.
 Each highlight can produce a **Channel VI** and a **GTA ClipCast** Reel.
@@ -109,8 +116,10 @@ All paths below are relative to that recorder and require its login.
    and the same hooks to keep a successful export.
 4. Check `reels_url` for both brand statuses. Download each ready Reel from
    its `download_url` and attach both labelled MP4s in the Bot chat. Include
-   the highlight ID, post descriptions, and up to five specific hashtags per
-   brand. Leave publishing to the user.
+   the highlight ID and a ready-to-paste caption per brand. Read the pinned
+   `campaign.brief` for each highlight before writing captions. Copy required
+   calls to action, mentions and hashtags verbatim. Pause if the brief is
+   unavailable. Leave publishing to the user.
 5. Once both attachments are present in chat, get the current `revision` from
    the queue and POST `token` and `revision` as form fields to
    `delivery_url`. If a routine has to return before confirming both

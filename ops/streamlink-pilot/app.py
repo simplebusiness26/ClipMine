@@ -96,6 +96,24 @@ class Capture:
     height: int
 
 
+class CampaignCategoryError(ValueError):
+    pass
+
+
+def verify_twitch_category(url: str, required: str) -> str:
+    session = Streamlink({"http-timeout": 12.0})
+    with session.http:
+        try:
+            _, plugin, resolved = session.resolve_url_no_redirect(url)
+            channel = plugin(session, resolved)
+            actual, stream_id = channel.get_category(), channel.get_id()
+        except (OSError, StreamlinkError) as error:
+            raise CampaignCategoryError(f"Could not verify the live {required} category.") from error
+    if not actual or not stream_id or actual.casefold() != required.casefold():
+        raise CampaignCategoryError(f"Waiting for a verified {required} livestream.")
+    return stream_id
+
+
 def capture_mp4(
     url: str,
     output: Path,
@@ -302,6 +320,9 @@ class CampaignBrief:
     brief: str
     min_seconds: int | None
     max_seconds: int | None
+    required_category: str = ""
+    preserve_source_frame: bool = False
+    require_custom_hook: bool = False
 
 
 @dataclass
@@ -363,6 +384,9 @@ class CampaignSettings(BaseModel):
     brief: str = Field(min_length=1, max_length=12000)
     min_seconds: int | None = Field(default=None, ge=1, le=MAX_HIGHLIGHT_SECONDS)
     max_seconds: int | None = Field(default=None, ge=1, le=MAX_HIGHLIGHT_SECONDS)
+    required_category: str = Field(default="", max_length=120)
+    preserve_source_frame: bool = False
+    require_custom_hook: bool = False
 
     def brief_for_run(self) -> CampaignBrief:
         name, brief = self.name.strip(), self.brief.strip()
@@ -371,7 +395,10 @@ class CampaignSettings(BaseModel):
         if self.min_seconds is not None and self.max_seconds is not None:
             if self.min_seconds > self.max_seconds:
                 raise ValueError("The minimum duration must be at most the maximum.")
-        return CampaignBrief(name, brief, self.min_seconds, self.max_seconds)
+        return CampaignBrief(
+            name, brief, self.min_seconds, self.max_seconds, self.required_category.strip(),
+            self.preserve_source_frame, self.require_custom_hook,
+        )
 
 
 def channels_from_input(names: str) -> list[str]:
@@ -444,26 +471,38 @@ def create_app(
 
     def run_capture(job: Recording, quality: str) -> None:
         stream_options, max_bytes = QUALITY_OPTIONS[quality]
+        with state:
+            campaign = runs[job.run].campaign
+        category = campaign.required_category if campaign else ""
+        url = f"https://www.twitch.tv/{job.channel}"
         chat = ChatMonitor(job.channel)
-        chat.start()
+        chat_started = False
         try:
+            stream_id = verify_twitch_category(url, category) if category else ""
+            chat.start()
+            chat_started = True
             recorded = capture_mp4(
-                f"https://www.twitch.tv/{job.channel}",
+                url,
                 job.path,
                 on_progress=chat.progress,
                 quality=stream_options,
                 max_bytes=max_bytes,
             )
+            if category and verify_twitch_category(url, category) != stream_id:
+                raise CampaignCategoryError("The livestream changed during capture.")
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             job.path.unlink(missing_ok=True)
             LOGGER.warning("Capture failed (%s)", type(error).__name__)
             with state:
                 job.phase = "failed"
+                if isinstance(error, CampaignCategoryError):
+                    job.detail = str(error)
                 job.capture_finished.set()
             prepare_run(job.run)
             return
         finally:
-            chat.close()
+            if chat_started:
+                chat.close()
 
         with state:
             job.capture = recorded
@@ -644,6 +683,8 @@ def create_app(
                 with state:
                     highlight.phase = "rendering"
                 caption_options = {"cached_cues": highlight.transcript or []} if reuse_transcript else {}
+                if locked_campaign and locked_campaign.preserve_source_frame:
+                    caption_options["preserve_source_frame"] = True
                 result = render_template(
                     highlight.path,
                     candidate,
@@ -959,7 +1000,7 @@ def create_app(
                         return
                 if job.capture is None or job.capture.duration < CAPTURE_SECONDS / 2:
                     with state:
-                        session.status = "Stream unavailable or interrupted. Retrying shortly."
+                        session.status = job.detail or "Stream unavailable or interrupted. Retrying shortly."
                     session.stop.wait(CONTINUOUS_RETRY_SECONDS)
         finally:
             with state:
@@ -995,6 +1036,11 @@ def create_app(
             try:
                 campaign = CampaignSettings(
                     name=name, brief=brief, min_seconds=min_seconds, max_seconds=max_seconds,
+                    **({
+                        "required_category": locked_campaign.required_category,
+                        "preserve_source_frame": locked_campaign.preserve_source_frame,
+                        "require_custom_hook": locked_campaign.require_custom_hook,
+                    } if locked_campaign else {}),
                 ).brief_for_run()
             except ValidationError:
                 return show_home("Add both the campaign name and its brief.", 400)
@@ -1313,8 +1359,11 @@ def create_app(
         base = f"/jobs/{key}/clips/{rank}"
         with state:
             job = get_job(key)
-            if job.phase != "ready" or not get_run(job.run).continuous:
+            run = get_run(job.run)
+            if job.phase != "ready" or not run.continuous:
                 raise HTTPException(409, "Wait for the continuous recording's highlight to be ready.")
+            if run.campaign and run.campaign.require_custom_hook and not all(hooks.values()):
+                raise HTTPException(400, "Add a headline to each Reel for this campaign.")
             item = get_highlight(job, rank)
             if item.brand_request == options.request_id:
                 return brand_reels_status(item, base)

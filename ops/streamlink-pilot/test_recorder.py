@@ -124,6 +124,8 @@ def test_continuous_recording_overlaps_analysis_and_hands_off_one_reel(monkeypat
             assert clip["campaign"] == {
                 "name": brief["campaign_name"], "brief": brief["campaign_brief"],
                 "min_seconds": 12, "max_seconds": 20,
+                "required_category": "", "preserve_source_frame": False,
+                "require_custom_hook": False,
             }
             assert clip["transcript"] == [[0.6, 2.4, "That was my getaway vehicle."]]
             assert not clip["reels"]["channel-vi"]["download_url"]
@@ -229,9 +231,44 @@ def test_campaign_configuration_locks_one_worker_to_its_stream_and_brief(monkeyp
             auth=AUTH,
         ).status_code == 409
         locked = client.get("/continuous/queue", auth=AUTH).json()["locked_campaign"]
-        assert locked == {"channel": "clix", "max_seconds": None, **profile}
+        assert locked == {
+            "channel": "clix", "max_seconds": None, "required_category": "",
+            "preserve_source_frame": False, "require_custom_hook": False, **profile,
+        }
         other_lock = other.get("/continuous/queue", auth=AUTH).json()["locked_campaign"]
         assert (other_lock["channel"], other_lock["name"]) == ("second", "Second")
+
+
+def test_campaign_rejects_wrong_twitch_category_before_capture(monkeypatch):
+    assert_capture_check = Event()
+
+    def check_category(url, required):
+        assert url == "https://www.twitch.tv/example"
+        assert required == "Grand Theft Auto VI"
+        assert_capture_check.set()
+        raise app.CampaignCategoryError("Waiting for a verified Grand Theft Auto VI livestream.")
+
+    monkeypatch.setattr(app, "verify_twitch_category", check_category)
+    monkeypatch.setattr(app, "disk_usage", lambda _: type("Disk", (), {"free": 8 * 1024**3})())
+    campaign = app.CampaignBrief(
+        "Campaign", "GTA VI only", None, None, required_category="Grand Theft Auto VI",
+    )
+    with TestClient(app.create_app("example", PASSWORD, locked_campaign=campaign)) as client:
+        home = client.get("/", auth=AUTH).text
+        token = re.search(r'name="token" value="([^"]+)"', home)[1]
+        assert client.post(
+            "/continuous/start", data={"token": token, "confirm": "yes"},
+            follow_redirects=False, auth=AUTH,
+        ).status_code == 303
+        assert assert_capture_check.wait(2)
+        deadline = monotonic() + 3
+        while monotonic() < deadline:
+            queue = client.get("/continuous/queue", auth=AUTH).json()
+            if queue["status"].startswith("Waiting for a verified"):
+                break
+            sleep(0.02)
+        assert queue["status"] == "Waiting for a verified Grand Theft Auto VI livestream."
+        assert queue["highlights"] == []
 
 
 def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):

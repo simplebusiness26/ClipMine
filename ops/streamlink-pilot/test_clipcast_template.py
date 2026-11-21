@@ -180,3 +180,31 @@ def test_recording_scan_keeps_whisper_windows_when_worker_times_out(
     ) == [[3, 5, "Story starts."]]
     assert commands[1][0][-1] == "--scan-recording"
     assert commands[1][1]["timeout"] == 62
+
+
+@pytest.mark.parametrize(
+    ("template", "position"),
+    [
+        (render.CUSTOM_CHANNEL_VI_TEMPLATE, (64, 400)),
+        (render.CUSTOM_GTA_CLIPCAST_TEMPLATE, (16, 455)),
+    ],
+)
+def test_brand_keeps_source_corner_overlay_with_protected_frame(tmp_path, template, position):
+    source = tmp_path / "source.mp4"
+    reel = tmp_path / "reel.mp4"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+        "color=blue:s=320x180:r=30,drawbox=x=0:y=0:w=32:h=32:color=yellow:t=fill",
+        "-t", "1", "-c:v", "libx264", "-threads", "1", str(source),
+    ], check=True, timeout=15)
+    render.render_template(
+        source, reel, "THE GETAWAY", "", "center", template=template,
+        cached_cues=[], preserve_source_frame=True,
+    )
+    x, y = position
+    corner = subprocess.check_output([
+        "ffmpeg", "-v", "error", "-ss", "0.1", "-i", str(reel), "-frames:v", "1",
+        "-vf", f"crop=2:2:{x}:{y}", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1",
+    ], timeout=12)
+    red, green, blue = corner[:3]
+    assert red > 170 and green > 170 and blue < 70
