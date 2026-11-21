@@ -8,12 +8,12 @@ import secrets
 import subprocess
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from shutil import copyfileobj, disk_usage, rmtree
 from tempfile import TemporaryDirectory
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 from time import monotonic
 from typing import Annotated, BinaryIO
 from urllib.parse import unquote
@@ -47,6 +47,7 @@ from streamlink.options import Options
 from clipcast_template.facecam import FACECAM_OPTIONS
 from clipcast_template.render import (
     CROP,
+    CUSTOM_CHANNEL_VI_TEMPLATE,
     DEFAULT_TEMPLATE,
     HOOK_LIMIT,
     NARRATION_LIMIT,
@@ -58,6 +59,7 @@ from clipcast_template.render import (
 )
 from highlights import (
     MAX_CLIPS,
+    MAX_HIGHLIGHT_SECONDS,
     ChatMonitor,
     Clip,
     cut_clip,
@@ -235,6 +237,7 @@ def download_chunks(file: BinaryIO) -> Iterator[bytes]:
 
 MAX_ACTIVE = 5
 MAX_RUNS = 6
+CONTINUOUS_RETRY_SECONDS = 60
 CAPTURE_HEADROOM = 192 * MIB
 HANDLE = re.compile(r"[a-z0-9_]{3,25}", re.ASCII)
 BUSY = {"capturing", "queued", "analysing", "ranked", "cutting"}
@@ -266,6 +269,8 @@ class Highlight:
     edit_request: str = ""
     edit_kind: str = ""
     edit_revision: int = 0
+    transcript: list = field(default_factory=list)
+    duration: float | None = None
 
 
 @dataclass
@@ -281,6 +286,15 @@ class Recording:
     signals: str = ""
     run: str = ""
     detail: str = ""
+    capture_finished: Event = field(default_factory=Event)
+
+
+@dataclass(frozen=True)
+class CampaignBrief:
+    name: str
+    brief: str
+    min_seconds: int | None
+    max_seconds: int | None
 
 
 @dataclass
@@ -290,6 +304,19 @@ class Run:
     jobs: list[str] = field(default_factory=list)
     finalizing: bool = False
     saved_revision: str | None = None
+    continuous: bool = False
+    campaign: CampaignBrief | None = None
+    delivered_revision: str | None = None
+    skipped_revision: str | None = None
+
+
+@dataclass
+class ContinuousCapture:
+    channel: str
+    quality: str
+    campaign: CampaignBrief | None = None
+    stop: Event = field(default_factory=Event)
+    status: str = "Starting"
 
 
 @dataclass
@@ -351,12 +378,17 @@ def create_app(
     edits: dict[str, ArchiveEdit] = {}
     selected_channels = default_channels
     selected_quality = DEFAULT_QUALITY
+    continuous: ContinuousCapture | None = None
+    shutting_down = Event()
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         try:
             yield
         finally:
+            shutting_down.set()
+            if continuous:
+                continuous.stop.set()
             work.cleanup()
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -394,6 +426,7 @@ def create_app(
             LOGGER.warning("Capture failed (%s)", type(error).__name__)
             with state:
                 job.phase = "failed"
+                job.capture_finished.set()
             prepare_run(job.run)
             return
         finally:
@@ -402,6 +435,7 @@ def create_app(
         with state:
             job.capture = recorded
             job.phase = "queued"
+            job.capture_finished.set()
 
         # Serialize audio analysis and branded encodes on Render's small free instance.
         audio_status = "Audio checked for laughter and action."
@@ -477,30 +511,65 @@ def create_app(
                 job.detail = "Cutting the first highlights"
                 # Early slots are split across channels. Remaining slots are
                 # filled from the best candidates once every channel is checked.
-                share = MAX_CLIPS // len(runs[job.run].jobs)
+                run = runs[job.run]
+                share = MAX_CLIPS // len(run.jobs)
             remaining = []
-            for clip in candidates:
-                if len(job.highlights) >= share:
-                    remaining.append(clip)
-                else:
-                    append_highlight(job, clip)
+            if run.continuous:
+                for clip in candidates:
+                    if "Dialogue may continue past the cut" not in clip.reasons:
+                        if append_highlight(job, clip, transcribe=True, campaign=run.campaign):
+                            break
+            else:
+                for clip in candidates:
+                    if len(job.highlights) >= share:
+                        remaining.append(clip)
+                    else:
+                        append_highlight(job, clip)
             with state:
                 job.candidates = remaining
                 job.signals = f"{chat_status} {audio_status}"
                 job.phase = "ranked"
-                job.detail = ""
+                job.detail = (
+                    "No highlight met the campaign duration and ending checks."
+                    if run.campaign and not job.highlights
+                    else ""
+                )
         prepare_run(job.run)
 
-    def append_highlight(job: Recording, clip: Clip) -> bool:
+    def append_highlight(
+        job: Recording,
+        clip: Clip,
+        *,
+        transcribe: bool = False,
+        campaign: CampaignBrief | None = None,
+    ) -> bool:
         output = job.path.with_name(f"highlight-{len(job.highlights) + 1}.mp4")
+        duration = None
         try:
             cut_clip(job.path, output, clip)
+            if campaign and (campaign.min_seconds is not None or campaign.max_seconds is not None):
+                duration, _ = probe_clip(output)
+                if not (campaign.min_seconds or 0) <= duration <= (
+                    campaign.max_seconds or float("inf")
+                ):
+                    output.unlink(missing_ok=True)
+                    return False
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             output.unlink(missing_ok=True)
             LOGGER.warning("Highlight cut failed (%s)", type(error).__name__)
             return False
+        transcript = []
+        if transcribe:
+            try:
+                with TemporaryDirectory(prefix="transcript-", dir=output.parent) as scan:
+                    transcript = auto_captions(output, Path(scan))
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+                LOGGER.info("Highlight transcript unavailable (%s)", type(error).__name__)
+        template = CUSTOM_CHANNEL_VI_TEMPLATE if transcribe else DEFAULT_TEMPLATE
         with state:
-            job.highlights.append(Highlight(clip, output))
+            job.highlights.append(
+                Highlight(clip, output, transcript=transcript, template=template, duration=duration)
+            )
         return True
 
     def prepare_run(run_key: str) -> None:
@@ -635,6 +704,7 @@ def create_app(
             "reel_download": "direct",
             "hooks": "clip-aware",
             "previews": "inline",
+            "continuous_capture": "supported",
         }
 
     hidden = f'<input type="hidden" name="token" value="{csrf}">'
@@ -643,6 +713,19 @@ def create_app(
         # This handler is also used with a fixed message for invalid form submissions.
         with state:
             active = sum(job.phase in BUSY for job in jobs.values())
+            continuous_status = ""
+            if continuous:
+                label = "Stopping after this capture" if continuous.stop.is_set() else continuous.status
+                campaign_label = (
+                    f" · {html.escape(continuous.campaign.name)}" if continuous.campaign else ""
+                )
+                continuous_status = (
+                    f"<p>Continuous recording for @{html.escape(continuous.channel)} · "
+                    f"{html.escape(label)}{campaign_label}</p>"
+                    f'<form method="post" action="/continuous/stop">{hidden}'
+                    '<button class="secondary" type="submit">Stop after this capture</button>'
+                    "</form>"
+                )
             cards = "".join(
                 f'<p><a class="secondary" href="/runs/{run.key}">Open recording run</a> '
                 f"{html.escape(', '.join(jobs[key].channel for key in run.jobs if key in jobs))}</p>"
@@ -691,7 +774,23 @@ def create_app(
             '<label><input type="checkbox" name="confirm" value="yes" required> '
             "I have permission to capture these streams.</label>"
             f'<button type="submit"{" disabled" if active >= MAX_ACTIVE else ""}>'
-            "Record and find clips</button></form>"
+            "Record and find clips</button>"
+            "<details><summary>Campaign brief and clip length</summary>"
+            '<label for="campaign">Campaign name</label>'
+            '<input id="campaign" name="campaign_name" type="text" maxlength="120">'
+            '<label for="brief">Campaign brief</label>'
+            '<textarea id="brief" name="campaign_brief" rows="5" maxlength="12000"></textarea>'
+            '<label for="min-seconds">Minimum clip seconds</label>'
+            f'<input id="min-seconds" name="min_seconds" type="number" min="1" max="{MAX_HIGHLIGHT_SECONDS}">'
+            '<label for="max-seconds">Maximum clip seconds</label>'
+            f'<input id="max-seconds" name="max_seconds" type="number" min="1" max="{MAX_HIGHLIGHT_SECONDS}">'
+            "<small>These settings apply to consecutive recordings for this campaign.</small>"
+            "</details>"
+            '<button class="secondary" type="submit" formaction="/continuous/start">'
+            "Record consecutive 10-minute windows</button>"
+            "<small>Continuous recording takes one username. Windows without a highlight "
+            "and windows whose Reel has been delivered can be cleared when space is needed.</small>"
+            f"</form>{continuous_status}"
             f'<div id="recordings">{cards}</div></main></body></html>',
             status_code=status,
             headers={"Cache-Control": "private, no-store", "X-Frame-Options": "DENY"},
@@ -719,17 +818,11 @@ def create_app(
         except ValueError as error:
             return show_home(str(error), 400)
 
-        error_message = ""
-        _, byte_cap = QUALITY_OPTIONS[quality]
         with state:
-            remaining = sum(
-                storage_reserved(job)
-                for job in jobs.values()
-                if job.phase == "capturing"
-            )
-            needed = remaining + len(requested) * (byte_cap + CAPTURE_HEADROOM)
             in_progress = {job.channel for job in jobs.values() if job.phase in BUSY}
-            if in_progress.intersection(requested):
+            if continuous:
+                error_message = "Stop continuous recording before starting a manual capture."
+            elif in_progress.intersection(requested):
                 error_message = (
                     "One of those channels already has a recording in progress."
                 )
@@ -738,31 +831,125 @@ def create_app(
                     "Five recordings can run at a time. Try again when a slot is free."
                 )
             else:
-                reclaim_saved_runs(len(requested), needed)
-                if len(requested) + len(jobs) > MAX_RUNS:
-                    error_message = (
-                        "Save an older finished run to this device to make room."
-                    )
-                elif disk_usage(work.name).free < needed:
-                    error_message = "The recorder is low on space. Save an older finished run to this device."
+                error_message = capture_capacity(len(requested), quality)
             if not error_message:
                 selected_channels, selected_quality = requested, quality
-                run_key = secrets.token_hex(8)
-                run = Run(run_key, datetime.now(UTC).isoformat())
-                runs[run_key] = run
-                for name in requested:
-                    key = secrets.token_hex(8)
-                    folder = Path(work.name) / key
-                    folder.mkdir()
-                    job = Recording(
-                        key, name, folder / "capture.mp4", byte_cap, run=run_key
-                    )
-                    jobs[key] = job
-                    run.jobs.append(key)
-                    Thread(target=run_capture, args=(job, quality), daemon=True).start()
+                run = start_recording(requested, quality)
         if error_message:
             return show_home(error_message, 409)
-        return RedirectResponse(f"/runs/{run_key}", status_code=303)
+        return RedirectResponse(f"/runs/{run.key}", status_code=303)
+
+    def capture_capacity(incoming: int, quality: str) -> str:
+        _, byte_cap = QUALITY_OPTIONS[quality]
+        remaining = sum(
+            storage_reserved(job) for job in jobs.values() if job.phase == "capturing"
+        )
+        needed = remaining + incoming * (byte_cap + CAPTURE_HEADROOM)
+        reclaim_saved_runs(incoming, needed)
+        if incoming + len(jobs) > MAX_RUNS:
+            return "Waiting for older runs to finish or be saved or delivered."
+        if disk_usage(work.name).free < needed:
+            return "The recorder is low on space. Save an older finished run to this device."
+        return ""
+
+    def start_recording(
+        requested: list[str],
+        quality: str,
+        *,
+        repeat: bool = False,
+        campaign: CampaignBrief | None = None,
+    ) -> Run:
+        _, byte_cap = QUALITY_OPTIONS[quality]
+        run = Run(
+            secrets.token_hex(8), datetime.now(UTC).isoformat(), continuous=repeat,
+            campaign=campaign,
+        )
+        runs[run.key] = run
+        for name in requested:
+            key = secrets.token_hex(8)
+            folder = Path(work.name) / key
+            folder.mkdir()
+            job = Recording(key, name, folder / "capture.mp4", byte_cap, run=run.key)
+            jobs[key] = job
+            run.jobs.append(key)
+            Thread(target=run_capture, args=(job, quality), daemon=True).start()
+        return run
+
+    def run_continuously(session: ContinuousCapture) -> None:
+        nonlocal continuous
+        try:
+            while not session.stop.is_set():
+                with state:
+                    if session.stop.is_set():
+                        return
+                    error = capture_capacity(1, session.quality)
+                    session.status = error or "Recording a 10-minute window"
+                    if not error:
+                        run = start_recording(
+                            [session.channel], session.quality,
+                            repeat=True, campaign=session.campaign,
+                        )
+                        job = jobs[run.jobs[0]]
+                if error:
+                    session.stop.wait(CONTINUOUS_RETRY_SECONDS)
+                    continue
+                while not job.capture_finished.wait(0.5):
+                    if shutting_down.is_set():
+                        return
+                if job.capture is None or job.capture.duration < CAPTURE_SECONDS / 2:
+                    with state:
+                        session.status = "Stream unavailable or interrupted. Retrying shortly."
+                    session.stop.wait(CONTINUOUS_RETRY_SECONDS)
+        finally:
+            with state:
+                if continuous is session:
+                    continuous = None
+
+    @app.post("/continuous/start", dependencies=[Depends(authenticate)], response_model=None)
+    def start_continuous(
+        token: str = Form(),
+        confirm: str = Form(""),
+        quality: str = Form(DEFAULT_QUALITY),
+        channels: str = Form("", max_length=160),
+        campaign_name: str = Form("", max_length=120),
+        campaign_brief: str = Form("", max_length=12000),
+        min_seconds: int | None = Form(None, ge=1, le=MAX_HIGHLIGHT_SECONDS),
+        max_seconds: int | None = Form(None, ge=1, le=MAX_HIGHLIGHT_SECONDS),
+    ):
+        nonlocal continuous
+        authorize_form(token)
+        if confirm != "yes" or quality not in QUALITY_OPTIONS:
+            return show_home("Confirm permission and choose a recording quality.", 400)
+        try:
+            requested = channels_from_input(channels)
+        except ValueError as error:
+            return show_home(str(error), 400)
+        if len(requested) != 1:
+            return show_home("Enter one Twitch username for continuous recording.", 400)
+        campaign = None
+        name, brief = campaign_name.strip(), campaign_brief.strip()
+        if name or brief or min_seconds is not None or max_seconds is not None:
+            if not name or not brief:
+                return show_home("Add both the campaign name and its brief.", 400)
+            if min_seconds is not None and max_seconds is not None and min_seconds > max_seconds:
+                return show_home("The minimum duration must be at most the maximum.", 400)
+            campaign = CampaignBrief(name, brief, min_seconds, max_seconds)
+        with state:
+            available = not continuous and all(job.phase != "capturing" for job in jobs.values())
+            if available:
+                continuous = ContinuousCapture(requested[0], quality, campaign)
+                Thread(target=run_continuously, args=(continuous,), daemon=True).start()
+        if not available:
+            return show_home("Stop the active session or wait for a recording slot.", 409)
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/continuous/stop", dependencies=[Depends(authenticate)])
+    def stop_continuous(token: str = Form()) -> RedirectResponse:
+        authorize_form(token)
+        with state:
+            if continuous:
+                continuous.stop.set()
+        return RedirectResponse("/", status_code=303)
 
     @app.post("/jobs/{key}/clips/{rank}/hook", dependencies=[Depends(authenticate)])
     def preview_hook(
@@ -856,7 +1043,14 @@ def create_app(
             ):
                 return
             batch = [jobs[key] for key in run.jobs if key in jobs]
-            if run_is_busy(batch) or run.saved_revision != run_revision(batch):
+            if run_is_busy(batch):
+                continue
+            revision = run_revision(batch)
+            saved = run.saved_revision == revision
+            processed = run.continuous and run.finalizing and (
+                not revision or revision in (run.delivered_revision, run.skipped_revision)
+            )
+            if not (saved or processed):
                 continue
             for job in batch:
                 rmtree(job.path.parent)
@@ -869,6 +1063,99 @@ def create_app(
             "kind": item.edit_kind,
             "url": f"{base}/template" if template_path(item).is_file() else "",
         }
+
+    @app.get("/continuous/queue", dependencies=[Depends(authenticate)])
+    def continuous_queue(response: Response) -> dict:
+        response.headers["Cache-Control"] = "private, no-store"
+        with state:
+            waiting = []
+            for run in runs.values():
+                if not run.continuous:
+                    continue
+                job = jobs[run.jobs[0]]
+                if job.phase != "ready" or not job.highlights:
+                    continue
+                revision = run_revision([job])
+                if revision in (run.delivered_revision, run.skipped_revision):
+                    continue
+                item = job.highlights[0]
+                base = f"/jobs/{job.key}/clips/1"
+                waiting.append({
+                    "id": job.key,
+                    "channel": job.channel,
+                    "created_at": run.created_at,
+                    "clip_seconds": (
+                        item.duration if item.duration is not None
+                        else round(item.clip.end - item.clip.start, 1)
+                    ),
+                    "campaign": asdict(run.campaign) if run.campaign else None,
+                    "reasons": item.clip.reasons,
+                    "transcript": item.transcript,
+                    "run_url": f"/runs/{run.key}",
+                    "preview_url": f"{base}/preview",
+                    "edit_url": f"{base}/edit",
+                    "delivery_url": f"/continuous/{job.key}/delivered",
+                    "skip_url": f"/continuous/{job.key}/skipped",
+                    "template": CUSTOM_CHANNEL_VI_TEMPLATE,
+                    "revision": revision,
+                    "edit": run_edit_status(item, base),
+                })
+            return {
+                "channel": continuous.channel if continuous else None,
+                "status": continuous.status if continuous else "Stopped",
+                "token": csrf,
+                "highlights": waiting,
+            }
+
+    @app.post(
+        "/continuous/{key}/delivered",
+        dependencies=[Depends(authenticate)],
+        status_code=204,
+    )
+    def acknowledge_delivery(
+        key: str, revision: str = Form(), token: str = Form()
+    ) -> Response:
+        authorize_form(token)
+        with state:
+            job = get_job(key)
+            run = get_run(job.run)
+            if not run.continuous:
+                raise HTTPException(404, "This is not a continuous recording.")
+            item = get_highlight(job, 1)
+            if (
+                revision != run_revision([job])
+                or item.phase != "ready"
+                or not template_path(item).is_file()
+            ):
+                raise HTTPException(409, "Download the current finished Reel first.")
+            run.delivered_revision = revision
+        return Response(status_code=204)
+
+    @app.post(
+        "/continuous/{key}/skipped",
+        dependencies=[Depends(authenticate)],
+        status_code=204,
+    )
+    def skip_campaign_highlight(
+        key: str,
+        revision: str = Form(),
+        token: str = Form(),
+        reason: str = Form(min_length=1, max_length=300),
+    ) -> Response:
+        authorize_form(token)
+        reason = reason.strip()
+        if not reason:
+            raise HTTPException(400, "Add the campaign requirement this clip missed.")
+        with state:
+            job = get_job(key)
+            run = get_run(job.run)
+            if not run.continuous or not run.campaign or not job.highlights:
+                raise HTTPException(404, "This is not a campaign highlight.")
+            if run_is_busy([job]) or revision != run_revision([job]):
+                raise HTTPException(409, "Refresh to check the current highlight.")
+            run.skipped_revision = revision
+            job.detail = f"Skipped for {run.campaign.name}. {reason}"
+        return Response(status_code=204)
 
     @app.post(
         "/jobs/{key}/clips/{rank}/edit",
@@ -958,6 +1245,7 @@ def create_app(
                     "url": f"/jobs/{job.key}/clips/{rank}/preview",
                     "edit_url": f"/jobs/{job.key}/clips/{rank}/edit",
                     "edit": run_edit_status(item, f"/jobs/{job.key}/clips/{rank}"),
+                    **({"transcript": item.transcript} if run.continuous else {}),
                 }
                 for job, rank, item in ranked
             ]

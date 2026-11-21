@@ -20,6 +20,137 @@ PASSWORD = "synthetic-test-password-only"
 AUTH = ("recorder", PASSWORD)
 
 
+def test_continuous_recording_overlaps_analysis_and_hands_off_one_reel(monkeypatch):
+    second_started = Event()
+    finish_second = Event()
+    sources = []
+
+    def capture(url, output, on_progress, *, quality, max_bytes):
+        assert url.endswith("/clix")
+        sources.append(output)
+        if len(sources) > 1:
+            second_started.set()
+            assert finish_second.wait(8)
+        output.write_bytes(b"capture")
+        return app.Capture(600, 720)
+
+    def speech(path, scratch, *, long_source=False):
+        if long_source:
+            if path == sources[0]:
+                assert second_started.wait(5)
+            return []
+        return [[0.6, 2.4, "That was my getaway vehicle."]]
+
+    def render(source, output, hook, narration, crop, cam, template):
+        assert hook == "SUSPECT LOSES GETAWAY VEHICLE"
+        assert template == app.CUSTOM_CHANNEL_VI_TEMPLATE
+        output.write_bytes(b"Channel VI reel")
+        return TemplateResult("Automatic English captions", HookSuggestion(hook))
+
+    monkeypatch.setattr(app, "ChatMonitor", lambda _: type(
+        "Chat", (), {
+            "counts": Counter(), "laughter": Counter(), "connected": True,
+            "start": lambda self: None, "close": lambda self: None,
+            "progress": lambda self, seconds: None,
+        }
+    )())
+    monkeypatch.setattr(app, "capture_mp4", capture)
+    monkeypatch.setattr(app, "detect_sound", lambda *_: SoundSignals({}, {}))
+    monkeypatch.setattr(app, "detect_motion", lambda *_: {})
+    monkeypatch.setattr(app, "auto_captions", speech)
+    monkeypatch.setattr(app, "render_template", render)
+    def cut(source, output, clip):
+        output.write_text(str(clip.end - clip.start))
+
+    monkeypatch.setattr(app, "cut_clip", cut)
+    monkeypatch.setattr(app, "probe_clip", lambda path: (float(path.read_text()), True))
+    monkeypatch.setattr(app, "select_clips", lambda *a, **kw: [
+        app.Clip(20, 35, ("Dialogue may continue past the cut",), 12),
+        app.Clip(25, 50, ("Story beat",), 10),
+        app.Clip(45, 60, ("Gameplay movement",), 9),
+        app.Clip(70, 80, ("Action sounds",), 7),
+    ])
+    monkeypatch.setattr(app, "disk_usage", lambda _: type("Disk", (), {"free": 8 * 1024**3})())
+
+    with TestClient(app.create_app("clix", PASSWORD)) as client:
+        assert client.get("/continuous/queue").status_code == 401
+        home = client.get("/", auth=AUTH).text
+        token = re.search(r'name="token" value="([^"]+)"', home)[1]
+        data = {"token": token, "channels": "@clix", "confirm": "yes"}
+        brief = {
+            "campaign_name": "Synthetic campaign",
+            "campaign_brief": "Gameplay only. Use #SyntheticCampaign.",
+            "min_seconds": "12",
+            "max_seconds": "20",
+        }
+
+        def pending():
+            return client.get("/continuous/queue", auth=AUTH).json()["highlights"]
+
+        def wait_for(predicate):
+            deadline = monotonic() + 6
+            while monotonic() < deadline:
+                result = predicate()
+                if result:
+                    return result
+                sleep(0.02)
+            raise AssertionError("Timed out waiting for background recorder")
+
+        try:
+            assert client.post(
+                "/continuous/start", data={**data, **brief, "min_seconds": "22"}, auth=AUTH,
+            ).status_code == 400
+            assert client.post(
+                "/continuous/start", data={**data, **brief}, auth=AUTH, follow_redirects=False
+            ).status_code == 303
+            assert client.post("/continuous/start", data=data, auth=AUTH).status_code == 409
+            assert client.post(
+                "/record", data={**data, "channels": "second"}, auth=AUTH,
+            ).status_code == 409
+            clips = wait_for(pending)
+            assert len(clips) == 1
+            clip = clips[0]
+            assert clip["clip_seconds"] == 15
+            assert clip["reasons"] == ["Gameplay movement"]
+            assert clip["campaign"] == {
+                "name": brief["campaign_name"], "brief": brief["campaign_brief"],
+                "min_seconds": 12, "max_seconds": 20,
+            }
+            assert clip["transcript"] == [[0.6, 2.4, "That was my getaway vehicle."]]
+            assert not clip["edit"]["url"]
+            assert client.post(
+                clip["delivery_url"], data={"token": token, "revision": clip["revision"]},
+                auth=AUTH,
+            ).status_code == 409
+            assert client.post(
+                clip["edit_url"], headers={"X-ClipCast-Token": token}, auth=AUTH,
+                json={"kind": "reel", "hook": "SUSPECT LOSES GETAWAY VEHICLE",
+                      "template": clip["template"], "request_id": "a" * 32},
+            ).status_code == 202
+            assert client.post(
+                "/continuous/stop", data={"token": token}, auth=AUTH, follow_redirects=False
+            ).status_code == 303
+            edit = wait_for(lambda: pending()[0] if pending()[0]["edit"]["url"] else None)
+            assert client.get(edit["edit"]["url"], auth=AUTH).content == b"Channel VI reel"
+            assert client.post(
+                edit["delivery_url"], data={"token": token, "revision": edit["revision"]},
+                auth=AUTH,
+            ).status_code == 204
+            assert pending() == []
+        finally:
+            finish_second.set()
+        next_clip = wait_for(pending)[0]
+        assert len(sources) == 2
+        assert next_clip["campaign"] == clip["campaign"]
+        assert client.post(
+            next_clip["skip_url"], auth=AUTH,
+            data={"token": token, "revision": next_clip["revision"], "reason": "Lacks gameplay."},
+        ).status_code == 204
+        assert pending() == []
+        manifest = client.get(next_clip["run_url"] + "/manifest", auth=AUTH).json()
+        assert manifest["channels"][0]["status"].endswith("Lacks gameplay.")
+
+
 def test_five_stream_batch_caps_results_and_reopens_after_restart(monkeypatch):
     started = {name: Event() for name in ("clix", "second", "third", "fourth", "fifth")}
     release = Event()

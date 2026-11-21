@@ -21,6 +21,7 @@ CROP = {"left": "0.16", "center": "0.50", "right": "0.84"}
 HOOK_LIMIT = 64
 NARRATION_LIMIT = 110
 DEFAULT_TEMPLATE = "gameplay-first"
+CUSTOM_CHANNEL_VI_TEMPLATE = "channel-vi-custom"
 CHANNEL_VI_TEMPLATES = {
     "it-was-going-well": "It Was Going Well",
     "roll-that-back": "Roll That Back",
@@ -28,6 +29,7 @@ CHANNEL_VI_TEMPLATES = {
 }
 REEL_TEMPLATES = {
     DEFAULT_TEMPLATE: "Gameplay First",
+    CUSTOM_CHANNEL_VI_TEMPLATE: "Channel VI · Custom headline",
     **{key: f"Channel VI · {label}" for key, label in CHANNEL_VI_TEMPLATES.items()},
 }
 CREAM = (255, 240, 216, 255)
@@ -289,7 +291,8 @@ def render_template(
 ) -> TemplateResult:
     if template not in REEL_TEMPLATES:
         raise ValueError("Unknown Reel template")
-    headline = CHANNEL_VI_TEMPLATES.get(template)
+    custom_headline = template == CUSTOM_CHANNEL_VI_TEMPLATE
+    headline = CHANNEL_VI_TEMPLATES.get("roll-that-back" if custom_headline else template)
     duration, has_audio = probe_clip(source)
     with TemporaryDirectory(prefix="template-", dir=output.parent) as temp:
         scratch = Path(temp)
@@ -298,7 +301,7 @@ def render_template(
             status = "Written narration included."
         else:
             cues, status = transcript_context(source, scratch, has_audio)
-        if headline:
+        if headline and not (custom_headline and hook):
             selected = HookSuggestion(headline.upper())
         elif hook:
             selected = HookSuggestion(hook)
@@ -324,7 +327,19 @@ def render_template(
         else:
             layout = f"[0:v]setpts=PTS-STARTPTS,fps=30,{game}[base];"
         if headline:
-            layers = ["-i", str(ASSETS / f"channel-vi-{template}.png"), *captions_input]
+            asset_name = "roll-that-back" if custom_headline else template
+            art = ASSETS / f"channel-vi-{asset_name}.png"
+            if custom_headline and hook:
+                hook_image = scratch / "hook.png"
+                draw_hook(selected.text, hook_image)
+                with Image.open(art) as image, Image.open(hook_image) as title:
+                    # All three assets use these rows for the baked-in headline.
+                    image.paste((0, 0, 0, 0), (0, 245, image.width, 360))
+                    branded = image.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
+                    branded.alpha_composite(title, (26, 165))
+                    art = scratch / "channel-vi.png"
+                    branded.save(art)
+            layers = ["-i", str(art), *captions_input]
             graph = (
                 f"{layout}[1:v]scale={WIDTH}:{HEIGHT}:flags=lanczos[art];"
                 "[base][art]overlay[branded];[branded][2:v]overlay=x=32:y=884[out]"

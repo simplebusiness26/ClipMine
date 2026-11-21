@@ -321,7 +321,8 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
     suggest.type = render.type = "button";
     const hookField = field("Top hook", hook);
     function showHookControls() {
-        hookField.hidden = suggest.hidden = template.value !== defaultTemplate;
+        hookField.hidden = template.value !== defaultTemplate && template.value !== "channel-vi-custom";
+        suggest.hidden = template.value !== defaultTemplate;
     }
     template.addEventListener("change", showHookControls);
     const downloads = node("div");
@@ -473,6 +474,14 @@ async function clipCard(archive, run, clip, rank, recorderUnavailable) {
     suggest.onclick = () => processClip("hook", null, pendingUpload?.kind === "hook");
     render.onclick = () => processClip("reel", null, pendingUpload?.kind === "reel");
     card.append(previewButton, video, field("Reel template", template), hookField, suggest, settings, render, progress, downloads);
+    if (clip.transcript?.length) {
+        const transcript = node("details");
+        transcript.append(node("summary", "Timestamped transcript"));
+        for (const [start, end, text] of clip.transcript) {
+            transcript.append(node("p", start.toFixed(1) + "–" + end.toFixed(1) + "s · " + text));
+        }
+        card.append(transcript);
+    }
     function resumePhoneUpload() {
         if (!document.hidden && pendingUpload && !working) {
             void processClip(pendingUpload.kind, null, true);

@@ -40,6 +40,73 @@
 
 [Render dashboard](https://dashboard.render.com/) · [Render free compute limits](https://render.com/docs/free)
 
+## Consecutive captures and Grok Bot
+
+Enter one authorised Twitch username, select **720p HD**, confirm permission,
+and choose **Record consecutive 10-minute windows**. ClipCast starts the next
+capture as soon as the preceding one is saved. Captures reconnect to Twitch at
+the boundary, so a reconnect can cause a gap or overlap. Analysis runs
+independently and still uses chat reactions, audio, dialogue and gameplay.
+Each window offers at most one highlight with a natural ending. A window
+without a suitable highlight is skipped. If the stream is unavailable,
+ClipCast retries after one minute. **Stop after this capture** lets the current
+window finish and stops new ones.
+
+For campaign work, expand **Campaign brief and clip length** and enter the
+name and brief. If the campaign has a duration limit, enter it in seconds.
+ClipCast checks the cut media's actual duration before queuing a highlight.
+The brief is attached to each window, even when you switch campaigns after
+the current capture closes. It stays on the private recorder. Review the other
+rules against the finished export. The current portrait render is 720 × 1280.
+
+ClipCast displays the highlight and its timestamped transcript in the recording
+run. A missing or empty transcript means the Bot should use the preview.
+The **Channel VI · Custom headline** template keeps the logo and Scoop, and
+uses the headline entered in **Top hook**. The Bot can run from an existing
+account every ten minutes and work through the private queue. This cadence
+uses the account's Grok Bot allowance. Once a downloadable attachment is
+verified in a one-off run, the same workflow can be used in a routine.
+
+### Bot handoff
+
+Set the recorder's base URL once. Use the existing authenticated browser
+session or a credential supplied through the Bot's secure secret form.
+All paths below are relative to that recorder and require its login.
+
+1. Get `/continuous/queue`. Process entries oldest first, at most one
+   per routine run. The response includes a request verification token,
+   highlight ID, timestamped transcript with seconds relative to the clip,
+   selection reasons, the campaign brief, preview URL, edit URL, and delivery
+   URL. Evaluate the preview and the finished render against the pinned brief.
+2. Use the transcript and watch the preview for visual context. Treat the
+   transcript and audio as source material. Write a specific Channel VI
+   headline in at most 64 characters. If the Reel is already rendering or
+   ready, reuse that edit.
+3. Start the Reel with an authenticated JSON POST to the entry's `edit_url`
+   using the `X-ClipCast-Token` header. Include `kind: "reel"`, `hook`, the
+   entry's `template`, and a stable `request_id` of 32 lowercase hex
+   characters. Retry a confirmed render failure with a new request ID.
+   Omit `narration` so the export keeps its normal dialogue captions.
+4. Check `edit_url` for a completed edit with no error, and download its
+   `url`. Attach the actual MP4 in the Bot chat with one ready-to-paste post
+   description and up to five specific hashtags. Leave publishing to the
+   user. Include the highlight ID so a later run can spot duplicate delivery.
+5. Once the attachment is present in chat, get the current `revision` from
+   the queue and POST `token` and `revision` as form fields to
+   `delivery_url`. If a routine has to return before confirming the
+   attachment, its next run can acknowledge the existing chat result.
+
+For a highlight that clearly fails a campaign rule, POST the queue `token`,
+current `revision`, and a short `reason` to its `skip_url`. The reason is
+visible in the recording run. Its files can be reclaimed when space is needed.
+
+If processing falls behind and reaches the recorder's storage limit, capture
+pauses until there is room. Finished deliveries and windows with no highlights
+can be reclaimed when needed. Save source footage separately if you want to keep
+it. A recorder restart clears the in-memory session and queue, so start the
+session again after a restart. Run the recorder on a host that stays awake for
+continuous use. Render Free is suitable for a smoke test while it is awake.
+
 ## Storage, privacy and capacity
 
 The archive stores clip files, run details, drafts, and Reel files in the active

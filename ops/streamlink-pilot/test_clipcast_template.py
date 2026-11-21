@@ -14,6 +14,7 @@ from clipcast_template import render
     [
         (True, render.DEFAULT_TEMPLATE),
         (False, render.DEFAULT_TEMPLATE),
+        (True, render.CUSTOM_CHANNEL_VI_TEMPLATE),
         *((True, template) for template in render.CHANNEL_VI_TEMPLATES),
     ],
 )
@@ -112,7 +113,7 @@ def test_template_keeps_audio_and_duration_and_draws_text(
     assert has_narration("1.5")
     assert has_narration("0.5") is written
     assert has_narration("2.5") is written
-    if template in render.CHANNEL_VI_TEMPLATES:
+    if template == render.CUSTOM_CHANNEL_VI_TEMPLATE or template in render.CHANNEL_VI_TEMPLATES:
         raw = subprocess.check_output(
             [
                 "ffmpeg",
